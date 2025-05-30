@@ -122,8 +122,6 @@ func (n *Node) Start(ctx context.Context) error {
 		wg := sync.WaitGroup{}
 
 		for _, service := range n.services {
-			service := service // Create a new variable to avoid closure problems
-
 			serviceName := service.Name()
 
 			wg.Add(1)
@@ -170,7 +168,6 @@ func (n *Node) Start(ctx context.Context) error {
 		n.log.WithField("client_type", clientType).Info("Detected execution client type")
 
 		for _, callback := range n.onReadyCallbacks {
-			callback := callback // Create a new variable to avoid closure problems
 			// Create a new context for each callback
 			callbackCtx, callbackCancel := context.WithTimeout(context.Background(), 10*time.Second)
 

@@ -53,7 +53,7 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 		clickhouse:     clickhouseClient,
 		config:         config,
 		asynqClient:    deps.AsynqClient,
-		processingMode: "forwards", // Default mode
+		processingMode: c.FORWARDS_MODE, // Default mode
 	}
 
 	processor.network = deps.Network

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
+	"github.com/ethpandaops/execution-processor/pkg/processor/common"
 	"github.com/sirupsen/logrus"
 )
 
@@ -102,7 +103,7 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 
 	var err error
 
-	if mode == "backwards" {
+	if mode == common.BACKWARDS_MODE {
 		progressiveNext, err = s.getProgressiveNextBlockBackwards(ctx, processor, network, chainHead)
 	} else {
 		// Default to forwards mode
@@ -115,7 +116,7 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 
 	// If limiter is disabled or backwards mode, return progressive next block
 	// Limiter only applies to forwards processing to prevent exceeding beacon chain
-	if !s.limiterEnabled || mode == "backwards" {
+	if !s.limiterEnabled || mode == common.BACKWARDS_MODE {
 		return progressiveNext, nil
 	}
 

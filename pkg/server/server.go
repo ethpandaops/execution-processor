@@ -37,19 +37,19 @@ type Server struct {
 }
 
 func NewServer(ctx context.Context, log logrus.FieldLogger, namespace string, config *Config) (*Server, error) {
-	redis, err := redis.New(config.Redis)
+	redisClient, err := redis.New(config.Redis)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create redis client: %w", err)
 	}
 
 	pool := ethereum.NewPool(log.WithField("component", "ethereum"), namespace, &config.Ethereum)
 
-	state, err := state.NewManager(ctx, log.WithField("component", "state"), &config.StateManager)
+	stateManager, err := state.NewManager(ctx, log.WithField("component", "state"), &config.StateManager)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create state manager: %w", err)
 	}
 
-	processor, err := processor.NewManager(log.WithField("component", "processor"), &config.Processors, pool, state, redis)
+	p, err := processor.NewManager(log.WithField("component", "processor"), &config.Processors, pool, stateManager, redisClient)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create processor manager: %w", err)
 	}
@@ -58,10 +58,10 @@ func NewServer(ctx context.Context, log logrus.FieldLogger, namespace string, co
 		config:    config,
 		log:       log,
 		namespace: namespace,
-		redis:     redis,
+		redis:     redisClient,
 		pool:      pool,
-		state:     state,
-		processor: processor,
+		state:     stateManager,
+		processor: p,
 	}, nil
 }
 

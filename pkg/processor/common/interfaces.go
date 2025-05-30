@@ -34,3 +34,8 @@ type QueueInfo struct {
 	Name     string
 	Priority int
 }
+
+const (
+	BACKWARDS_MODE = "backwards"
+	FORWARDS_MODE  = "forwards"
+)

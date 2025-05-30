@@ -13,6 +13,11 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/common"
 )
 
+const (
+	STATUS_ERROR   = "error"
+	STATUS_SUCCESS = "success"
+)
+
 func (n *Node) BlockNumber(ctx context.Context) (*uint64, error) {
 	var blockNumber uint64
 
@@ -21,9 +26,9 @@ func (n *Node) BlockNumber(ctx context.Context) (*uint64, error) {
 	duration := time.Since(start)
 
 	// Record RPC metrics
-	status := "success"
+	status := STATUS_SUCCESS
 	if err != nil {
-		status = "error"
+		status = STATUS_ERROR
 	}
 
 	network := n.Metadata().ChainID()
@@ -46,9 +51,9 @@ func (n *Node) BlockByNumber(ctx context.Context, blockNumber *big.Int) (*types.
 	duration := time.Since(start)
 
 	// Record RPC metrics
-	status := "success"
+	status := STATUS_SUCCESS
 	if err != nil {
-		status = "error"
+		status = STATUS_ERROR
 	}
 
 	network := n.Metadata().ChainID()
@@ -87,9 +92,9 @@ func (n *Node) traceTransactionErigon(ctx context.Context, hash string) (*TraceT
 	duration := time.Since(start)
 
 	// Record RPC metrics
-	status := "success"
+	status := STATUS_SUCCESS
 	if err != nil {
-		status = "error"
+		status = STATUS_ERROR
 	}
 
 	network := n.Metadata().ChainID()

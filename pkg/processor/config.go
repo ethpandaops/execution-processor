@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ethpandaops/execution-processor/pkg/processor/common"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 )
 
@@ -52,11 +53,11 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Mode == "" {
-		c.Mode = "forwards"
+		c.Mode = common.FORWARDS_MODE
 	}
 
-	if c.Mode != "forwards" && c.Mode != "backwards" {
-		return fmt.Errorf("invalid mode %s, must be 'forwards' or 'backwards'", c.Mode)
+	if c.Mode != common.FORWARDS_MODE && c.Mode != common.BACKWARDS_MODE {
+		return fmt.Errorf("invalid mode %s, must be '%s' or '%s'", c.Mode, common.FORWARDS_MODE, common.BACKWARDS_MODE)
 	}
 
 	if c.Concurrency == 0 {

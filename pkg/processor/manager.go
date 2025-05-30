@@ -12,33 +12,18 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/leaderelection"
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
 	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
-	"github.com/ethpandaops/execution-processor/pkg/state"
+	s "github.com/ethpandaops/execution-processor/pkg/state"
 	"github.com/hibiken/asynq"
 	r "github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
 )
-
-/*
- * Leader election;
- *   - on startup, check if this processor is the leader for the given network via redis
- * If leader;
- *   - for each processor, get the next block number from admin.execution_block filtered by processor name and network
- *     - pass the block number to single processor entry point. Struct logs would request the full block and then enqueue trace_logs task, then finally a verify task.
- *   - must monitor each queue for archived items
- *   - metrics for block height/depth
- * processor;
- *   - init with chain id + network name + ethereum pool + logger + processor config
- *   - must expose it's queues and handler for each queue
- *   - has internal access to be able to enqueue items (only on its own queues?)
- *   - has shared metrics between all processors with labels the only difference
- */
 
 // Manager coordinates multiple processors with distributed task processing
 type Manager struct {
 	log        logrus.FieldLogger
 	config     *Config
 	pool       *ethereum.Pool
-	state      *state.Manager
+	state      *s.Manager
 	processors map[string]c.BlockProcessor
 
 	// Redis/Asynq for distributed processing
@@ -68,7 +53,7 @@ type Manager struct {
 	wg sync.WaitGroup
 }
 
-func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, state *state.Manager, redis *r.Client) (*Manager, error) {
+func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, state *s.Manager, redis *r.Client) (*Manager, error) {
 	// Get Redis options from the existing client
 	redisOpt := redis.Options()
 
@@ -445,8 +430,8 @@ func (m *Manager) handleLeadershipLoss() {
 func (m *Manager) runBlockProcessing(ctx context.Context) {
 	defer func() {
 		// Recovery from panics to prevent goroutine leaks
-		if r := recover(); r != nil {
-			m.log.WithField("panic", r).Error("Block processing panic recovered")
+		if recovered := recover(); recovered != nil {
+			m.log.WithField("panic", recovered).Error("Block processing panic recovered")
 		}
 
 		m.log.Debug("Block processing goroutine exiting")
@@ -613,8 +598,8 @@ func (m *Manager) startQueueMonitoring(ctx context.Context) {
 	go func() {
 		defer func() {
 			// Recovery from panics to prevent goroutine leaks
-			if r := recover(); r != nil {
-				m.log.WithField("panic", r).Error("Queue monitoring panic recovered")
+			if recovered := recover(); recovered != nil {
+				m.log.WithField("panic", recovered).Error("Queue monitoring panic recovered")
 			}
 
 			// Clean up monitoring state

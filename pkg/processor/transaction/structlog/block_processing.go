@@ -40,15 +40,18 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		// Check if this is the "no more blocks" condition
 		if errors.Is(err, state.ErrNoMoreBlocks) {
 			p.log.Debug("no more blocks to process")
+
 			return nil
 		}
-		
+
 		p.log.WithError(err).WithField("network", p.network.Name).Error("could not get next block")
+
 		return err
 	}
 
 	if nextBlock == nil {
 		p.log.Debug("no more blocks to process")
+
 		return nil
 	}
 
@@ -162,7 +165,7 @@ func isBlockNotFoundError(err error) bool {
 func (p *Processor) enqueueTransactionTasks(ctx context.Context, block *types.Block) error {
 	var enqueuedCount int
 
-	var errors []error
+	var errs []error
 
 	for index, tx := range block.Transactions() {
 		// Create process task payload
@@ -184,7 +187,7 @@ func (p *Processor) enqueueTransactionTasks(ctx context.Context, block *types.Bl
 
 		var err error
 
-		if p.processingMode == "backwards" {
+		if p.processingMode == c.BACKWARDS_MODE {
 			task, err = NewProcessBackwardsTask(payload)
 			queue = c.ProcessBackwardsQueue(ProcessorName)
 			taskType = ProcessBackwardsTaskType
@@ -195,14 +198,14 @@ func (p *Processor) enqueueTransactionTasks(ctx context.Context, block *types.Bl
 		}
 
 		if err != nil {
-			errors = append(errors, fmt.Errorf("failed to create task for tx %s: %w", tx.Hash().String(), err))
+			errs = append(errs, fmt.Errorf("failed to create task for tx %s: %w", tx.Hash().String(), err))
 
 			continue
 		}
 
 		// Enqueue the task
 		if err := p.EnqueueTask(ctx, task, asynq.Queue(queue)); err != nil {
-			errors = append(errors, fmt.Errorf("failed to enqueue task for tx %s: %w", tx.Hash().String(), err))
+			errs = append(errs, fmt.Errorf("failed to enqueue task for tx %s: %w", tx.Hash().String(), err))
 
 			continue
 		}
@@ -216,11 +219,11 @@ func (p *Processor) enqueueTransactionTasks(ctx context.Context, block *types.Bl
 		"block_number":   block.Number(),
 		"total_txs":      len(block.Transactions()),
 		"enqueued_count": enqueuedCount,
-		"error_count":    len(errors),
+		"error_count":    len(errs),
 	}).Info("Enqueued transaction processing tasks")
 
-	if len(errors) > 0 {
-		return fmt.Errorf("failed to enqueue %d tasks: %v", len(errors), errors[0])
+	if len(errs) > 0 {
+		return fmt.Errorf("failed to enqueue %d tasks: %v", len(errs), errs[0])
 	}
 
 	return nil

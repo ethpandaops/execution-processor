@@ -191,8 +191,6 @@ func (p *Pool) Start(ctx context.Context) {
 	p.UpdateNodeMetrics()
 
 	for _, node := range p.executionNodes {
-		node := node // Create a new variable to avoid closure problems
-
 		g.Go(func() error {
 			node.OnReady(ctx, func(innerCtx context.Context) error {
 				p.mu.Lock()

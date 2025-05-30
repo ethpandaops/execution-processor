@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"testing"
 
+	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
 	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 	"github.com/hibiken/asynq"
 )
@@ -17,7 +18,7 @@ func TestProcessPayload(t *testing.T) {
 		NetworkID:        1,
 		NetworkName:      "mainnet",
 		Network:          "mainnet",
-		ProcessingMode:   "forwards",
+		ProcessingMode:   c.FORWARDS_MODE,
 	}
 
 	// Test JSON marshaling
@@ -67,7 +68,7 @@ func TestVerifyPayload(t *testing.T) {
 		NetworkID:        1,
 		NetworkName:      "mainnet",
 		Network:          "mainnet",
-		ProcessingMode:   "forwards",
+		ProcessingMode:   c.FORWARDS_MODE,
 	}
 
 	// Test JSON marshaling
@@ -136,7 +137,7 @@ func TestNewProcessForwardsTask(t *testing.T) {
 		t.Errorf("expected transaction hash %s, got %s", payload.TransactionHash, unmarshaled.TransactionHash)
 	}
 
-	if unmarshaled.ProcessingMode != "forwards" {
+	if unmarshaled.ProcessingMode != c.FORWARDS_MODE {
 		t.Errorf("expected processing mode 'forwards', got %s", unmarshaled.ProcessingMode)
 	}
 }
@@ -172,7 +173,7 @@ func TestNewProcessBackwardsTask(t *testing.T) {
 		t.Errorf("expected transaction hash %s, got %s", payload.TransactionHash, unmarshaled.TransactionHash)
 	}
 
-	if unmarshaled.ProcessingMode != "backwards" {
+	if unmarshaled.ProcessingMode != c.BACKWARDS_MODE {
 		t.Errorf("expected processing mode 'backwards', got %s", unmarshaled.ProcessingMode)
 	}
 }
@@ -208,7 +209,7 @@ func TestNewVerifyForwardsTask(t *testing.T) {
 		t.Errorf("expected transaction hash %s, got %s", payload.TransactionHash, unmarshaled.TransactionHash)
 	}
 
-	if unmarshaled.ProcessingMode != "forwards" {
+	if unmarshaled.ProcessingMode != c.FORWARDS_MODE {
 		t.Errorf("expected processing mode 'forwards', got %s", unmarshaled.ProcessingMode)
 	}
 }
@@ -244,7 +245,7 @@ func TestNewVerifyBackwardsTask(t *testing.T) {
 		t.Errorf("expected transaction hash %s, got %s", payload.TransactionHash, unmarshaled.TransactionHash)
 	}
 
-	if unmarshaled.ProcessingMode != "backwards" {
+	if unmarshaled.ProcessingMode != c.BACKWARDS_MODE {
 		t.Errorf("expected processing mode 'backwards', got %s", unmarshaled.ProcessingMode)
 	}
 }
@@ -280,7 +281,7 @@ func TestAsynqTaskCreation(t *testing.T) {
 		"transaction_index": 5,
 		"network_id":        1,
 		"network_name":      "mainnet",
-		"processing_mode":   "forwards",
+		"processing_mode":   c.FORWARDS_MODE,
 	}
 
 	data, err := json.Marshal(payload)

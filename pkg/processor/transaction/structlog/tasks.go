@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math/big"
 
+	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
 	"github.com/hibiken/asynq"
 )
 
@@ -60,7 +61,7 @@ func (v *VerifyPayload) UnmarshalBinary(data []byte) error {
 
 // NewProcessForwardsTask creates a new forwards process task
 func NewProcessForwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
-	payload.ProcessingMode = "forwards"
+	payload.ProcessingMode = c.FORWARDS_MODE
 
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -72,7 +73,7 @@ func NewProcessForwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
 
 // NewProcessBackwardsTask creates a new backwards process task
 func NewProcessBackwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
-	payload.ProcessingMode = "backwards"
+	payload.ProcessingMode = c.BACKWARDS_MODE
 
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -84,7 +85,7 @@ func NewProcessBackwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
 
 // NewVerifyForwardsTask creates a new forwards verify task
 func NewVerifyForwardsTask(payload *VerifyPayload) (*asynq.Task, error) {
-	payload.ProcessingMode = "forwards"
+	payload.ProcessingMode = c.FORWARDS_MODE
 
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -96,7 +97,7 @@ func NewVerifyForwardsTask(payload *VerifyPayload) (*asynq.Task, error) {
 
 // NewVerifyBackwardsTask creates a new backwards verify task
 func NewVerifyBackwardsTask(payload *VerifyPayload) (*asynq.Task, error) {
-	payload.ProcessingMode = "backwards"
+	payload.ProcessingMode = c.BACKWARDS_MODE
 
 	data, err := json.Marshal(payload)
 	if err != nil {
