@@ -234,14 +234,12 @@ func (p *Processor) updateBlockMetrics(ctx context.Context, blockNumber *big.Int
 	// Update block height
 	common.BlockHeight.WithLabelValues(p.network.Name, ProcessorName).Set(float64(blockNumber.Int64()))
 
-	// Get chain tip to calculate depth
-	node := p.pool.GetHealthyExecutionNode()
-	if node != nil {
-		latestBlock, err := node.BlockNumber(ctx)
-		if err == nil && latestBlock != nil {
-			latestBlockBig := new(big.Int).SetUint64(*latestBlock)
-			depth := new(big.Int).Sub(latestBlockBig, blockNumber).Int64()
-			common.BlockDepth.WithLabelValues(p.network.Name, ProcessorName).Set(float64(depth))
-		}
+	// Update blocks stored min/max
+	minBlock, maxBlock, err := p.stateManager.GetMinMaxStoredBlocks(ctx, p.network.Name, ProcessorName)
+	if err != nil {
+		p.log.WithError(err).WithField("network", p.network.Name).Debug("failed to get min/max stored blocks")
+	} else if minBlock != nil && maxBlock != nil {
+		common.BlocksStored.WithLabelValues(p.network.Name, ProcessorName, "min").Set(float64(minBlock.Int64()))
+		common.BlocksStored.WithLabelValues(p.network.Name, ProcessorName, "max").Set(float64(maxBlock.Int64()))
 	}
 }
