@@ -11,10 +11,11 @@ var (
 		Help: "Current block height being processed",
 	}, []string{"network", "processor"})
 
-	BlockDepth = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "execution_processor_block_depth",
-		Help: "Number of blocks behind the chain tip",
-	}, []string{"network", "processor"})
+	BlocksStored = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_blocks_stored",
+		Help: "Range of blocks stored in database",
+	}, []string{"network", "processor", "boundary"})
+
 
 	BlocksProcessed = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "execution_processor_blocks_processed_total",
