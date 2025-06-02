@@ -37,6 +37,10 @@ type Server struct {
 }
 
 func NewServer(ctx context.Context, log logrus.FieldLogger, namespace string, config *Config) (*Server, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
+
 	redisClient, err := redis.New(config.Redis)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create redis client: %w", err)
