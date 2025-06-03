@@ -16,7 +16,6 @@ var (
 		Help: "Range of blocks stored in database",
 	}, []string{"network", "processor", "boundary"})
 
-
 	BlocksProcessed = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "execution_processor_blocks_processed_total",
 		Help: "Total number of blocks processed",
@@ -127,4 +126,20 @@ var (
 		Name: "execution_processor_leader_election_errors_total",
 		Help: "Total number of errors during leader election",
 	}, []string{"network", "node_id", "operation"})
+
+	// Queue control metrics
+	QueueBackpressureActive = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_queue_backpressure_active",
+		Help: "Whether backpressure is active (1) or not (0) for a processor",
+	}, []string{"network", "processor"})
+
+	QueueHighWaterMark = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_queue_high_water_mark",
+		Help: "Highest queue depth observed",
+	}, []string{"network", "processor", "queue"})
+
+	BlockProcessingSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "execution_processor_block_processing_skipped_total",
+		Help: "Total number of times block processing was skipped",
+	}, []string{"network", "processor", "reason"})
 )

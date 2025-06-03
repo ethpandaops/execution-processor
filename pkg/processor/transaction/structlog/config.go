@@ -11,7 +11,7 @@ type Config struct {
 	clickhouse.Config `yaml:",inline"`
 	Enabled           bool   `yaml:"enabled"`
 	Table             string `yaml:"table"`
-	BatchSize         int    `yaml:"batchSize" default:"10000"`
+	BatchSize         int    `yaml:"batchSize" default:"1000000"`
 }
 
 func (c *Config) Validate() error {

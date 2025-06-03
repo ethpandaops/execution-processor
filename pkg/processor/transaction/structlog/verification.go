@@ -9,6 +9,17 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// CountMismatchError represents a structlog count mismatch between expected and actual counts
+type CountMismatchError struct {
+	Expected int
+	Actual   int
+	Message  string
+}
+
+func (e *CountMismatchError) Error() string {
+	return e.Message
+}
+
 // VerifyTransaction verifies that a transaction has been processed correctly
 func (p *Processor) VerifyTransaction(ctx context.Context, blockNumber *big.Int, transactionHash string, transactionIndex uint32, networkName string, insertedCount int) error {
 	p.log.WithFields(logrus.Fields{
@@ -80,7 +91,11 @@ func (p *Processor) VerifyTransaction(ctx context.Context, blockNumber *big.Int,
 			"inserted_count":    insertedCount,
 		}).Error("Structlog count mismatch")
 
-		return fmt.Errorf("structlog count mismatch: expected %d, got %d", expectedCount, actualCount)
+		return &CountMismatchError{
+			Expected: expectedCount,
+			Actual:   actualCount,
+			Message:  fmt.Sprintf("structlog count mismatch: expected %d, got %d", expectedCount, actualCount),
+		}
 	}
 
 	p.log.WithFields(logrus.Fields{

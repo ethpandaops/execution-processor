@@ -374,7 +374,7 @@ func (s *Manager) MarkBlockProcessed(ctx context.Context, blockNumber uint64, ne
 	return nil
 }
 
-func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor string) (min, max *big.Int, err error) {
+func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor string) (minBlock, maxBlock *big.Int, err error) {
 	query := fmt.Sprintf(`
 		SELECT min(block_number), max(block_number)
 		FROM %s FINAL
@@ -382,27 +382,27 @@ func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor 
 	`, s.storageTable, network, processor)
 
 	s.log.WithFields(logrus.Fields{
-		"network": network,
+		"network":   network,
 		"processor": processor,
-		"table": s.storageTable,
+		"table":     s.storageTable,
 	}).Debug("Querying for min/max stored blocks")
 
-	var minBlock, maxBlock sql.NullInt64
+	var minVal, maxVal sql.NullInt64
 
 	row := s.storageClient.QueryRow(ctx, s.storageTable, query)
 	if row == nil {
 		return nil, nil, fmt.Errorf("storage ClickHouse client not available")
 	}
 
-	err = row.Scan(&minBlock, &maxBlock)
+	err = row.Scan(&minVal, &maxVal)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, nil, fmt.Errorf("failed to get min/max blocks: %w", err)
 	}
 
 	// Handle case where no blocks are stored
-	if !minBlock.Valid || !maxBlock.Valid {
+	if !minVal.Valid || !maxVal.Valid {
 		return nil, nil, nil
 	}
 
-	return big.NewInt(minBlock.Int64), big.NewInt(maxBlock.Int64), nil
+	return big.NewInt(minVal.Int64), big.NewInt(maxVal.Int64), nil
 }

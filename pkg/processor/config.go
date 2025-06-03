@@ -22,6 +22,10 @@ type Config struct {
 	// Leader election configuration
 	LeaderElection LeaderElectionConfig `yaml:"leaderElection"`
 
+	// Queue control configuration
+	MaxProcessQueueSize    int     `yaml:"maxProcessQueueSize"`
+	BackpressureHysteresis float64 `yaml:"backpressureHysteresis"`
+
 	// Processor configurations
 	TransactionStructlog structlog.Config `yaml:"transactionStructlog"`
 }
@@ -62,6 +66,15 @@ func (c *Config) Validate() error {
 
 	if c.Concurrency == 0 {
 		c.Concurrency = 20
+	}
+
+	// Queue control defaults
+	if c.MaxProcessQueueSize == 0 {
+		c.MaxProcessQueueSize = 1000
+	}
+
+	if c.BackpressureHysteresis == 0 {
+		c.BackpressureHysteresis = 0.8
 	}
 
 	// Set leader election defaults
