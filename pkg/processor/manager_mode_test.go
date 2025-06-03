@@ -101,7 +101,7 @@ func TestManager_ModeSpecificLeaderElection(t *testing.T) {
 			defer redisClient.Close()
 
 			// Create manager (leader election will be initialized)
-			manager, err := processor.NewManager(log, config, pool, stateManager, redisClient)
+			manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
 			require.NoError(t, err)
 			require.NotNil(t, manager)
 		})
@@ -187,11 +187,11 @@ func TestManager_ConcurrentModes(t *testing.T) {
 	defer backwardsRedis.Close()
 
 	// Create both managers - they should not conflict with mode-specific leader keys
-	forwardsManager, err := processor.NewManager(log.WithField("mode", "forwards"), forwardsConfig, pool, stateManager, forwardsRedis)
+	forwardsManager, err := processor.NewManager(log.WithField("mode", "forwards"), forwardsConfig, pool, stateManager, forwardsRedis, "test-prefix")
 	require.NoError(t, err)
 	require.NotNil(t, forwardsManager)
 
-	backwardsManager, err := processor.NewManager(log.WithField("mode", "backwards"), backwardsConfig, pool, stateManager, backwardsRedis)
+	backwardsManager, err := processor.NewManager(log.WithField("mode", "backwards"), backwardsConfig, pool, stateManager, backwardsRedis, "test-prefix")
 	require.NoError(t, err)
 	require.NotNil(t, backwardsManager)
 }
@@ -246,7 +246,7 @@ func TestManager_LeaderElectionDisabled(t *testing.T) {
 	defer redisClient.Close()
 
 	// Should work fine even with leader election disabled
-	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient)
+	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
 	require.NoError(t, err)
 	require.NotNil(t, manager)
 }

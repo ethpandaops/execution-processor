@@ -189,11 +189,11 @@ func (p *Processor) enqueueTransactionTasks(ctx context.Context, block *types.Bl
 
 		if p.processingMode == c.BACKWARDS_MODE {
 			task, err = NewProcessBackwardsTask(payload)
-			queue = c.ProcessBackwardsQueue(ProcessorName)
+			queue = p.getProcessBackwardsQueue()
 			taskType = ProcessBackwardsTaskType
 		} else {
 			task, err = NewProcessForwardsTask(payload)
-			queue = c.ProcessForwardsQueue(ProcessorName)
+			queue = p.getProcessForwardsQueue()
 			taskType = ProcessForwardsTaskType
 		}
 

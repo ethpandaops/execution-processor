@@ -21,6 +21,7 @@ type Dependencies struct {
 	Network     *ethereum.Network
 	State       *state.Manager
 	AsynqClient *asynq.Client
+	RedisPrefix string
 }
 
 // Processor handles transaction structlog processing
@@ -33,6 +34,7 @@ type Processor struct {
 	network        *ethereum.Network
 	asynqClient    *asynq.Client
 	processingMode string
+	redisPrefix    string
 }
 
 // New creates a new transaction structlog processor
@@ -54,6 +56,7 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 		config:         config,
 		asynqClient:    deps.AsynqClient,
 		processingMode: c.FORWARDS_MODE, // Default mode
+		redisPrefix:    deps.RedisPrefix,
 	}
 
 	processor.network = deps.Network
@@ -95,19 +98,19 @@ func (p *Processor) Name() string {
 func (p *Processor) GetQueues() []c.QueueInfo {
 	return []c.QueueInfo{
 		{
-			Name:     c.ProcessForwardsQueue(ProcessorName),
+			Name:     c.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix),
 			Priority: 10, // Highest priority for forwards processing
 		},
 		{
-			Name:     c.ProcessBackwardsQueue(ProcessorName),
+			Name:     c.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix),
 			Priority: 5, // Medium priority for backwards processing
 		},
 		{
-			Name:     c.VerifyForwardsQueue(ProcessorName),
+			Name:     c.PrefixedVerifyForwardsQueue(ProcessorName, p.redisPrefix),
 			Priority: 1, // Low priority for forwards verification
 		},
 		{
-			Name:     c.VerifyBackwardsQueue(ProcessorName),
+			Name:     c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix),
 			Priority: 1, // Low priority for backwards verification
 		},
 	}
@@ -284,4 +287,24 @@ func (p *Processor) insertStructlogChunk(ctx context.Context, blockNumber uint64
 func (p *Processor) SetProcessingMode(mode string) {
 	p.processingMode = mode
 	p.log.WithField("mode", mode).Info("Processing mode updated")
+}
+
+// getProcessForwardsQueue returns the prefixed process forwards queue name
+func (p *Processor) getProcessForwardsQueue() string {
+	return c.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix)
+}
+
+// getProcessBackwardsQueue returns the prefixed process backwards queue name
+func (p *Processor) getProcessBackwardsQueue() string {
+	return c.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
+}
+
+// getVerifyForwardsQueue returns the prefixed verify forwards queue name
+func (p *Processor) getVerifyForwardsQueue() string {
+	return c.PrefixedVerifyForwardsQueue(ProcessorName, p.redisPrefix)
+}
+
+// getVerifyBackwardsQueue returns the prefixed verify backwards queue name
+func (p *Processor) getVerifyBackwardsQueue() string {
+	return c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix)
 }

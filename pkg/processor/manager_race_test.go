@@ -71,7 +71,7 @@ func TestManager_RaceConditions(t *testing.T) {
 	})
 	defer redisClient.Close()
 
-	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient)
+	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
 	require.NoError(t, err)
 
 	const numGoroutines = 5 // Reduced to avoid overwhelming the system
@@ -158,7 +158,7 @@ func TestManager_ConcurrentConfiguration(t *testing.T) {
 	})
 	defer redisClient.Close()
 
-	_, err = processor.NewManager(log, config, pool, stateManager, redisClient)
+	_, err = processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
 	require.NoError(t, err)
 
 	// Test concurrent access to manager configuration (should be immutable)
