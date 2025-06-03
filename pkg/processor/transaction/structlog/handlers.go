@@ -2,6 +2,7 @@ package structlog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -243,6 +244,60 @@ func (p *Processor) handleVerifyForwardsTask(ctx context.Context, task *asynq.Ta
 
 	// Verify the transaction
 	if err := p.VerifyTransaction(ctx, &payload.BlockNumber, payload.TransactionHash, payload.TransactionIndex, payload.NetworkName, payload.InsertedCount); err != nil {
+		// Check if it's a count mismatch error
+		var countMismatchErr *CountMismatchError
+		if errors.As(err, &countMismatchErr) {
+			// Re-enqueue the original process task
+			processPayload := &ProcessPayload{
+				BlockNumber:      payload.BlockNumber,
+				TransactionHash:  payload.TransactionHash,
+				TransactionIndex: payload.TransactionIndex,
+				NetworkID:        payload.NetworkID,
+				NetworkName:      payload.NetworkName,
+				Network:          payload.Network,
+			}
+
+			// Create the process task
+			processTask, err := NewProcessForwardsTask(processPayload)
+			if err != nil {
+				p.log.WithError(err).Error("Failed to create reprocess task for count mismatch")
+				common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.VerifyForwardsQueue(ProcessorName), VerifyForwardsTaskType, "create_reprocess_error").Inc()
+
+				return fmt.Errorf("failed to create reprocess task: %w", err)
+			}
+
+			// Enqueue with 5-minute delay to allow ClickHouse to settle
+			queue := c.ProcessForwardsQueue(ProcessorName)
+			if err := p.EnqueueTask(ctx, processTask,
+				asynq.Queue(queue),
+				asynq.ProcessIn(5*time.Minute)); err != nil {
+				p.log.WithError(err).WithField("queue", queue).Error("Failed to enqueue reprocess task")
+				common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.VerifyForwardsQueue(ProcessorName), VerifyForwardsTaskType, "enqueue_reprocess_error").Inc()
+
+				return fmt.Errorf("failed to enqueue reprocess task: %w", err)
+			}
+
+			// Log the re-enqueue with delay info
+			p.log.WithFields(logrus.Fields{
+				"transaction_hash": payload.TransactionHash,
+				"block_number":     payload.BlockNumber.String(),
+				"expected_count":   countMismatchErr.Expected,
+				"actual_count":     countMismatchErr.Actual,
+				"retry_delay":      "5m",
+				"queue":            queue,
+			}).Info("Re-enqueuing process task due to count mismatch (5-minute delay)")
+
+			// Track re-enqueue metric
+			common.TasksEnqueued.WithLabelValues(p.network.Name, ProcessorName, queue, ProcessForwardsTaskType).Inc()
+
+			// Record successful handling (re-enqueue)
+			common.TasksProcessed.WithLabelValues(p.network.Name, ProcessorName, c.VerifyForwardsQueue(ProcessorName), VerifyForwardsTaskType, "reenqueued").Inc()
+
+			// Return nil - task succeeded in re-enqueueing
+			return nil
+		}
+
+		// For other errors, handle normally
 		p.log.WithError(err).WithFields(logrus.Fields{
 			"transaction_hash": payload.TransactionHash,
 			"block_number":     payload.BlockNumber.String(),
@@ -290,6 +345,60 @@ func (p *Processor) handleVerifyBackwardsTask(ctx context.Context, task *asynq.T
 
 	// Verify the transaction
 	if err := p.VerifyTransaction(ctx, &payload.BlockNumber, payload.TransactionHash, payload.TransactionIndex, payload.NetworkName, payload.InsertedCount); err != nil {
+		// Check if it's a count mismatch error
+		var countMismatchErr *CountMismatchError
+		if errors.As(err, &countMismatchErr) {
+			// Re-enqueue the original process task
+			processPayload := &ProcessPayload{
+				BlockNumber:      payload.BlockNumber,
+				TransactionHash:  payload.TransactionHash,
+				TransactionIndex: payload.TransactionIndex,
+				NetworkID:        payload.NetworkID,
+				NetworkName:      payload.NetworkName,
+				Network:          payload.Network,
+			}
+
+			// Create the process task
+			processTask, err := NewProcessBackwardsTask(processPayload)
+			if err != nil {
+				p.log.WithError(err).Error("Failed to create reprocess task for count mismatch")
+				common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.VerifyBackwardsQueue(ProcessorName), VerifyBackwardsTaskType, "create_reprocess_error").Inc()
+
+				return fmt.Errorf("failed to create reprocess task: %w", err)
+			}
+
+			// Enqueue with 5-minute delay to allow ClickHouse to settle
+			queue := c.ProcessBackwardsQueue(ProcessorName)
+			if err := p.EnqueueTask(ctx, processTask,
+				asynq.Queue(queue),
+				asynq.ProcessIn(5*time.Minute)); err != nil {
+				p.log.WithError(err).WithField("queue", queue).Error("Failed to enqueue reprocess task")
+				common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.VerifyBackwardsQueue(ProcessorName), VerifyBackwardsTaskType, "enqueue_reprocess_error").Inc()
+
+				return fmt.Errorf("failed to enqueue reprocess task: %w", err)
+			}
+
+			// Log the re-enqueue with delay info
+			p.log.WithFields(logrus.Fields{
+				"transaction_hash": payload.TransactionHash,
+				"block_number":     payload.BlockNumber.String(),
+				"expected_count":   countMismatchErr.Expected,
+				"actual_count":     countMismatchErr.Actual,
+				"retry_delay":      "5m",
+				"queue":            queue,
+			}).Info("Re-enqueuing process task due to count mismatch (5-minute delay)")
+
+			// Track re-enqueue metric
+			common.TasksEnqueued.WithLabelValues(p.network.Name, ProcessorName, queue, ProcessBackwardsTaskType).Inc()
+
+			// Record successful handling (re-enqueue)
+			common.TasksProcessed.WithLabelValues(p.network.Name, ProcessorName, c.VerifyBackwardsQueue(ProcessorName), VerifyBackwardsTaskType, "reenqueued").Inc()
+
+			// Return nil - task succeeded in re-enqueueing
+			return nil
+		}
+
+		// For other errors, handle normally
 		p.log.WithError(err).WithFields(logrus.Fields{
 			"transaction_hash": payload.TransactionHash,
 			"block_number":     payload.BlockNumber.String(),

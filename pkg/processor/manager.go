@@ -51,6 +51,10 @@ type Manager struct {
 
 	// WaitGroup for tracking all goroutines
 	wg sync.WaitGroup
+
+	// Track queue high water marks
+	queueHighWaterMarks map[string]int
+	queueMetricsMutex   sync.RWMutex
 }
 
 func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, state *s.Manager, redis *r.Client) (*Manager, error) {
@@ -80,17 +84,18 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 	})
 
 	return &Manager{
-		log:              log.WithField("component", "processor"),
-		config:           config,
-		pool:             pool,
-		state:            state,
-		processors:       make(map[string]c.BlockProcessor),
-		redisClient:      redis,
-		asynqClient:      asynqClient,
-		asynqServer:      asynqServer,
-		leadershipChange: make(chan bool, 1),
-		stopChan:         make(chan struct{}),
-		blockProcessStop: make(chan struct{}),
+		log:                 log.WithField("component", "processor"),
+		config:              config,
+		pool:                pool,
+		state:               state,
+		processors:          make(map[string]c.BlockProcessor),
+		redisClient:         redis,
+		asynqClient:         asynqClient,
+		asynqServer:         asynqServer,
+		leadershipChange:    make(chan bool, 1),
+		stopChan:            make(chan struct{}),
+		blockProcessStop:    make(chan struct{}),
+		queueHighWaterMarks: make(map[string]int),
 	}, nil
 }
 
@@ -300,6 +305,16 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 
 func (m *Manager) processBlocks(ctx context.Context) {
 	m.log.WithField("processor_count", len(m.processors)).Debug("Starting to process blocks")
+
+	// Check if we should skip due to queue backpressure
+	if shouldSkip, reason := m.shouldSkipBlockProcessing(ctx); shouldSkip {
+		m.log.WithFields(logrus.Fields{
+			"reason":         reason,
+			"max_queue_size": m.config.MaxProcessQueueSize,
+		}).Warn("Skipping block processing due to queue backpressure")
+
+		return
+	}
 
 	for name, processor := range m.processors {
 		m.log.WithField("processor", name).Debug("Processing next block for processor")
@@ -563,6 +578,16 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 			common.QueueDepth.WithLabelValues(m.network.Name, name, queue.Name).Set(float64(info.Size))
 			common.QueueArchivedItems.WithLabelValues(m.network.Name, name, queue.Name).Set(float64(info.Archived))
 
+			// Track high water marks
+			m.queueMetricsMutex.Lock()
+			if info.Size > m.queueHighWaterMarks[queue.Name] {
+				m.queueHighWaterMarks[queue.Name] = info.Size
+				common.QueueHighWaterMark.WithLabelValues(
+					m.network.Name, name, queue.Name,
+				).Set(float64(info.Size))
+			}
+			m.queueMetricsMutex.Unlock()
+
 			// Log warning if archived items exceed threshold
 			if info.Archived > 100 {
 				m.log.WithFields(logrus.Fields{
@@ -571,6 +596,7 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 					"archived":  info.Archived,
 					"pending":   info.Pending,
 					"active":    info.Active,
+					"size":      info.Size,
 				}).Warn("High number of archived items in queue")
 			}
 		}
@@ -675,4 +701,94 @@ func isWaitingForBlockError(err error) bool {
 	return strings.Contains(errStr, "not yet available") ||
 		strings.Contains(errStr, "waiting for block") ||
 		strings.Contains(errStr, "chain tip")
+}
+
+// shouldSkipBlockProcessing checks if block processing should be skipped due to queue backpressure
+func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) {
+	// Get Redis options for Asynq Inspector
+	redisOpt := m.redisClient.Options()
+	asynqRedisOpt := asynq.RedisClientOpt{
+		Addr:     redisOpt.Addr,
+		Password: redisOpt.Password,
+		DB:       redisOpt.DB,
+	}
+
+	inspector := asynq.NewInspector(asynqRedisOpt)
+	defer func() {
+		if err := inspector.Close(); err != nil {
+			m.log.WithError(err).Error("Failed to close asynq inspector")
+		}
+	}()
+
+	skipReasons := []string{}
+	shouldSkip := false
+	anyBackpressure := false
+
+	for name := range m.processors {
+		// Check only process queues based on mode
+		var processQueue string
+		if m.config.Mode == c.FORWARDS_MODE {
+			processQueue = c.ProcessForwardsQueue(name)
+		} else {
+			processQueue = c.ProcessBackwardsQueue(name)
+		}
+
+		info, err := inspector.GetQueueInfo(processQueue)
+		if err != nil {
+			m.log.WithError(err).WithFields(logrus.Fields{
+				"processor": name,
+				"queue":     processQueue,
+			}).Warn("Failed to get queue info for backpressure check")
+
+			continue
+		}
+
+		// Update metrics
+		common.QueueDepth.WithLabelValues(m.network.Name, name, processQueue).Set(float64(info.Size))
+
+		// Check threshold
+		if info.Size > m.config.MaxProcessQueueSize {
+			shouldSkip = true
+
+			anyBackpressure = true
+
+			skipReasons = append(skipReasons,
+				fmt.Sprintf("%s: %d/%d", name, info.Size, m.config.MaxProcessQueueSize))
+
+			// Set backpressure metric
+			common.QueueBackpressureActive.WithLabelValues(
+				m.network.Name, name,
+			).Set(1)
+
+			m.log.WithFields(logrus.Fields{
+				"processor":  name,
+				"queue":      processQueue,
+				"queue_size": info.Size,
+				"max_size":   m.config.MaxProcessQueueSize,
+				"pending":    info.Pending,
+				"active":     info.Active,
+			}).Warn("Queue backpressure active - will skip block processing")
+		} else if info.Size < int(float64(m.config.MaxProcessQueueSize)*m.config.BackpressureHysteresis) {
+			// Clear backpressure if below hysteresis threshold
+			common.QueueBackpressureActive.WithLabelValues(
+				m.network.Name, name,
+			).Set(0)
+		}
+	}
+
+	reason := strings.Join(skipReasons, ", ")
+
+	if shouldSkip {
+		common.BlockProcessingSkipped.WithLabelValues(
+			m.network.Name, "all", "queue_backpressure",
+		).Inc()
+
+		m.log.WithFields(logrus.Fields{
+			"reasons":        reason,
+			"backpressure":   anyBackpressure,
+			"max_queue_size": m.config.MaxProcessQueueSize,
+		}).Info("Skipping block processing due to queue backpressure")
+	}
+
+	return shouldSkip, reason
 }

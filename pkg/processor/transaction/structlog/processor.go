@@ -137,7 +137,7 @@ func (p *Processor) BatchInsertStructlogs(ctx context.Context, blockNumber uint6
 	}
 
 	// Process in smaller chunks to avoid memory buildup
-	const chunkSize = 100
+	chunkSize := p.config.BatchSize
 
 	for i := 0; i < len(structlogs); i += chunkSize {
 		end := i + chunkSize
