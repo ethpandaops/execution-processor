@@ -28,6 +28,7 @@ type Manager struct {
 
 	// Redis/Asynq for distributed processing
 	redisClient *r.Client
+	redisPrefix string
 	asynqClient *asynq.Client
 	asynqServer *asynq.Server
 
@@ -57,7 +58,7 @@ type Manager struct {
 	queueMetricsMutex   sync.RWMutex
 }
 
-func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, state *s.Manager, redis *r.Client) (*Manager, error) {
+func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, state *s.Manager, redis *r.Client, redisPrefix string) (*Manager, error) {
 	// Get Redis options from the existing client
 	redisOpt := redis.Options()
 
@@ -90,6 +91,7 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 		state:               state,
 		processors:          make(map[string]c.BlockProcessor),
 		redisClient:         redis,
+		redisPrefix:         redisPrefix,
 		asynqClient:         asynqClient,
 		asynqServer:         asynqServer,
 		leadershipChange:    make(chan bool, 1),
@@ -129,7 +131,11 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	// Initialize leader election if enabled
 	if m.config.LeaderElection.Enabled {
-		leaderKey := fmt.Sprintf("execution-processor:leader:%s:%s", m.network.Name, m.config.Mode)
+		leaderKey := fmt.Sprintf("leader:%s:%s", m.network.Name, m.config.Mode)
+		if m.redisPrefix != "" {
+			leaderKey = fmt.Sprintf("%s:%s", m.redisPrefix, leaderKey)
+		}
+
 		leaderConfig := &leaderelection.Config{
 			TTL:             m.config.LeaderElection.TTL,
 			RenewalInterval: m.config.LeaderElection.RenewalInterval,
@@ -278,6 +284,7 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 			State:       m.state,
 			AsynqClient: m.asynqClient,
 			Network:     m.network,
+			RedisPrefix: m.redisPrefix,
 		}, &m.config.TransactionStructlog)
 
 		if err != nil {
@@ -561,7 +568,7 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 				return
 			default:
 			}
-			// Get queue info
+			// Queue name is already prefixed from GetQueues()
 			info, err := inspector.GetQueueInfo(queue.Name)
 			if err != nil {
 				m.log.WithError(err).WithFields(logrus.Fields{
@@ -659,6 +666,7 @@ func (m *Manager) updateAsynqQueues() error {
 
 	for _, processor := range m.processors {
 		for _, queue := range processor.GetQueues() {
+			// Queue names are already prefixed by GetQueues()
 			queues[queue.Name] = queue.Priority
 			m.log.WithFields(logrus.Fields{
 				"queue":    queue.Name,
@@ -728,9 +736,9 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 		// Check only process queues based on mode
 		var processQueue string
 		if m.config.Mode == c.FORWARDS_MODE {
-			processQueue = c.ProcessForwardsQueue(name)
+			processQueue = c.PrefixedProcessForwardsQueue(name, m.redisPrefix)
 		} else {
-			processQueue = c.ProcessBackwardsQueue(name)
+			processQueue = c.PrefixedProcessBackwardsQueue(name, m.redisPrefix)
 		}
 
 		info, err := inspector.GetQueueInfo(processQueue)

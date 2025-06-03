@@ -70,7 +70,7 @@ func TestManager_Creation(t *testing.T) {
 	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
-	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient)
+	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
 	require.NoError(t, err)
 	require.NotNil(t, manager)
 }
@@ -127,7 +127,7 @@ func TestManager_StartStop(t *testing.T) {
 	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
-	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient)
+	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
 	require.NoError(t, err)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -211,7 +211,7 @@ func TestManager_MultipleStops(t *testing.T) {
 	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
-	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient)
+	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
 	require.NoError(t, err)
 
 	// Test multiple stops don't panic

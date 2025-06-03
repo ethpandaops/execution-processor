@@ -91,7 +91,7 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 		return fmt.Errorf("failed to create verify task: %w", err)
 	}
 
-	queue := c.VerifyForwardsQueue(ProcessorName)
+	queue := p.getVerifyForwardsQueue()
 	p.log.WithFields(logrus.Fields{
 		"queue":            queue,
 		"transaction_hash": payload.TransactionHash,
@@ -193,7 +193,7 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 		return fmt.Errorf("failed to create verify task: %w", err)
 	}
 
-	queue := c.VerifyBackwardsQueue(ProcessorName)
+	queue := p.getVerifyBackwardsQueue()
 	p.log.WithFields(logrus.Fields{
 		"queue":            queue,
 		"transaction_hash": payload.TransactionHash,
@@ -267,7 +267,7 @@ func (p *Processor) handleVerifyForwardsTask(ctx context.Context, task *asynq.Ta
 			}
 
 			// Enqueue with 5-minute delay to allow ClickHouse to settle
-			queue := c.ProcessForwardsQueue(ProcessorName)
+			queue := p.getProcessForwardsQueue()
 			if err := p.EnqueueTask(ctx, processTask,
 				asynq.Queue(queue),
 				asynq.ProcessIn(5*time.Minute)); err != nil {
@@ -368,7 +368,7 @@ func (p *Processor) handleVerifyBackwardsTask(ctx context.Context, task *asynq.T
 			}
 
 			// Enqueue with 5-minute delay to allow ClickHouse to settle
-			queue := c.ProcessBackwardsQueue(ProcessorName)
+			queue := p.getProcessBackwardsQueue()
 			if err := p.EnqueueTask(ctx, processTask,
 				asynq.Queue(queue),
 				asynq.ProcessIn(5*time.Minute)); err != nil {

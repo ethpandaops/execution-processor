@@ -35,8 +35,6 @@ processors:
   interval: "5s"
   mode: "forwards" # forwards, backwards
   concurrency: 20
-  
-  # Queue control settings
   maxProcessQueueSize: 10000       # Stop processing new blocks if process queue exceeds this size
   backpressureHysteresis: 0.8      # Clear backpressure when queue drops below this fraction of max (8000 in this case)
 

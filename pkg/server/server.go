@@ -53,7 +53,7 @@ func NewServer(ctx context.Context, log logrus.FieldLogger, namespace string, co
 		return nil, fmt.Errorf("failed to create state manager: %w", err)
 	}
 
-	p, err := processor.NewManager(log.WithField("component", "processor"), &config.Processors, pool, stateManager, redisClient)
+	p, err := processor.NewManager(log.WithField("component", "processor"), &config.Processors, pool, stateManager, redisClient, config.Redis.Prefix)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create processor manager: %w", err)
 	}
