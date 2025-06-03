@@ -16,8 +16,10 @@ import (
 
 // Client represents a ClickHouse client for data storage
 type Client struct {
-	log    logrus.FieldLogger
-	config *Config
+	log       logrus.FieldLogger
+	config    *Config
+	network   string
+	processor string
 
 	db *sql.DB
 
@@ -27,9 +29,11 @@ type Client struct {
 // NewClient creates a new ClickHouse client
 func NewClient(ctx context.Context, log logrus.FieldLogger, config *Config) (*Client, error) {
 	return &Client{
-		log:    log.WithField("component", "clickhouse"),
-		config: config,
-		lock:   sync.Mutex{},
+		log:       log.WithField("component", "clickhouse"),
+		config:    config,
+		network:   config.Network,
+		processor: config.Processor,
+		lock:      sync.Mutex{},
 	}, nil
 }
 
@@ -63,14 +67,25 @@ func (c *Client) Start(ctx context.Context) error {
 		code = ParseErrorCode(err)
 	}
 
-	common.ClickHouseOperationDuration.WithLabelValues("ping", "connection", status, code).Observe(duration.Seconds())
-	common.ClickHouseConnectionsActive.WithLabelValues().Set(float64(c.db.Stats().OpenConnections))
+	common.ClickHouseOperationDuration.WithLabelValues(c.network, c.processor, "ping", "connection", status, code).Observe(duration.Seconds())
+	common.ClickHouseConnectionsActive.WithLabelValues(c.network, c.processor).Set(float64(c.db.Stats().OpenConnections))
 
 	if err != nil {
 		return fmt.Errorf("failed to ping ClickHouse: %w", err)
 	}
 
 	return nil
+}
+
+// WithLabels sets the network and processor labels for metrics
+func (c *Client) WithLabels(network, processor string) *Client {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	c.network = network
+	c.processor = processor
+
+	return c
 }
 
 func (c *Client) Stop(ctx context.Context) error {
@@ -109,9 +124,9 @@ func (c *Client) QueryRow(ctx context.Context, table, query string) *sql.Row {
 		status = "failed"
 	}
 
-	common.ClickHouseOperationDuration.WithLabelValues("query", table, status, code).Observe(duration.Seconds())
-	common.ClickHouseOperationTotal.WithLabelValues("query", table, status, code).Inc()
-	common.ClickHouseConnectionsActive.WithLabelValues().Set(float64(c.db.Stats().OpenConnections))
+	common.ClickHouseOperationDuration.WithLabelValues(c.network, c.processor, "query", table, status, code).Observe(duration.Seconds())
+	common.ClickHouseOperationTotal.WithLabelValues(c.network, c.processor, "query", table, status, code).Inc()
+	common.ClickHouseConnectionsActive.WithLabelValues(c.network, c.processor).Set(float64(c.db.Stats().OpenConnections))
 
 	return row
 }

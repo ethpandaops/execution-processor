@@ -119,6 +119,9 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to get network by chain ID: %w", err)
 	}
 
+	// Set network on state manager for metrics
+	m.state.SetNetwork(m.network.Name)
+
 	// Initialize processors
 	if err := m.initializeProcessors(ctx); err != nil {
 		return fmt.Errorf("failed to initialize processors: %w", err)

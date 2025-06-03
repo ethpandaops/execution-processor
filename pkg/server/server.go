@@ -137,17 +137,19 @@ func (s *Server) stop(ctx context.Context) error {
 
 	s.log.Info("Starting graceful shutdown...")
 
-	if s.state != nil {
-		if err := s.state.Stop(ctx); err != nil {
-			s.log.WithError(err).Error("failed to stop state manager")
-		}
-	}
-
 	if s.processor != nil {
 		s.log.Info("Stopping processor...")
 
 		if err := s.processor.Stop(ctx); err != nil {
 			s.log.WithError(err).Error("failed to stop processor")
+		}
+	}
+
+	if s.state != nil {
+		s.log.Info("Stopping state manager...")
+
+		if err := s.state.Stop(ctx); err != nil {
+			s.log.WithError(err).Error("failed to stop state manager")
 		}
 	}
 
