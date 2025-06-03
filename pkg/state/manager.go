@@ -25,6 +25,7 @@ type Manager struct {
 	storageTable   string
 	limiterTable   string
 	limiterEnabled bool
+	network        string
 }
 
 func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*Manager, error) {
@@ -61,6 +62,19 @@ func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*M
 	}
 
 	return manager, nil
+}
+
+// SetNetwork sets the network name for metrics labeling
+func (s *Manager) SetNetwork(network string) {
+	s.network = network
+	// Update ClickHouse clients with network label
+	if s.storageClient != nil {
+		s.storageClient.WithLabels(network, "")
+	}
+
+	if s.limiterClient != nil {
+		s.limiterClient.WithLabels(network, "")
+	}
 }
 
 func (s *Manager) Start(ctx context.Context) error {

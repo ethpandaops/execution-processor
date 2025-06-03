@@ -43,6 +43,8 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 		DSN:          config.DSN,
 		MaxOpenConns: config.MaxOpenConns,
 		MaxIdleConns: config.MaxIdleConns,
+		Network:      deps.Network.Name,
+		Processor:    ProcessorName,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clickhouse client for transaction_structlog: %w", err)
@@ -200,8 +202,8 @@ func (p *Processor) insertStructlogChunk(ctx context.Context, blockNumber uint64
 
 	if err != nil {
 		code := clickhouse.ParseErrorCode(err)
-		common.ClickHouseOperationDuration.WithLabelValues("prepare_insert", p.config.Table, "failed", code).Observe(duration.Seconds())
-		common.ClickHouseOperationTotal.WithLabelValues("prepare_insert", p.config.Table, "failed", code).Inc()
+		common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "prepare_insert", p.config.Table, "failed", code).Observe(duration.Seconds())
+		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "prepare_insert", p.config.Table, "failed", code).Inc()
 
 		p.log.WithFields(logrus.Fields{
 			"table": p.config.Table,
@@ -218,8 +220,8 @@ func (p *Processor) insertStructlogChunk(ctx context.Context, blockNumber uint64
 		}
 	}()
 
-	common.ClickHouseOperationDuration.WithLabelValues("prepare_insert", p.config.Table, "success", "").Observe(duration.Seconds())
-	common.ClickHouseOperationTotal.WithLabelValues("prepare_insert", p.config.Table, "success", "").Inc()
+	common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "prepare_insert", p.config.Table, "success", "").Observe(duration.Seconds())
+	common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "prepare_insert", p.config.Table, "success", "").Inc()
 
 	// Insert structlogs in this chunk
 	for i := range structlogs {
@@ -267,18 +269,18 @@ func (p *Processor) insertStructlogChunk(ctx context.Context, blockNumber uint64
 
 	if err != nil {
 		code := clickhouse.ParseErrorCode(err)
-		common.ClickHouseOperationDuration.WithLabelValues("insert", p.config.Table, "failed", code).Observe(duration.Seconds())
-		common.ClickHouseOperationTotal.WithLabelValues("insert", p.config.Table, "failed", code).Inc()
-		common.ClickHouseInsertsRows.WithLabelValues(p.config.Table, "failed", code).Add(float64(len(structlogs)))
+		common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "insert", p.config.Table, "failed", code).Observe(duration.Seconds())
+		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "insert", p.config.Table, "failed", code).Inc()
+		common.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "failed", code).Add(float64(len(structlogs)))
 
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	committed = true
 
-	common.ClickHouseOperationTotal.WithLabelValues("insert", p.config.Table, "success", "").Inc()
-	common.ClickHouseInsertsRows.WithLabelValues(p.config.Table, "success", "").Add(float64(len(structlogs)))
-	common.ClickHouseOperationDuration.WithLabelValues("insert", p.config.Table, "success", "").Observe(duration.Seconds())
+	common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "insert", p.config.Table, "success", "").Inc()
+	common.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "success", "").Add(float64(len(structlogs)))
+	common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "insert", p.config.Table, "success", "").Observe(duration.Seconds())
 
 	return nil
 }

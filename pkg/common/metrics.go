@@ -89,22 +89,22 @@ var (
 		Name:    "execution_processor_clickhouse_operation_duration_seconds",
 		Help:    "Duration of ClickHouse operations",
 		Buckets: prometheus.ExponentialBuckets(0.001, 2, 12),
-	}, []string{"operation", "table", "status", "error_code"})
+	}, []string{"network", "processor", "operation", "table", "status", "error_code"})
 
 	ClickHouseOperationTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "execution_processor_clickhouse_operation_total",
 		Help: "Total number of ClickHouse operations",
-	}, []string{"operation", "table", "status", "error_code"})
+	}, []string{"network", "processor", "operation", "table", "status", "error_code"})
 
 	ClickHouseConnectionsActive = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "execution_processor_clickhouse_connections_active",
 		Help: "Active ClickHouse connections",
-	}, []string{})
+	}, []string{"network", "processor"})
 
 	ClickHouseInsertsRows = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "execution_processor_clickhouse_inserted_rows_total",
 		Help: "Total number of rows inserted into ClickHouse",
-	}, []string{"table", "status", "error_code"})
+	}, []string{"network", "processor", "table", "status", "error_code"})
 
 	LeaderElectionStatus = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "execution_processor_leader_election_status",
