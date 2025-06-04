@@ -50,9 +50,16 @@ processors:
     enabled: true
     dsn: "http://localhost:8123/default"  # ClickHouse DSN for the default database
     table: "canonical_execution_transaction_structlog"
-    batchSize: 1000000  # Number of structlogs to insert per batch
     # maxOpenConns: 10
     # maxIdleConns: 10
+    
+    # Batch configuration
+    batchConfig:
+      enabled: true                  # Enable batch aggregation system
+      maxRows: 100000               # Max rows before forced flush (aggregated batches)
+      flushInterval: "5s"           # Max time to wait before flush
+      channelBufferSize: 100        # Max tasks that can be queued
+      chunkSize: 1000000           # Chunk size for large single transactions (memory safety)
 
 # Application settings
 shutdownTimeout: "30s"
