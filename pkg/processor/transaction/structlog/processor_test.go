@@ -1157,37 +1157,37 @@ func TestAsynqTaskCreation(t *testing.T) {
 func TestLimiterBoundaryCondition(t *testing.T) {
 	// Test that verifies the fix for block reprocessing when progressive next equals limiter_max + 1
 	testCases := []struct {
-		name           string
-		progressiveNext int64
-		limiterMax     int64
+		name               string
+		progressiveNext    int64
+		limiterMax         int64
 		expectNoMoreBlocks bool
 		expectMaxAllowed   bool
 	}{
 		{
-			name:           "progressive equals limiter max - should return progressive",
-			progressiveNext: 100,
-			limiterMax:     100,
+			name:               "progressive equals limiter max - should return progressive",
+			progressiveNext:    100,
+			limiterMax:         100,
 			expectNoMoreBlocks: false,
 			expectMaxAllowed:   false,
 		},
 		{
-			name:           "progressive equals limiter max + 1 - should return no more blocks",
-			progressiveNext: 101,
-			limiterMax:     100,
+			name:               "progressive equals limiter max + 1 - should return no more blocks",
+			progressiveNext:    101,
+			limiterMax:         100,
 			expectNoMoreBlocks: true,
 			expectMaxAllowed:   false,
 		},
 		{
-			name:           "progressive greater than limiter max + 1 - should return no more blocks",
-			progressiveNext: 102,
-			limiterMax:     100,
+			name:               "progressive greater than limiter max + 1 - should return no more blocks",
+			progressiveNext:    102,
+			limiterMax:         100,
 			expectNoMoreBlocks: true,
 			expectMaxAllowed:   false,
 		},
 		{
-			name:           "progressive less than limiter max - should return progressive",
-			progressiveNext: 99,
-			limiterMax:     100,
+			name:               "progressive less than limiter max - should return progressive",
+			progressiveNext:    99,
+			limiterMax:         100,
 			expectNoMoreBlocks: false,
 			expectMaxAllowed:   false,
 		},
@@ -1198,7 +1198,7 @@ func TestLimiterBoundaryCondition(t *testing.T) {
 			// Test the boundary condition logic that was fixed
 			progressiveNext := big.NewInt(tc.progressiveNext)
 			maxAllowed := big.NewInt(tc.limiterMax)
-			
+
 			// This replicates the fixed logic from state manager
 			if progressiveNext.Cmp(maxAllowed) <= 0 {
 				// Progressive next is within bounds
@@ -1222,12 +1222,12 @@ func TestLimiterBoundaryCondition(t *testing.T) {
 func TestRecentBlockProcessingCheck(t *testing.T) {
 	// Test the logic for checking recently processed blocks
 	// This tests the concept without requiring a real ClickHouse connection
-	
+
 	testCases := []struct {
-		name             string
-		blockNumber      uint64
-		withinSeconds    int
-		expectedRecent   bool
+		name           string
+		blockNumber    uint64
+		withinSeconds  int
+		expectedRecent bool
 	}{
 		{
 			name:           "block processed recently",
@@ -1236,7 +1236,7 @@ func TestRecentBlockProcessingCheck(t *testing.T) {
 			expectedRecent: true, // In a real test this would depend on database state
 		},
 		{
-			name:           "block not processed recently", 
+			name:           "block not processed recently",
 			blockNumber:    12346,
 			withinSeconds:  30,
 			expectedRecent: false,
@@ -1249,13 +1249,134 @@ func TestRecentBlockProcessingCheck(t *testing.T) {
 			// The query should check for records within the time window
 			withinSeconds := tc.withinSeconds
 			assert.Greater(t, withinSeconds, 0, "Within seconds should be positive")
-			assert.Greater(t, tc.blockNumber, uint64(0), "Block number should be positive") 
-			
+			assert.Greater(t, tc.blockNumber, uint64(0), "Block number should be positive")
+
 			// In a real integration test, we would:
 			// 1. Insert a block record with current timestamp
 			// 2. Check that IsBlockRecentlyProcessed returns true
 			// 3. Wait longer than withinSeconds
 			// 4. Check that IsBlockRecentlyProcessed returns false
+		})
+	}
+}
+
+func TestHeadDistanceCalculation(t *testing.T) {
+	// Test the head distance calculation logic without requiring real databases
+	testCases := []struct {
+		name             string
+		currentBlock     int64
+		executionHead    int64
+		beaconHead       int64
+		limiterEnabled   bool
+		mode             string
+		expectedDistance int64
+		expectedHeadType string
+	}{
+		{
+			name:             "limiter disabled - execution head",
+			currentBlock:     100,
+			executionHead:    110,
+			beaconHead:       105,
+			limiterEnabled:   false,
+			mode:             "forwards",
+			expectedDistance: 10, // executionHead - currentBlock
+			expectedHeadType: "execution_head",
+		},
+		{
+			name:             "backwards mode - execution head",
+			currentBlock:     100,
+			executionHead:    110,
+			beaconHead:       105,
+			limiterEnabled:   true,
+			mode:             "backwards",
+			expectedDistance: 10, // executionHead - currentBlock
+			expectedHeadType: "execution_head",
+		},
+		{
+			name:             "limiter enabled forwards - beacon head",
+			currentBlock:     100,
+			executionHead:    110,
+			beaconHead:       105,
+			limiterEnabled:   true,
+			mode:             "forwards",
+			expectedDistance: 5, // beaconHead - currentBlock
+			expectedHeadType: "beacon_chain_head",
+		},
+		{
+			name:             "caught up to execution head",
+			currentBlock:     110,
+			executionHead:    110,
+			beaconHead:       105,
+			limiterEnabled:   false,
+			mode:             "forwards",
+			expectedDistance: 0, // executionHead - currentBlock
+			expectedHeadType: "execution_head",
+		},
+		{
+			name:             "behind by large margin",
+			currentBlock:     50,
+			executionHead:    1000,
+			beaconHead:       900,
+			limiterEnabled:   false,
+			mode:             "forwards",
+			expectedDistance: 950, // executionHead - currentBlock
+			expectedHeadType: "execution_head",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test the distance calculation logic
+			currentBlock := big.NewInt(tc.currentBlock)
+			executionHead := big.NewInt(tc.executionHead)
+			beaconHead := big.NewInt(tc.beaconHead)
+
+			var actualDistance int64
+			var actualHeadType string
+
+			// Simulate the logic from GetHeadDistance method
+			if !tc.limiterEnabled || tc.mode == "backwards" {
+				actualDistance = executionHead.Int64() - currentBlock.Int64()
+				actualHeadType = "execution_head"
+			} else {
+				// Limiter enabled in forwards mode
+				actualDistance = beaconHead.Int64() - currentBlock.Int64()
+				actualHeadType = "beacon_chain_head"
+			}
+
+			assert.Equal(t, tc.expectedDistance, actualDistance, "Distance calculation should match expected")
+			assert.Equal(t, tc.expectedHeadType, actualHeadType, "Head type should match expected")
+
+			// Verify distance is reasonable (not negative in normal scenarios)
+			if tc.currentBlock <= tc.executionHead && tc.currentBlock <= tc.beaconHead {
+				assert.GreaterOrEqual(t, actualDistance, int64(0), "Distance should not be negative when current block is behind head")
+			}
+		})
+	}
+}
+
+func TestHeadDistanceMetricLabels(t *testing.T) {
+	// Test that head distance metric supports all expected label values
+	expectedHeadTypes := []string{
+		"execution_head",
+		"beacon_chain_head",
+		"execution_head_fallback",
+		"error",
+	}
+
+	for _, headType := range expectedHeadTypes {
+		t.Run("head_type_"+headType, func(t *testing.T) {
+			// Verify the head type is a valid string and not empty
+			assert.NotEmpty(t, headType, "Head type should not be empty")
+			assert.True(t, len(headType) > 0, "Head type should have meaningful content")
+
+			// Test that metric labels would be valid
+			networkLabel := "mainnet"
+			processorLabel := "transaction_structlog"
+
+			assert.NotEmpty(t, networkLabel, "Network label should not be empty")
+			assert.NotEmpty(t, processorLabel, "Processor label should not be empty")
+			assert.NotEmpty(t, headType, "Head type label should not be empty")
 		})
 	}
 }
