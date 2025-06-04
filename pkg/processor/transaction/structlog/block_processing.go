@@ -60,6 +60,17 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		"network":      p.network.Name,
 	}).Debug("Found next block to process")
 
+	// Check if this block was recently processed to avoid rapid reprocessing
+	if recentlyProcessed, err := p.stateManager.IsBlockRecentlyProcessed(ctx, nextBlock.Uint64(), p.network.Name, p.Name(), 30); err == nil && recentlyProcessed {
+		p.log.WithFields(logrus.Fields{
+			"block_number": nextBlock.String(),
+			"network":      p.network.Name,
+		}).Debug("Block was recently processed, skipping to prevent rapid reprocessing")
+		
+		common.BlockProcessingSkipped.WithLabelValues(p.network.Name, p.Name(), "recently_processed").Inc()
+		return nil
+	}
+
 	// Update block metrics
 	p.updateBlockMetrics(ctx, nextBlock)
 
