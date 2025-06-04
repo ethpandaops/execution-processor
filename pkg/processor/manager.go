@@ -774,54 +774,62 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 	anyBackpressure := false
 
 	for name := range m.processors {
-		// Check only process queues based on mode
-		var processQueue string
+		// Check all queues based on mode
+		var queuesToCheck []string
 		if m.config.Mode == c.FORWARDS_MODE {
-			processQueue = c.PrefixedProcessForwardsQueue(name, m.redisPrefix)
+			queuesToCheck = []string{
+				c.PrefixedProcessForwardsQueue(name, m.redisPrefix),
+				c.PrefixedVerifyForwardsQueue(name, m.redisPrefix),
+			}
 		} else {
-			processQueue = c.PrefixedProcessBackwardsQueue(name, m.redisPrefix)
+			queuesToCheck = []string{
+				c.PrefixedProcessBackwardsQueue(name, m.redisPrefix),
+				c.PrefixedVerifyBackwardsQueue(name, m.redisPrefix),
+			}
 		}
 
-		info, err := inspector.GetQueueInfo(processQueue)
-		if err != nil {
-			m.log.WithError(err).WithFields(logrus.Fields{
-				"processor": name,
-				"queue":     processQueue,
-			}).Warn("Failed to get queue info for backpressure check")
+		for _, queueName := range queuesToCheck {
+			info, err := inspector.GetQueueInfo(queueName)
+			if err != nil {
+				m.log.WithError(err).WithFields(logrus.Fields{
+					"processor": name,
+					"queue":     queueName,
+				}).Warn("Failed to get queue info for backpressure check")
 
-			continue
-		}
+				continue
+			}
 
-		// Update metrics
-		common.QueueDepth.WithLabelValues(m.network.Name, name, processQueue).Set(float64(info.Size))
+			// Update metrics
+			common.QueueDepth.WithLabelValues(m.network.Name, name, queueName).Set(float64(info.Size))
 
-		// Check threshold
-		if info.Size > m.config.MaxProcessQueueSize {
-			shouldSkip = true
+			// Check threshold
+			if info.Size > m.config.MaxProcessQueueSize {
+				shouldSkip = true
 
-			anyBackpressure = true
+				anyBackpressure = true
 
-			skipReasons = append(skipReasons,
-				fmt.Sprintf("%s: %d/%d", name, info.Size, m.config.MaxProcessQueueSize))
+				skipReasons = append(skipReasons,
+					fmt.Sprintf("%s: %d/%d", queueName, info.Size, m.config.MaxProcessQueueSize))
 
-			// Set backpressure metric
-			common.QueueBackpressureActive.WithLabelValues(
-				m.network.Name, name,
-			).Set(1)
+				// Set backpressure metric
+				common.QueueBackpressureActive.WithLabelValues(
+					m.network.Name, name,
+				).Set(1)
 
-			m.log.WithFields(logrus.Fields{
-				"processor":  name,
-				"queue":      processQueue,
-				"queue_size": info.Size,
-				"max_size":   m.config.MaxProcessQueueSize,
-				"pending":    info.Pending,
-				"active":     info.Active,
-			}).Warn("Queue backpressure active - will skip block processing")
-		} else if info.Size < int(float64(m.config.MaxProcessQueueSize)*m.config.BackpressureHysteresis) {
-			// Clear backpressure if below hysteresis threshold
-			common.QueueBackpressureActive.WithLabelValues(
-				m.network.Name, name,
-			).Set(0)
+				m.log.WithFields(logrus.Fields{
+					"processor":  name,
+					"queue":      queueName,
+					"queue_size": info.Size,
+					"max_size":   m.config.MaxProcessQueueSize,
+					"pending":    info.Pending,
+					"active":     info.Active,
+				}).Warn("Queue backpressure active - will skip block processing")
+			} else if info.Size < int(float64(m.config.MaxProcessQueueSize)*m.config.BackpressureHysteresis) {
+				// Clear backpressure if below hysteresis threshold
+				common.QueueBackpressureActive.WithLabelValues(
+					m.network.Name, name,
+				).Set(0)
+			}
 		}
 	}
 

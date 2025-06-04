@@ -206,8 +206,11 @@ func (p *Processor) insertStructlogChunk(ctx context.Context, blockNumber uint64
 		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "prepare_insert", p.config.Table, "failed", code).Inc()
 
 		p.log.WithFields(logrus.Fields{
-			"table": p.config.Table,
-			"error": err.Error(),
+			"table":            p.config.Table,
+			"error":            err.Error(),
+			"transaction_hash": transactionHash,
+			"block_number":     blockNumber,
+			"structlog_count":  len(structlogs),
 		}).Error("Failed to prepare ClickHouse statement")
 
 		return fmt.Errorf("failed to prepare statement for table %s: %w", p.config.Table, err)
