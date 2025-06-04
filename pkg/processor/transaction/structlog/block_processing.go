@@ -254,4 +254,20 @@ func (p *Processor) updateBlockMetrics(ctx context.Context, blockNumber *big.Int
 		common.BlocksStored.WithLabelValues(p.network.Name, ProcessorName, "min").Set(float64(minBlock.Int64()))
 		common.BlocksStored.WithLabelValues(p.network.Name, ProcessorName, "max").Set(float64(maxBlock.Int64()))
 	}
+
+	// Update head distance metric
+	node := p.pool.GetHealthyExecutionNode()
+	if node != nil {
+		if latestBlockNum, err := node.BlockNumber(ctx); err == nil && latestBlockNum != nil {
+			executionHead := new(big.Int).SetUint64(*latestBlockNum)
+
+			distance, headType, err := p.stateManager.GetHeadDistance(ctx, ProcessorName, p.network.Name, p.processingMode, executionHead)
+			if err != nil {
+				p.log.WithError(err).Debug("Failed to calculate head distance in processor metrics")
+				common.HeadDistance.WithLabelValues(p.network.Name, ProcessorName, "error").Set(-1)
+			} else {
+				common.HeadDistance.WithLabelValues(p.network.Name, ProcessorName, headType).Set(float64(distance))
+			}
+		}
+	}
 }

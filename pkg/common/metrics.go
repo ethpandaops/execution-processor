@@ -16,6 +16,11 @@ var (
 		Help: "Range of blocks stored in database",
 	}, []string{"network", "processor", "boundary"})
 
+	HeadDistance = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_head_distance",
+		Help: "Distance between current processing block and head (execution node head when limiter disabled, beacon chain head when enabled)",
+	}, []string{"network", "processor", "head_type"})
+
 	BlocksProcessed = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "execution_processor_blocks_processed_total",
 		Help: "Total number of blocks processed",

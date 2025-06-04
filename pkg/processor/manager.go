@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -326,6 +327,16 @@ func (m *Manager) processBlocks(ctx context.Context) {
 		return
 	}
 
+	// Get execution node head for head distance calculation
+	var executionHead *big.Int
+
+	node := m.pool.GetHealthyExecutionNode()
+	if node != nil {
+		if latestBlockNum, err := node.BlockNumber(ctx); err == nil && latestBlockNum != nil {
+			executionHead = new(big.Int).SetUint64(*latestBlockNum)
+		}
+	}
+
 	for name, processor := range m.processors {
 		m.log.WithField("processor", name).Debug("Processing next block for processor")
 
@@ -352,7 +363,36 @@ func (m *Manager) processBlocks(ctx context.Context) {
 				"duration":  duration,
 			}).Debug("Successfully processed block")
 		}
+
+		// Update head distance metric (regardless of success/failure to track current distance)
+		m.updateHeadDistanceMetric(ctx, name, executionHead)
 	}
+}
+
+// updateHeadDistanceMetric calculates and updates the head distance metric for a processor
+func (m *Manager) updateHeadDistanceMetric(ctx context.Context, processorName string, executionHead *big.Int) {
+	distance, headType, err := m.state.GetHeadDistance(ctx, processorName, m.network.Name, m.config.Mode, executionHead)
+	if err != nil {
+		m.log.WithError(err).WithFields(logrus.Fields{
+			"processor": processorName,
+			"network":   m.network.Name,
+		}).Debug("Failed to calculate head distance")
+
+		// Set metric to -1 to indicate calculation error
+		common.HeadDistance.WithLabelValues(m.network.Name, processorName, "error").Set(-1)
+
+		return
+	}
+
+	// Update the metric
+	common.HeadDistance.WithLabelValues(m.network.Name, processorName, headType).Set(float64(distance))
+
+	m.log.WithFields(logrus.Fields{
+		"processor": processorName,
+		"network":   m.network.Name,
+		"distance":  distance,
+		"head_type": headType,
+	}).Debug("Updated head distance metric")
 }
 
 func (m *Manager) setupWorkerHandlers() (*asynq.ServeMux, error) {

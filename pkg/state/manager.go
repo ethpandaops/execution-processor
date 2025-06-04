@@ -478,3 +478,79 @@ func (s *Manager) IsBlockRecentlyProcessed(ctx context.Context, blockNumber uint
 
 	return count > 0, nil
 }
+
+// GetHeadDistance calculates the distance between current processing block and the relevant head
+func (s *Manager) GetHeadDistance(ctx context.Context, processor, network, mode string, executionHead *big.Int) (distance int64, headType string, err error) {
+	// Get the current processing block (what would be next to process)
+	currentBlock, err := s.NextBlock(ctx, processor, network, mode, executionHead)
+	if err != nil {
+		if errors.Is(err, ErrNoMoreBlocks) {
+			// If no more blocks, distance is 0
+			return 0, "", nil
+		}
+
+		return 0, "", fmt.Errorf("failed to get current processing block: %w", err)
+	}
+
+	if currentBlock == nil {
+		return 0, "", nil
+	}
+
+	// Determine which head to use based on limiter status and mode
+	if !s.limiterEnabled || mode == common.BACKWARDS_MODE {
+		// Use execution node head
+		if executionHead == nil {
+			return 0, "", fmt.Errorf("execution head not available")
+		}
+
+		distance = executionHead.Int64() - currentBlock.Int64()
+		headType = "execution_head"
+
+		s.log.WithFields(logrus.Fields{
+			"processor":       processor,
+			"network":         network,
+			"mode":            mode,
+			"current_block":   currentBlock.String(),
+			"execution_head":  executionHead.String(),
+			"distance":        distance,
+			"limiter_enabled": s.limiterEnabled,
+		}).Debug("Calculated head distance using execution node head")
+
+		return distance, headType, nil
+	}
+
+	// Use beacon chain limiter head (forwards mode with limiter enabled)
+	beaconHead, err := s.getLimiterMaxBlock(ctx, network)
+	if err != nil {
+		s.log.WithFields(logrus.Fields{
+			"processor": processor,
+			"network":   network,
+			"error":     err,
+		}).Warn("Failed to get beacon chain head for distance calculation, falling back to execution head")
+
+		// Fallback to execution head if beacon chain is unavailable
+		if executionHead == nil {
+			return 0, "", fmt.Errorf("both beacon and execution heads unavailable")
+		}
+
+		distance = executionHead.Int64() - currentBlock.Int64()
+		headType = "execution_head_fallback"
+
+		return distance, headType, nil
+	}
+
+	distance = beaconHead.Int64() - currentBlock.Int64()
+	headType = "beacon_chain_head"
+
+	s.log.WithFields(logrus.Fields{
+		"processor":       processor,
+		"network":         network,
+		"mode":            mode,
+		"current_block":   currentBlock.String(),
+		"beacon_head":     beaconHead.String(),
+		"distance":        distance,
+		"limiter_enabled": s.limiterEnabled,
+	}).Debug("Calculated head distance using beacon chain head")
+
+	return distance, headType, nil
+}
