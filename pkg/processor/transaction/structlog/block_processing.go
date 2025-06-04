@@ -66,8 +66,9 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 			"block_number": nextBlock.String(),
 			"network":      p.network.Name,
 		}).Debug("Block was recently processed, skipping to prevent rapid reprocessing")
-		
+
 		common.BlockProcessingSkipped.WithLabelValues(p.network.Name, p.Name(), "recently_processed").Inc()
+
 		return nil
 	}
 
