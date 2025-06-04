@@ -2,6 +2,7 @@ package structlog
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"math/big"
 	"time"
@@ -63,15 +64,28 @@ func (p *Processor) VerifyTransaction(ctx context.Context, blockNumber *big.Int,
 	var actualCount int
 
 	if err := p.clickhouse.QueryRow(ctx, p.config.Table, query).Scan(&actualCount); err != nil {
-		p.log.WithError(err).WithFields(logrus.Fields{
-			"table":             p.config.Table,
-			"block_number":      blockNumber.Uint64(),
-			"transaction_hash":  transactionHash,
-			"transaction_index": transactionIndex,
-			"network":           networkName,
-		}).Error("Failed to query structlog count")
+		if err == sql.ErrNoRows {
+			// No rows found means the transaction hasn't been processed yet (count = 0)
+			actualCount = 0
 
-		return fmt.Errorf("failed to query structlog count: %w", err)
+			p.log.WithFields(logrus.Fields{
+				"table":             p.config.Table,
+				"block_number":      blockNumber.Uint64(),
+				"transaction_hash":  transactionHash,
+				"transaction_index": transactionIndex,
+				"network":           networkName,
+			}).Debug("No structlog entries found for transaction (count = 0)")
+		} else {
+			p.log.WithError(err).WithFields(logrus.Fields{
+				"table":             p.config.Table,
+				"block_number":      blockNumber.Uint64(),
+				"transaction_hash":  transactionHash,
+				"transaction_index": transactionIndex,
+				"network":           networkName,
+			}).Error("Failed to query structlog count")
+
+			return fmt.Errorf("failed to query structlog count: %w", err)
+		}
 	}
 
 	p.log.WithFields(logrus.Fields{

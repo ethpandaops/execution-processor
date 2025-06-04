@@ -148,6 +148,30 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 		return progressiveNext, nil //nolint:nilerr // we want to continue processing even if limiter fails
 	}
 
+	// Check if admin.execution_block table is empty by seeing if progressive next equals chain head
+	// This happens when getProgressiveNextBlock returns chain head due to no entries in storage table
+	isStorageEmpty := chainHead != nil && progressiveNext.Cmp(chainHead) == 0
+
+	// If storage is empty, start with max(0, maxAllowed - 1) to allow initial processing
+	if isStorageEmpty && maxAllowed.Int64() > 0 {
+		startBlockValue := maxAllowed.Int64() - 1
+		if startBlockValue < 0 {
+			startBlockValue = 0
+		}
+
+		startBlock := big.NewInt(startBlockValue)
+
+		s.log.WithFields(logrus.Fields{
+			"processor":   processor,
+			"network":     network,
+			"limiter_max": maxAllowed.String(),
+			"start_block": startBlock.String(),
+			"chain_head":  chainHead.String(),
+		}).Info("Storage table empty with limiter enabled, starting processing from limiter max - 1")
+
+		return startBlock, nil
+	}
+
 	// Return minimum of progressive next and limiter max
 	if progressiveNext.Cmp(maxAllowed) <= 0 {
 		s.log.WithFields(logrus.Fields{
