@@ -56,13 +56,15 @@ func TestManager_ModeSpecificLeaderElection(t *testing.T) {
 					NodeID:          "test-node",
 				},
 				TransactionStructlog: structlog.Config{
-					Enabled:   false, // Disable to avoid ClickHouse requirements
-					Table:     "test_structlog",
-					BatchSize: 100,
+					Enabled: false, // Disable to avoid ClickHouse requirements
+					Table:   "test_structlog",
 					Config: clickhouse.Config{
 						DSN:          "clickhouse://localhost:9000/test",
 						MaxOpenConns: 10,
 						MaxIdleConns: 5,
+					},
+					BatchConfig: structlog.BatchConfig{
+						Enabled: false, // Will use default chunk size
 					},
 				},
 			}
