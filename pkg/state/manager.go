@@ -186,8 +186,8 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 	}
 
 	// Check if we've already processed the limiter max block to avoid infinite reprocessing
-	// If progressive next is greater than limiter_max + 1, it means we've already processed limiter_max
-	if progressiveNext.Cmp(big.NewInt(maxAllowed.Int64()+1)) > 0 {
+	// If progressive next is greater than or equal to limiter_max + 1, it means we've already processed limiter_max
+	if progressiveNext.Cmp(big.NewInt(maxAllowed.Int64()+1)) >= 0 {
 		s.log.WithFields(logrus.Fields{
 			"processor":   processor,
 			"network":     network,
@@ -443,4 +443,38 @@ func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor 
 	}
 
 	return big.NewInt(minVal.Int64), big.NewInt(maxVal.Int64), nil
+}
+
+// IsBlockRecentlyProcessed checks if a block was processed within the specified number of seconds
+func (s *Manager) IsBlockRecentlyProcessed(ctx context.Context, blockNumber uint64, network, processor string, withinSeconds int) (bool, error) {
+	query := fmt.Sprintf(`
+		SELECT COUNT(*) as count
+		FROM %s FINAL
+		WHERE processor = '%s'
+		  AND meta_network_name = '%s'
+		  AND block_number = %d
+		  AND updated_date_time >= now() - INTERVAL %d SECOND
+	`, s.storageTable, processor, network, blockNumber, withinSeconds)
+
+	s.log.WithFields(logrus.Fields{
+		"network":        network,
+		"processor":      processor,
+		"block_number":   blockNumber,
+		"within_seconds": withinSeconds,
+		"table":          s.storageTable,
+	}).Debug("Checking if block was recently processed")
+
+	var count int64
+
+	row := s.storageClient.QueryRow(ctx, s.storageTable, query)
+	if row == nil {
+		return false, fmt.Errorf("storage ClickHouse client not available")
+	}
+
+	err := row.Scan(&count)
+	if err != nil && err != sql.ErrNoRows {
+		return false, fmt.Errorf("failed to check recent block processing: %w", err)
+	}
+
+	return count > 0, nil
 }
