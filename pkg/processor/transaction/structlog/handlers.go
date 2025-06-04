@@ -84,14 +84,24 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 		"actual_structlog_count": structlogCount,
 	}).Debug("Created verify payload with correct expected count")
 
-	verifyTask, err := NewVerifyForwardsTask(verifyPayload)
+	var verifyTask *asynq.Task
+
+	var queue string
+
+	if p.processingMode == c.BACKWARDS_MODE {
+		verifyTask, err = NewVerifyBackwardsTask(verifyPayload)
+		queue = p.getVerifyBackwardsQueue()
+	} else {
+		verifyTask, err = NewVerifyForwardsTask(verifyPayload)
+		queue = p.getVerifyForwardsQueue()
+	}
+
 	if err != nil {
 		p.log.WithError(err).Error("Failed to create verify task")
 
 		return fmt.Errorf("failed to create verify task: %w", err)
 	}
 
-	queue := p.getVerifyForwardsQueue()
 	p.log.WithFields(logrus.Fields{
 		"queue":            queue,
 		"transaction_hash": payload.TransactionHash,
@@ -105,7 +115,15 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 		return fmt.Errorf("failed to enqueue verify task: %w", err)
 	}
 
-	common.TasksEnqueued.WithLabelValues(p.network.Name, ProcessorName, queue, VerifyForwardsTaskType).Inc()
+	var taskType string
+
+	if p.processingMode == c.BACKWARDS_MODE {
+		taskType = VerifyBackwardsTaskType
+	} else {
+		taskType = VerifyForwardsTaskType
+	}
+
+	common.TasksEnqueued.WithLabelValues(p.network.Name, ProcessorName, queue, taskType).Inc()
 
 	p.log.WithFields(logrus.Fields{
 		"transaction_hash": payload.TransactionHash,
@@ -186,14 +204,24 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 		"actual_structlog_count": structlogCount,
 	}).Debug("Created verify payload with correct expected count")
 
-	verifyTask, err := NewVerifyBackwardsTask(verifyPayload)
+	var verifyTask *asynq.Task
+
+	var queue string
+
+	if p.processingMode == c.BACKWARDS_MODE {
+		verifyTask, err = NewVerifyBackwardsTask(verifyPayload)
+		queue = p.getVerifyBackwardsQueue()
+	} else {
+		verifyTask, err = NewVerifyForwardsTask(verifyPayload)
+		queue = p.getVerifyForwardsQueue()
+	}
+
 	if err != nil {
 		p.log.WithError(err).Error("Failed to create verify task")
 
 		return fmt.Errorf("failed to create verify task: %w", err)
 	}
 
-	queue := p.getVerifyBackwardsQueue()
 	p.log.WithFields(logrus.Fields{
 		"queue":            queue,
 		"transaction_hash": payload.TransactionHash,
@@ -207,7 +235,15 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 		return fmt.Errorf("failed to enqueue verify task: %w", err)
 	}
 
-	common.TasksEnqueued.WithLabelValues(p.network.Name, ProcessorName, queue, VerifyBackwardsTaskType).Inc()
+	var taskType string
+
+	if p.processingMode == c.BACKWARDS_MODE {
+		taskType = VerifyBackwardsTaskType
+	} else {
+		taskType = VerifyForwardsTaskType
+	}
+
+	common.TasksEnqueued.WithLabelValues(p.network.Name, ProcessorName, queue, taskType).Inc()
 
 	p.log.WithFields(logrus.Fields{
 		"transaction_hash": payload.TransactionHash,
