@@ -32,13 +32,35 @@ type Structlog struct {
 	MetaNetworkName        string    `json:"meta_network_name"`
 }
 
-// ProcessSingleTransaction processes a single transaction (exposed for worker handlers)
+// ProcessSingleTransaction processes a single transaction using batch collector (exposed for worker handlers)
 func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
-	return p.processTransaction(ctx, block, index, tx)
+	// Extract structlog data
+	structlogs, err := p.ExtractStructlogs(ctx, block, index, tx)
+	if err != nil {
+		return 0, err
+	}
+
+	// Send to batch collector for insertion
+	if err := p.sendToBatchCollector(ctx, structlogs); err != nil {
+		common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
+		runtime.GC()
+
+		return 0, fmt.Errorf("failed to insert structlogs via batch collector: %w", err)
+	}
+
+	// Force garbage collection for large data processing to prevent memory buildup
+	if len(structlogs) > 1000 {
+		runtime.GC()
+	}
+
+	// Record success metrics
+	common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
+
+	return len(structlogs), nil
 }
 
-// processTransaction processes a single transaction (worker handler logic)
-func (p *Processor) processTransaction(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
+// ExtractStructlogs extracts structlog data from a transaction without inserting to database
+func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, index int, tx *types.Transaction) ([]Structlog, error) {
 	start := time.Now()
 	defer func() {
 		duration := time.Since(start)
@@ -47,11 +69,8 @@ func (p *Processor) processTransaction(ctx context.Context, block *types.Block, 
 
 	// Get execution node
 	node := p.pool.GetHealthyExecutionNode()
-
 	if node == nil {
-		common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
-
-		return 0, fmt.Errorf("no healthy execution node available")
+		return nil, fmt.Errorf("no healthy execution node available")
 	}
 
 	// Process transaction with timeout
@@ -61,9 +80,7 @@ func (p *Processor) processTransaction(ctx context.Context, block *types.Block, 
 	// Get transaction trace
 	trace, err := node.DebugTraceTransaction(processCtx, tx.Hash().String(), block.Number())
 	if err != nil {
-		common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
-
-		return 0, fmt.Errorf("failed to trace transaction: %w", err)
+		return nil, fmt.Errorf("failed to trace transaction: %w", err)
 	}
 
 	// Convert trace to structlog rows
@@ -98,24 +115,5 @@ func (p *Processor) processTransaction(ctx context.Context, block *types.Block, 
 		}
 	}
 
-	// Save count before clearing slice
-	structlogCount := len(structlogs)
-
-	if err := p.BatchInsertStructlogs(ctx, block.Number().Uint64(), tx.Hash().String(), uIndex, structlogs); err != nil {
-		common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
-
-		runtime.GC()
-
-		return 0, fmt.Errorf("failed to insert structlogs: %w", err)
-	}
-
-	// Force garbage collection for large data processing to prevent memory buildup
-	if len(trace.Structlogs) > 1000 {
-		runtime.GC()
-	}
-
-	// Record success metrics
-	common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
-
-	return structlogCount, nil
+	return structlogs, nil
 }
