@@ -571,6 +571,26 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 				return
 			default:
 			}
+
+			// Only monitor queues that match the current processing mode
+			shouldMonitor := false
+
+			switch m.config.Mode {
+			case c.FORWARDS_MODE:
+				shouldMonitor = strings.Contains(queue.Name, "forwards")
+			case c.BACKWARDS_MODE:
+				shouldMonitor = strings.Contains(queue.Name, "backwards")
+			}
+
+			if !shouldMonitor {
+				m.log.WithFields(logrus.Fields{
+					"queue": queue.Name,
+					"mode":  m.config.Mode,
+				}).Debug("Skipped queue monitoring - does not match processing mode")
+
+				continue
+			}
+
 			// Queue name is already prefixed from GetQueues()
 			info, err := inspector.GetQueueInfo(queue.Name)
 			if err != nil {
@@ -669,12 +689,30 @@ func (m *Manager) updateAsynqQueues() error {
 
 	for _, processor := range m.processors {
 		for _, queue := range processor.GetQueues() {
-			// Queue names are already prefixed by GetQueues()
-			queues[queue.Name] = queue.Priority
-			m.log.WithFields(logrus.Fields{
-				"queue":    queue.Name,
-				"priority": queue.Priority,
-			}).Debug("Added queue to asynq server")
+			// Only register queues that match the current processing mode
+			shouldInclude := false
+
+			switch m.config.Mode {
+			case c.FORWARDS_MODE:
+				shouldInclude = strings.Contains(queue.Name, "forwards")
+			case c.BACKWARDS_MODE:
+				shouldInclude = strings.Contains(queue.Name, "backwards")
+			}
+
+			if shouldInclude {
+				// Queue names are already prefixed by GetQueues()
+				queues[queue.Name] = queue.Priority
+				m.log.WithFields(logrus.Fields{
+					"queue":    queue.Name,
+					"priority": queue.Priority,
+					"mode":     m.config.Mode,
+				}).Debug("Added queue to asynq server")
+			} else {
+				m.log.WithFields(logrus.Fields{
+					"queue": queue.Name,
+					"mode":  m.config.Mode,
+				}).Debug("Skipped queue - does not match processing mode")
+			}
 		}
 	}
 
