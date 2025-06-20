@@ -889,3 +889,69 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 
 	return shouldSkip, reason
 }
+
+// GetQueueName returns the current queue name based on processing mode
+func (m *Manager) GetQueueName() string {
+	// For now we only have one processor
+	processorName := "transaction-structlog"
+	if m.config.Mode == c.BACKWARDS_MODE {
+		return c.PrefixedProcessBackwardsQueue(processorName, m.redisPrefix)
+	}
+
+	return c.PrefixedProcessForwardsQueue(processorName, m.redisPrefix)
+}
+
+// QueueBlockManually allows manual queuing of a specific block for processing
+func (m *Manager) QueueBlockManually(ctx context.Context, processorName string, blockNumber uint64) (*QueueResult, error) {
+	// Validate processor exists
+	processor, exists := m.processors[processorName]
+	if !exists {
+		return nil, fmt.Errorf("processor %s not found", processorName)
+	}
+
+	// Get the structlog processor (currently only one supported)
+	structlogProc, ok := processor.(*transaction_structlog.Processor)
+	if !ok {
+		return nil, fmt.Errorf("processor %s is not a transaction structlog processor", processorName)
+	}
+
+	// Get a healthy execution node
+	node, err := m.pool.WaitForHealthyExecutionNode(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("no healthy execution nodes available: %w", err)
+	}
+
+	// Fetch block from execution node
+	// Check for potential overflow - int64 max is 9223372036854775807
+	const maxInt64 = 9223372036854775807
+	if blockNumber > maxInt64 {
+		return nil, fmt.Errorf("block number %d exceeds maximum int64 value", blockNumber)
+	}
+
+	block, err := node.BlockByNumber(ctx, big.NewInt(int64(blockNumber)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch block %d: %w", blockNumber, err)
+	}
+
+	// Enqueue transaction tasks using the processor's method
+	tasksCreated, err := structlogProc.EnqueueTransactionTasks(ctx, block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to enqueue tasks for block %d: %w", blockNumber, err)
+	}
+
+	// Update execution_block table to mark block as processed
+	if err := m.state.MarkBlockProcessed(ctx, blockNumber, m.network.Name, processorName); err != nil {
+		return nil, fmt.Errorf("failed to update execution_block table: %w", err)
+	}
+
+	return &QueueResult{
+		TransactionCount: len(block.Transactions()),
+		TasksCreated:     tasksCreated,
+	}, nil
+}
+
+// QueueResult contains the result of queuing a block
+type QueueResult struct {
+	TransactionCount int
+	TasksCreated     int
+}

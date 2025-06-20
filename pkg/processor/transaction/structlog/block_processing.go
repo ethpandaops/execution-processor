@@ -136,7 +136,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	}
 
 	// Enqueue tasks for each transaction
-	if err := p.enqueueTransactionTasks(ctx, block); err != nil {
+	if _, err := p.EnqueueTransactionTasks(ctx, block); err != nil {
 		return fmt.Errorf("failed to enqueue transaction tasks: %w", err)
 	}
 
@@ -174,7 +174,8 @@ func isBlockNotFoundError(err error) bool {
 }
 
 // enqueueTransactionTasks enqueues tasks for all transactions in a block
-func (p *Processor) enqueueTransactionTasks(ctx context.Context, block *types.Block) error {
+// EnqueueTransactionTasks enqueues transaction processing tasks for a given block
+func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block *types.Block) (int, error) {
 	var enqueuedCount int
 
 	var errs []error
@@ -235,10 +236,10 @@ func (p *Processor) enqueueTransactionTasks(ctx context.Context, block *types.Bl
 	}).Info("Enqueued transaction processing tasks")
 
 	if len(errs) > 0 {
-		return fmt.Errorf("failed to enqueue %d tasks: %v", len(errs), errs[0])
+		return enqueuedCount, fmt.Errorf("failed to enqueue %d tasks: %v", len(errs), errs[0])
 	}
 
-	return nil
+	return enqueuedCount, nil
 }
 
 // updateBlockMetrics updates block-related metrics

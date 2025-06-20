@@ -16,6 +16,8 @@ type Config struct { // MetricsAddr is the address to listen on for metrics.
 	HealthCheckAddr *string `yaml:"healthCheckAddr"`
 	// PProfAddr is the address to listen on for pprof.
 	PProfAddr *string `yaml:"pprofAddr"`
+	// APIAddr is the address to listen on for the API server.
+	APIAddr *string `yaml:"apiAddr"`
 	// LoggingLevel is the logging level to use.
 	LoggingLevel string `yaml:"logging" default:"info"`
 	// Ethereum is the ethereum network configuration.
