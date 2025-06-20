@@ -59,7 +59,6 @@ processors:
       maxRows: 100000               # Max rows before forced flush (aggregated batches)
       flushInterval: "5s"           # Max time to wait before flush
       channelBufferSize: 100        # Max tasks that can be queued
-      chunkSize: 1000000           # Chunk size for large single transactions (memory safety)
 
 # Application settings
 shutdownTimeout: "30s"

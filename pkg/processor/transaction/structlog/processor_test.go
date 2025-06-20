@@ -29,8 +29,7 @@ func TestProcessor_Creation(t *testing.T) {
 			MaxIdleConns: 5,
 		},
 		BatchConfig: transaction_structlog.BatchConfig{
-			Enabled:   false, // Disabled, will use default chunk size
-			ChunkSize: 1000000,
+			Enabled: false,
 		},
 	}
 
@@ -56,8 +55,7 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 					MaxIdleConns: 5,
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled:   false, // Will use default chunk size
-					ChunkSize: 1000000,
+					Enabled: false,
 				},
 			},
 			expectError: false,
@@ -75,8 +73,7 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_table",
 				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled:   false, // Will use default chunk size
-					ChunkSize: 1000000,
+					Enabled: false,
 				},
 			},
 			expectError: true,
@@ -89,14 +86,13 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 					DSN: "clickhouse://localhost:9000/test",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled:   false, // Will use default chunk size
-					ChunkSize: 1000000,
+					Enabled: false,
 				},
 			},
 			expectError: true,
 		},
 		{
-			name: "invalid chunk size",
+			name: "batch enabled but missing required fields",
 			config: transaction_structlog.Config{
 				Enabled: true,
 				Table:   "test_table",
@@ -104,8 +100,8 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 					DSN: "clickhouse://localhost:9000/test",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled:   true,
-					ChunkSize: 0, // Invalid
+					Enabled: true,
+					// Missing MaxRows, FlushInterval, ChannelBufferSize
 				},
 			},
 			expectError: true,
@@ -141,8 +137,7 @@ func TestProcessor_ConcurrentConfigValidation(t *testing.T) {
 					MaxIdleConns: 5,
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled:   false, // Will use default chunk size
-					ChunkSize: 1000000,
+					Enabled: false,
 				},
 			}
 			results <- cfg.Validate()
@@ -177,7 +172,25 @@ func TestProcessor_BatchConfigValidation(t *testing.T) {
 					MaxRows:           10000,
 					FlushInterval:     5 * time.Second,
 					ChannelBufferSize: 100,
-					ChunkSize:         1000000,
+					FlushTimeout:      5 * time.Minute,
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "batch config with default flush timeout",
+			config: transaction_structlog.Config{
+				Enabled: true,
+				Table:   "test_table",
+				Config: clickhouse.Config{
+					DSN: "clickhouse://localhost:9000/test",
+				},
+				BatchConfig: transaction_structlog.BatchConfig{
+					Enabled:           true,
+					MaxRows:           10000,
+					FlushInterval:     5 * time.Second,
+					ChannelBufferSize: 100,
+					FlushTimeout:      0, // Should default to 5 minutes
 				},
 			},
 			expectError: false,
@@ -193,8 +206,7 @@ func TestProcessor_BatchConfigValidation(t *testing.T) {
 					MaxIdleConns: 5,
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled:   false,
-					ChunkSize: 1000000,
+					Enabled: false,
 				},
 			},
 			expectError: false,
@@ -274,8 +286,7 @@ func TestProcessor_BatchingDisabled(t *testing.T) {
 			MaxIdleConns: 5,
 		},
 		BatchConfig: transaction_structlog.BatchConfig{
-			Enabled:   false, // Disabled
-			ChunkSize: 1000000,
+			Enabled: false, // Disabled
 		},
 	}
 
@@ -317,7 +328,6 @@ func TestProcessor_BatchingEnabled(t *testing.T) {
 			MaxRows:           1000,
 			FlushInterval:     5 * time.Second,
 			ChannelBufferSize: 100,
-			ChunkSize:         1000000,
 		},
 	}
 
@@ -355,8 +365,7 @@ func TestBatchConfig_DefaultValues(t *testing.T) {
 		{
 			name: "disabled config",
 			config: transaction_structlog.BatchConfig{
-				Enabled:   false,
-				ChunkSize: 1000000,
+				Enabled: false,
 				// Other fields can be zero when disabled
 			},
 			wantErr: false,
@@ -368,7 +377,7 @@ func TestBatchConfig_DefaultValues(t *testing.T) {
 				MaxRows:           10000,
 				FlushInterval:     5 * time.Second,
 				ChannelBufferSize: 100,
-				ChunkSize:         1000000,
+				FlushTimeout:      5 * time.Minute,
 			},
 			wantErr: false,
 		},
@@ -379,7 +388,7 @@ func TestBatchConfig_DefaultValues(t *testing.T) {
 				MaxRows:           1,
 				FlushInterval:     1 * time.Millisecond,
 				ChannelBufferSize: 1,
-				ChunkSize:         1000000,
+				FlushTimeout:      1 * time.Second,
 			},
 			wantErr: false,
 		},
@@ -418,7 +427,6 @@ func TestBatchConfig_EdgeCases(t *testing.T) {
 				MaxRows:           0, // Invalid
 				FlushInterval:     5 * time.Second,
 				ChannelBufferSize: 100,
-				ChunkSize:         1000000,
 			},
 			wantErr: true,
 		},
@@ -429,7 +437,6 @@ func TestBatchConfig_EdgeCases(t *testing.T) {
 				MaxRows:           1000,
 				FlushInterval:     0, // Invalid
 				ChannelBufferSize: 100,
-				ChunkSize:         1000000,
 			},
 			wantErr: true,
 		},
@@ -440,7 +447,6 @@ func TestBatchConfig_EdgeCases(t *testing.T) {
 				MaxRows:           1000,
 				FlushInterval:     5 * time.Second,
 				ChannelBufferSize: 0, // Invalid
-				ChunkSize:         1000000,
 			},
 			wantErr: true,
 		},
@@ -451,7 +457,6 @@ func TestBatchConfig_EdgeCases(t *testing.T) {
 				MaxRows:           -1, // Invalid
 				FlushInterval:     5 * time.Second,
 				ChannelBufferSize: 100,
-				ChunkSize:         1000000,
 			},
 			wantErr: true,
 		},
@@ -462,18 +467,6 @@ func TestBatchConfig_EdgeCases(t *testing.T) {
 				MaxRows:           1000,
 				FlushInterval:     -1 * time.Second, // Invalid
 				ChannelBufferSize: 100,
-				ChunkSize:         1000000,
-			},
-			wantErr: true,
-		},
-		{
-			name: "zero chunk size",
-			config: transaction_structlog.BatchConfig{
-				Enabled:           true,
-				MaxRows:           1000,
-				FlushInterval:     5 * time.Second,
-				ChannelBufferSize: 100,
-				ChunkSize:         0, // Invalid
 			},
 			wantErr: true,
 		},
