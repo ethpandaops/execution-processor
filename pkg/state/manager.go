@@ -186,8 +186,8 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 	}
 
 	// Check if we've already processed the limiter max block to avoid infinite reprocessing
-	// If progressive next is greater than or equal to limiter_max + 1, it means we've already processed limiter_max
-	if progressiveNext.Cmp(big.NewInt(maxAllowed.Int64()+1)) >= 0 {
+	// If progressive next is exactly limiter_max + 1, it means we've already processed limiter_max
+	if progressiveNext.Cmp(big.NewInt(maxAllowed.Int64()+1)) == 0 {
 		s.log.WithFields(logrus.Fields{
 			"processor":   processor,
 			"network":     network,
@@ -198,15 +198,17 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 		return nil, ErrNoMoreBlocks
 	}
 
+	// Progressive next is greater than limiter max but not caught up
+	// This happens when limiter advances - continue sequential processing to avoid gaps
 	s.log.WithFields(logrus.Fields{
 		"processor":   processor,
 		"network":     network,
 		"progressive": progressiveNext.String(),
 		"limiter_max": maxAllowed.String(),
-		"next_block":  maxAllowed.String(),
-	}).Info("Limiter reached: Progressive next block exceeds beacon chain execution payload limit, capping to limiter max")
+		"next_block":  progressiveNext.String(),
+	}).Warn("Progressive next block exceeds current limiter max, continuing sequential processing to avoid gaps")
 
-	return maxAllowed, nil
+	return progressiveNext, nil
 }
 
 func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, network string, chainHead *big.Int) (*big.Int, error) {
