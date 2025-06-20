@@ -126,9 +126,10 @@ func (bc *BatchCollector) processPendingTask(taskBatch TaskBatch) {
 	// For large tasks (> maxRows), process in chunks immediately
 	if len(taskBatch.Rows) > bc.maxBatchSize {
 		bc.processLargeTask(taskBatch)
+
 		return
 	}
-	
+
 	// Normal path for tasks <= maxRows
 	bc.accumulatedRows = append(bc.accumulatedRows, taskBatch.Rows...)
 	bc.pendingTasks = append(bc.pendingTasks, taskBatch)
@@ -154,24 +155,27 @@ func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
 		"rows":    len(taskBatch.Rows),
 		"chunks":  (len(taskBatch.Rows) + bc.maxBatchSize - 1) / bc.maxBatchSize,
 	}).Info("Processing large task in chunks")
-	
+
 	var finalErr error
+
 	chunksProcessed := 0
-	
+
 	// Process in maxBatchSize chunks
 	for i := 0; i < len(taskBatch.Rows); i += bc.maxBatchSize {
 		end := i + bc.maxBatchSize
 		if end > len(taskBatch.Rows) {
 			end = len(taskBatch.Rows)
 		}
-		
+
 		chunk := taskBatch.Rows[i:end]
-		
+
 		// Flush this chunk immediately with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), bc.flushTimeout)
+
 		err := bc.processor.insertStructlogBatch(ctx, chunk)
+
 		cancel()
-		
+
 		if err != nil {
 			bc.log.WithError(err).WithFields(logrus.Fields{
 				"task_id":     taskBatch.TaskID,
@@ -179,28 +183,29 @@ func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
 				"chunk_start": i,
 				"chunk_end":   end,
 			}).Error("Failed to flush chunk")
-			
+
 			// Update failure metrics
 			common.BatchCollectorFlushes.WithLabelValues(bc.processor.network.Name, ProcessorName, "failed").Inc()
-			
+
 			finalErr = err
+
 			break
 		}
-		
+
 		chunksProcessed++
-		
+
 		bc.log.WithFields(logrus.Fields{
 			"task_id":     taskBatch.TaskID,
 			"chunk":       chunksProcessed,
 			"chunk_start": i,
 			"chunk_end":   end,
 		}).Debug("Successfully flushed chunk")
-		
+
 		// Update metrics
 		common.BatchCollectorFlushes.WithLabelValues(bc.processor.network.Name, ProcessorName, "success").Inc()
 		common.BatchCollectorRowsFlushed.WithLabelValues(bc.processor.network.Name, ProcessorName).Add(float64(end - i))
 	}
-	
+
 	// Send single response after all chunks
 	select {
 	case taskBatch.ResponseChan <- finalErr:
@@ -244,7 +249,7 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 			"tasks":    taskCount,
 			"duration": duration,
 		}
-		
+
 		// Check if it's a timeout error
 		if flushCtx.Err() == context.DeadlineExceeded {
 			logFields["timeout"] = bc.flushTimeout.String()

@@ -202,6 +202,7 @@ func (p *Processor) sendToBatchCollector(ctx context.Context, structlogs []Struc
 
 		insertCtx, cancel := context.WithTimeout(ctx, timeout)
 		defer cancel()
+
 		return p.insertStructlogBatch(insertCtx, structlogs)
 	}
 

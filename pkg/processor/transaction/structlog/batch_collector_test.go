@@ -28,19 +28,19 @@ func TestBatchCollector_ProcessPendingTask_SmallTask(t *testing.T) {
 	}
 
 	bc := NewBatchCollector(processor, config)
-	
+
 	// Create a small task
 	task := TaskBatch{
 		Rows:         createTestStructlogs(500),
 		ResponseChan: make(chan error, 1),
 		TaskID:       "test-small-1",
 	}
-	
+
 	// Process the task
 	bc.mu.Lock()
 	bc.processPendingTask(task)
 	bc.mu.Unlock()
-	
+
 	// Should not trigger immediate flush
 	assert.Equal(t, 500, len(bc.accumulatedRows))
 	assert.Equal(t, 1, len(bc.pendingTasks))
@@ -62,35 +62,35 @@ func TestBatchCollector_ProcessPendingTask_TriggerFlush(t *testing.T) {
 	}
 
 	bc := NewBatchCollector(processor, config)
-	
+
 	// Add first task (600 rows)
 	task1 := TaskBatch{
 		Rows:         createTestStructlogs(600),
 		ResponseChan: make(chan error, 1),
 		TaskID:       "test-1",
 	}
-	
+
 	bc.mu.Lock()
 	// Just check state - don't actually call processPendingTask which triggers flush
 	bc.accumulatedRows = append(bc.accumulatedRows, task1.Rows...)
 	bc.pendingTasks = append(bc.pendingTasks, task1)
 	rows1 := len(bc.accumulatedRows)
 	bc.mu.Unlock()
-	
+
 	assert.Equal(t, 600, rows1, "Should have 600 rows")
-	
+
 	// Add second task (500 rows) - total 1100 > maxRows
 	task2 := TaskBatch{
 		Rows:         createTestStructlogs(500),
 		ResponseChan: make(chan error, 1),
 		TaskID:       "test-2",
 	}
-	
+
 	// Check that adding this would exceed maxRows
 	bc.mu.Lock()
 	totalRows := len(bc.accumulatedRows) + len(task2.Rows)
 	bc.mu.Unlock()
-	
+
 	assert.Greater(t, totalRows, bc.maxBatchSize, "Total rows should exceed maxBatchSize")
 }
 
@@ -110,23 +110,23 @@ func TestBatchCollector_ProcessLargeTask(t *testing.T) {
 	}
 
 	bc := NewBatchCollector(processor, config)
-	
+
 	// Test the size check
 	smallTask := TaskBatch{
 		Rows:         createTestStructlogs(1000), // Exactly maxRows
 		ResponseChan: make(chan error, 1),
 		TaskID:       "test-exact",
 	}
-	
+
 	largeTask := TaskBatch{
 		Rows:         createTestStructlogs(1001), // Greater than maxRows
 		ResponseChan: make(chan error, 1),
 		TaskID:       "test-large",
 	}
-	
+
 	// Small task should not be considered large
 	assert.False(t, len(smallTask.Rows) > bc.maxBatchSize)
-	
+
 	// Large task should be considered large
 	assert.True(t, len(largeTask.Rows) > bc.maxBatchSize)
 }
@@ -147,7 +147,7 @@ func TestBatchCollector_ChannelFull(t *testing.T) {
 	}
 
 	bc := NewBatchCollector(processor, config)
-	
+
 	// Fill the channel
 	for i := 0; i < 2; i++ {
 		task := TaskBatch{
@@ -158,7 +158,7 @@ func TestBatchCollector_ChannelFull(t *testing.T) {
 		err := bc.SubmitBatch(task)
 		assert.NoError(t, err)
 	}
-	
+
 	// Next submit should fail with channel full
 	task := TaskBatch{
 		Rows:         createTestStructlogs(100),
@@ -184,24 +184,24 @@ func TestBatchCollector_StartStop(t *testing.T) {
 	}
 
 	bc := NewBatchCollector(processor, config)
-	
+
 	// Test shutdown behavior without starting
 	// This avoids the flush logic that requires ClickHouse
-	
+
 	// Create a task
 	task := TaskBatch{
 		Rows:         createTestStructlogs(100),
 		ResponseChan: make(chan error, 1),
 		TaskID:       "test-shutdown",
 	}
-	
+
 	// Can submit before shutdown
 	err := bc.SubmitBatch(task)
 	assert.NoError(t, err)
-	
+
 	// Close shutdown channel
 	close(bc.shutdown)
-	
+
 	// Should not accept new tasks after shutdown
 	err = bc.SubmitBatch(task)
 	assert.Equal(t, context.Canceled, err)
@@ -223,7 +223,7 @@ func TestBatchCollector_FlushTimeout(t *testing.T) {
 	}
 
 	bc := NewBatchCollector(processor, config)
-	
+
 	// Verify timeout is set correctly
 	assert.Equal(t, 100*time.Millisecond, bc.flushTimeout)
 }
@@ -268,7 +268,7 @@ func TestBatchCollector_ChunkCalculation(t *testing.T) {
 func createTestStructlogs(count int) []Structlog {
 	logs := make([]Structlog, count)
 	now := time.Now()
-	
+
 	for i := 0; i < count; i++ {
 		logs[i] = Structlog{
 			UpdatedDateTime:        now,
@@ -291,7 +291,7 @@ func createTestStructlogs(count int) []Structlog {
 			MetaNetworkName:        "test",
 		}
 	}
-	
+
 	return logs
 }
 
@@ -299,10 +299,10 @@ func createTestStructlogs(count int) []Structlog {
 // This is more of an integration test that requires a working processor
 func TestBatchCollector_ProcessLargeTask_Integration(t *testing.T) {
 	t.Skip("Integration test - requires working ClickHouse connection")
-	
+
 	// This test would require a full processor setup with ClickHouse
 	// It's documented here to show what a full integration test would look like
-	
+
 	config := BatchConfig{
 		Enabled:           true,
 		MaxRows:           1000,
@@ -310,10 +310,10 @@ func TestBatchCollector_ProcessLargeTask_Integration(t *testing.T) {
 		ChannelBufferSize: 100,
 		FlushTimeout:      5 * time.Minute,
 	}
-	
+
 	// Would need a real processor with ClickHouse connection
 	_ = config
-	
+
 	// Test flow:
 	// 1. Create processor with real ClickHouse
 	// 2. Create batch collector
@@ -338,12 +338,12 @@ func TestBatchCollector_ConcurrentAccess(t *testing.T) {
 	}
 
 	bc := NewBatchCollector(processor, config)
-	
+
 	// Submit tasks concurrently without starting the collector
 	// This tests the concurrent submission logic
 	done := make(chan bool)
 	errors := make(chan error, 10)
-	
+
 	for i := 0; i < 10; i++ {
 		go func(id int) {
 			task := TaskBatch{
@@ -351,21 +351,21 @@ func TestBatchCollector_ConcurrentAccess(t *testing.T) {
 				ResponseChan: make(chan error, 1),
 				TaskID:       "concurrent-" + string(rune(id)),
 			}
-			
+
 			if err := bc.SubmitBatch(task); err != nil && err != ErrChannelFull {
 				errors <- err
 			}
 			done <- true
 		}(i)
 	}
-	
+
 	// Wait for all goroutines
 	for i := 0; i < 10; i++ {
 		<-done
 	}
-	
+
 	close(errors)
-	
+
 	// Check for unexpected errors
 	for err := range errors {
 		t.Errorf("Unexpected error during concurrent access: %v", err)
@@ -379,7 +379,7 @@ func TestBatchCollector_ErrorScenarios(t *testing.T) {
 		// without modifying the production code
 		t.Skip("Cannot test nil processor without modifying production code")
 	})
-	
+
 	t.Run("closed response channel", func(t *testing.T) {
 		config := BatchConfig{
 			Enabled:           true,
@@ -395,7 +395,7 @@ func TestBatchCollector_ErrorScenarios(t *testing.T) {
 		}
 
 		bc := NewBatchCollector(processor, config)
-		
+
 		// Create task with closed response channel
 		task := TaskBatch{
 			Rows:         createTestStructlogs(100),
@@ -403,11 +403,11 @@ func TestBatchCollector_ErrorScenarios(t *testing.T) {
 			TaskID:       "test-closed",
 		}
 		close(task.ResponseChan)
-		
+
 		// This should not panic
 		bc.mu.Lock()
 		defer bc.mu.Unlock()
-		
+
 		// In production, this would log a warning
 		// The test verifies it doesn't panic
 	})
