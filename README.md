@@ -60,6 +60,76 @@ A distributed system for processing Ethereum execution layer data with support f
 └─────────────────────────────────────────┘
 ```
 
+## Manual Block Queue API
+
+The execution processor provides an HTTP API for manually queuing blocks for reprocessing. This is useful for fixing data issues or reprocessing specific blocks.
+
+### Enable the API
+
+Add the API server address to your configuration:
+
+```yaml
+apiAddr: ":8080"  # Optional API server address
+```
+
+### Queue a Single Block
+
+```bash
+# Queue block 12345 for transaction_structlog processing
+curl -X POST http://localhost:8080/api/v1/queue/block/transaction_structlog/12345
+
+# Response:
+{
+  "status": "queued",
+  "block_number": 12345,
+  "processor": "transaction_structlog",
+  "queue": "process:forwards",  
+  "transaction_count": 150,
+  "tasks_created": 150
+}
+```
+
+### Queue Multiple Blocks
+
+```bash
+# Queue blocks 12345-12350 for reprocessing
+curl -X POST http://localhost:8080/api/v1/queue/blocks/transaction_structlog \
+  -H "Content-Type: application/json" \
+  -d '{
+    "blocks": [12345, 12346, 12347, 12348, 12349, 12350]
+  }'
+
+# Response:
+{
+  "status": "queued",
+  "processor": "transaction_structlog",
+  "queue": "process:forwards",
+  "summary": {
+    "total": 6,
+    "queued": 6,
+    "skipped": 0,
+    "failed": 0
+  },
+  "results": [
+    {
+      "block_number": 12345,
+      "status": "queued",
+      "transaction_count": 150,
+      "tasks_created": 150
+    },
+    ...
+  ]
+}
+```
+
+### Important Notes
+
+- The API works on any node (leader or non-leader)
+- Blocks are queued using the node's current processing mode (forwards/backwards)
+- Maximum 1000 blocks per bulk request
+- Allows reprocessing of already processed blocks
+- Each API call creates new tasks (calling multiple times will create duplicates)
+
 ## Architecture
 
 ### Leader Election

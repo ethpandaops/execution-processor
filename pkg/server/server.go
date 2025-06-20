@@ -11,6 +11,7 @@ import (
 	//nolint:gosec // only exposed if pprofAddr config is set
 	_ "net/http/pprof"
 
+	"github.com/ethpandaops/execution-processor/pkg/api"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/observability"
 	"github.com/ethpandaops/execution-processor/pkg/processor"
@@ -34,6 +35,7 @@ type Server struct {
 	metricsServer *http.Server
 	pprofServer   *http.Server
 	healthServer  *http.Server
+	apiServer     *http.Server
 }
 
 func NewServer(ctx context.Context, log logrus.FieldLogger, namespace string, config *Config) (*Server, error) {
@@ -97,6 +99,17 @@ func (s *Server) Start(ctx context.Context) error {
 	if s.config.HealthCheckAddr != nil {
 		g.Go(func() error {
 			if err := s.startHealthCheck(); err != nil && err != http.ErrServerClosed {
+				return err
+			}
+
+			return nil
+		})
+	}
+
+	// Start API server if configured
+	if s.config.APIAddr != nil {
+		g.Go(func() error {
+			if err := s.startAPI(); err != nil && err != http.ErrServerClosed {
 				return err
 			}
 
@@ -175,6 +188,12 @@ func (s *Server) stop(ctx context.Context) error {
 		}
 	}
 
+	if s.apiServer != nil {
+		if err := s.apiServer.Shutdown(cleanupCtx); err != nil {
+			s.log.WithError(err).Error("failed to shutdown API server")
+		}
+	}
+
 	if s.metricsServer != nil {
 		if err := s.metricsServer.Shutdown(cleanupCtx); err != nil {
 			s.log.WithError(err).Error("failed to shutdown metrics server")
@@ -214,4 +233,20 @@ func (s *Server) startHealthCheck() error {
 	})
 
 	return s.healthServer.ListenAndServe()
+}
+
+func (s *Server) startAPI() error {
+	s.log.WithField("addr", *s.config.APIAddr).Info("Starting API server")
+
+	mux := http.NewServeMux()
+	apiHandler := api.NewHandler(s.log.WithField("component", "api"), s.processor, s.pool)
+	apiHandler.RegisterRoutes(mux)
+
+	s.apiServer = &http.Server{
+		Addr:              *s.config.APIAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 120 * time.Second,
+	}
+
+	return s.apiServer.ListenAndServe()
 }
