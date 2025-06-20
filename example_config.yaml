@@ -55,9 +55,10 @@ processors:
     
     # Batch configuration
     batchConfig:
-      enabled: true                  # Enable batch aggregation system
+      enabled: true                 # Enable batch aggregation system
       maxRows: 100000               # Max rows before forced flush (aggregated batches)
       flushInterval: "5s"           # Max time to wait before flush
+      flushTimeout: "5m"            # Timeout for ClickHouse flush operations
       channelBufferSize: 100        # Max tasks that can be queued
 
 # Application settings
