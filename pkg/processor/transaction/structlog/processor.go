@@ -40,11 +40,6 @@ type Processor struct {
 
 // New creates a new transaction structlog processor
 func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, error) {
-	// Set default chunk size if not specified
-	if config.BatchConfig.ChunkSize <= 0 {
-		config.BatchConfig.ChunkSize = 1000000
-	}
-
 	clickhouseClient, err := clickhouse.NewClient(ctx, deps.Log.WithField("processor", "transaction_structlog"), &clickhouse.Config{
 		DSN:          config.DSN,
 		MaxOpenConns: config.MaxOpenConns,
@@ -164,159 +159,6 @@ func (p *Processor) EnqueueTask(ctx context.Context, task *asynq.Task, opts ...a
 	return err
 }
 
-// BatchInsertStructlogs inserts structlog data in batch to ClickHouse
-func (p *Processor) BatchInsertStructlogs(ctx context.Context, blockNumber uint64, transactionHash string, transactionIndex uint32, structlogs []Structlog) error {
-	if len(structlogs) == 0 {
-		return nil
-	}
-
-	// Process in smaller chunks to avoid memory buildup
-	chunkSize := p.config.BatchConfig.ChunkSize
-
-	for i := 0; i < len(structlogs); i += chunkSize {
-		end := i + chunkSize
-		if end > len(structlogs) {
-			end = len(structlogs)
-		}
-
-		chunk := structlogs[i:end]
-		if err := p.insertStructlogChunk(ctx, blockNumber, transactionHash, transactionIndex, chunk); err != nil {
-			return fmt.Errorf("failed to insert chunk %d-%d: %w", i, end-1, err)
-		}
-	}
-
-	return nil
-}
-
-// insertStructlogChunk inserts a small chunk of structlog data with proper resource management
-func (p *Processor) insertStructlogChunk(ctx context.Context, blockNumber uint64, transactionHash string, transactionIndex uint32, structlogs []Structlog) error {
-	if len(structlogs) == 0 {
-		return nil
-	}
-
-	// Begin transaction
-	tx, err := p.clickhouse.GetDB().BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-
-	// Track transaction state properly to avoid double rollback
-	var (
-		committed  bool
-		rolledBack bool
-	)
-
-	defer func() {
-		if !committed && !rolledBack {
-			if rollbackErr := tx.Rollback(); rollbackErr != nil {
-				p.log.WithError(rollbackErr).Warn("Failed to rollback transaction (may already be closed)")
-			}
-
-			rolledBack = true
-		}
-	}()
-	//nolint:gosec // safe to use user input in query
-	query := fmt.Sprintf(`INSERT INTO %s (
-		updated_date_time, block_number, transaction_hash, transaction_index,
-		transaction_gas, transaction_failed, transaction_return_value,
-		index, program_counter, operation, gas, gas_cost, depth,
-		return_data, refund, error, meta_network_id, meta_network_name
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, p.config.Table)
-
-	start := time.Now()
-
-	stmt, err := tx.PrepareContext(ctx, query)
-
-	duration := time.Since(start)
-
-	if err != nil {
-		code := clickhouse.ParseErrorCode(err)
-		common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "prepare_insert", p.config.Table, "failed", code).Observe(duration.Seconds())
-		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "prepare_insert", p.config.Table, "failed", code).Inc()
-
-		p.log.WithFields(logrus.Fields{
-			"table":            p.config.Table,
-			"error":            err.Error(),
-			"transaction_hash": transactionHash,
-			"block_number":     blockNumber,
-			"structlog_count":  len(structlogs),
-		}).Error("Failed to prepare ClickHouse statement")
-
-		return fmt.Errorf("failed to prepare statement for table %s: %w", p.config.Table, err)
-	}
-
-	// Ensure statement is closed to release resources
-	defer func() {
-		if closeErr := stmt.Close(); closeErr != nil {
-			p.log.WithError(closeErr).Warn("Failed to close prepared statement")
-		}
-	}()
-
-	common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "prepare_insert", p.config.Table, "success", "").Observe(duration.Seconds())
-	common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "prepare_insert", p.config.Table, "success", "").Inc()
-
-	// Insert structlogs in this chunk
-	for i := range structlogs {
-		row := &structlogs[i]
-		_, err := stmt.ExecContext(ctx,
-			row.UpdatedDateTime,
-			row.BlockNumber,
-			row.TransactionHash,
-			row.TransactionIndex,
-			row.TransactionGas,
-			row.TransactionFailed,
-			row.TransactionReturnValue,
-			row.Index,
-			row.ProgramCounter,
-			row.Operation,
-			row.Gas,
-			row.GasCost,
-			row.Depth,
-			row.ReturnData,
-			row.Refund,
-			row.Error,
-			row.MetaNetworkID,
-			row.MetaNetworkName,
-		)
-
-		if err != nil {
-			p.log.WithFields(logrus.Fields{
-				"table":             p.config.Table,
-				"block_number":      blockNumber,
-				"transaction_hash":  transactionHash,
-				"transaction_index": transactionIndex,
-				"structlog_index":   i,
-				"error":             err.Error(),
-			}).Error("Failed to insert structlog row")
-
-			return fmt.Errorf("failed to insert structlog row %d: %w", i, err)
-		}
-	}
-
-	start = time.Now()
-
-	err = tx.Commit()
-
-	duration = time.Since(start)
-
-	if err != nil {
-		code := clickhouse.ParseErrorCode(err)
-		common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "insert", p.config.Table, "failed", code).Observe(duration.Seconds())
-		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "insert", p.config.Table, "failed", code).Inc()
-		common.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "failed", code).Add(float64(len(structlogs)))
-
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	committed = true
-
-	common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "insert", p.config.Table, "success", "").Inc()
-	common.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "success", "").Add(float64(len(structlogs)))
-	common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "insert", p.config.Table, "success", "").Observe(duration.Seconds())
-
-	return nil
-}
-
 // SetProcessingMode sets the processing mode for the processor
 func (p *Processor) SetProcessingMode(mode string) {
 	p.processingMode = mode
@@ -352,7 +194,16 @@ func (p *Processor) sendToBatchCollector(ctx context.Context, structlogs []Struc
 
 	if p.batchCollector == nil {
 		// Batch collector not enabled, fallback to direct insert
-		return p.insertStructlogBatch(ctx, structlogs)
+		// Create timeout context for direct insert using configured timeout
+		timeout := 5 * time.Minute
+		if p.config.BatchConfig.FlushTimeout > 0 {
+			timeout = p.config.BatchConfig.FlushTimeout
+		}
+
+		insertCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		return p.insertStructlogBatch(insertCtx, structlogs)
 	}
 
 	// Create task batch with unique ID
@@ -362,29 +213,18 @@ func (p *Processor) sendToBatchCollector(ctx context.Context, structlogs []Struc
 		TaskID:       fmt.Sprintf("%d-%d", time.Now().UnixNano(), len(structlogs)),
 	}
 
-	// Submit to batch collector with timeout
+	// Submit to batch collector
 	if err := p.batchCollector.SubmitBatch(taskBatch); err != nil {
-		if err == ErrChannelFull {
-			// Channel is full, fallback to direct insert
-			p.log.WithField("rows", len(structlogs)).Warn("Batch collector channel full, falling back to direct insert")
-
-			return p.insertStructlogBatch(ctx, structlogs)
-		}
-
+		// Let Asynq handle retries - don't fallback to direct insert
 		return fmt.Errorf("failed to submit batch: %w", err)
 	}
 
-	// Wait for batch completion with timeout
+	// Wait for batch completion - no timeout
 	select {
 	case err := <-taskBatch.ResponseChan:
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
-	case <-time.After(30 * time.Second):
-		// Timeout waiting for batch, fallback to direct insert
-		p.log.WithField("rows", len(structlogs)).Warn("Timeout waiting for batch completion, falling back to direct insert")
-
-		return p.insertStructlogBatch(ctx, structlogs)
 	}
 }
 

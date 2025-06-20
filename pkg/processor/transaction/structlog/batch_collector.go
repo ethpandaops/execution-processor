@@ -23,6 +23,7 @@ type BatchCollector struct {
 	taskChannel   chan TaskBatch
 	maxBatchSize  int
 	flushInterval time.Duration
+	flushTimeout  time.Duration
 	shutdown      chan struct{}
 	wg            sync.WaitGroup
 	log           logrus.FieldLogger
@@ -40,6 +41,7 @@ func NewBatchCollector(processor *Processor, config BatchConfig) *BatchCollector
 		taskChannel:   make(chan TaskBatch, config.ChannelBufferSize),
 		maxBatchSize:  config.MaxRows,
 		flushInterval: config.FlushInterval,
+		flushTimeout:  config.FlushTimeout,
 		shutdown:      make(chan struct{}),
 		log:           processor.log.WithField("component", "batch_collector"),
 	}
@@ -50,6 +52,7 @@ func (bc *BatchCollector) Start(ctx context.Context) error {
 	bc.log.WithFields(logrus.Fields{
 		"max_batch_size":      bc.maxBatchSize,
 		"flush_interval":      bc.flushInterval,
+		"flush_timeout":       bc.flushTimeout,
 		"channel_buffer_size": cap(bc.taskChannel),
 	}).Info("Starting batch collector")
 
@@ -120,7 +123,14 @@ func (bc *BatchCollector) run(ctx context.Context) {
 
 // processPendingTask adds a task to the current batch and flushes if needed
 func (bc *BatchCollector) processPendingTask(taskBatch TaskBatch) {
-	// Add rows to accumulated batch
+	// For large tasks (> maxRows), process in chunks immediately
+	if len(taskBatch.Rows) > bc.maxBatchSize {
+		bc.processLargeTask(taskBatch)
+
+		return
+	}
+
+	// Normal path for tasks <= maxRows
 	bc.accumulatedRows = append(bc.accumulatedRows, taskBatch.Rows...)
 	bc.pendingTasks = append(bc.pendingTasks, taskBatch)
 
@@ -135,6 +145,74 @@ func (bc *BatchCollector) processPendingTask(taskBatch TaskBatch) {
 	if len(bc.accumulatedRows) >= bc.maxBatchSize {
 		bc.log.WithField("trigger", "size").Debug("Flushing batch due to size limit")
 		bc.flushBatch(context.Background())
+	}
+}
+
+// processLargeTask handles tasks with more rows than maxBatchSize by chunking
+func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
+	bc.log.WithFields(logrus.Fields{
+		"task_id": taskBatch.TaskID,
+		"rows":    len(taskBatch.Rows),
+		"chunks":  (len(taskBatch.Rows) + bc.maxBatchSize - 1) / bc.maxBatchSize,
+	}).Info("Processing large task in chunks")
+
+	var finalErr error
+
+	chunksProcessed := 0
+
+	// Process in maxBatchSize chunks
+	for i := 0; i < len(taskBatch.Rows); i += bc.maxBatchSize {
+		end := i + bc.maxBatchSize
+		if end > len(taskBatch.Rows) {
+			end = len(taskBatch.Rows)
+		}
+
+		chunk := taskBatch.Rows[i:end]
+
+		// Flush this chunk immediately with timeout
+		ctx, cancel := context.WithTimeout(context.Background(), bc.flushTimeout)
+
+		err := bc.processor.insertStructlogBatch(ctx, chunk)
+
+		cancel()
+
+		if err != nil {
+			bc.log.WithError(err).WithFields(logrus.Fields{
+				"task_id":     taskBatch.TaskID,
+				"chunk":       chunksProcessed + 1,
+				"chunk_start": i,
+				"chunk_end":   end,
+			}).Error("Failed to flush chunk")
+
+			// Update failure metrics
+			common.BatchCollectorFlushes.WithLabelValues(bc.processor.network.Name, ProcessorName, "failed").Inc()
+
+			finalErr = err
+
+			break
+		}
+
+		chunksProcessed++
+
+		bc.log.WithFields(logrus.Fields{
+			"task_id":     taskBatch.TaskID,
+			"chunk":       chunksProcessed,
+			"chunk_start": i,
+			"chunk_end":   end,
+		}).Debug("Successfully flushed chunk")
+
+		// Update metrics
+		common.BatchCollectorFlushes.WithLabelValues(bc.processor.network.Name, ProcessorName, "success").Inc()
+		common.BatchCollectorRowsFlushed.WithLabelValues(bc.processor.network.Name, ProcessorName).Add(float64(end - i))
+	}
+
+	// Send single response after all chunks
+	select {
+	case taskBatch.ResponseChan <- finalErr:
+		// Successfully sent response
+	default:
+		// Response channel might be closed
+		bc.log.WithField("task_id", taskBatch.TaskID).Warn("Failed to send response to task")
 	}
 }
 
@@ -153,8 +231,12 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 		"tasks": taskCount,
 	}).Debug("Starting batch flush")
 
+	// Create a timeout context for the flush operation
+	flushCtx, cancel := context.WithTimeout(context.Background(), bc.flushTimeout)
+	defer cancel()
+
 	// Perform the batch insert
-	err := bc.processor.insertStructlogBatch(ctx, bc.accumulatedRows)
+	err := bc.processor.insertStructlogBatch(flushCtx, bc.accumulatedRows)
 
 	duration := time.Since(start)
 
@@ -162,11 +244,19 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 	if err != nil {
 		common.BatchCollectorFlushes.WithLabelValues(bc.processor.network.Name, ProcessorName, "failed").Inc()
 		common.BatchCollectorFlushDuration.WithLabelValues(bc.processor.network.Name, ProcessorName, "failed").Observe(duration.Seconds())
-		bc.log.WithError(err).WithFields(logrus.Fields{
+		logFields := logrus.Fields{
 			"rows":     rowCount,
 			"tasks":    taskCount,
 			"duration": duration,
-		}).Error("Batch flush failed")
+		}
+
+		// Check if it's a timeout error
+		if flushCtx.Err() == context.DeadlineExceeded {
+			logFields["timeout"] = bc.flushTimeout.String()
+			bc.log.WithError(err).WithFields(logFields).Error("Batch flush timed out")
+		} else {
+			bc.log.WithError(err).WithFields(logFields).Error("Batch flush failed")
+		}
 	} else {
 		common.BatchCollectorFlushes.WithLabelValues(bc.processor.network.Name, ProcessorName, "success").Inc()
 		common.BatchCollectorFlushDuration.WithLabelValues(bc.processor.network.Name, ProcessorName, "success").Observe(duration.Seconds())

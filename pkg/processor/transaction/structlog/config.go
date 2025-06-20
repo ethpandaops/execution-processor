@@ -13,7 +13,7 @@ type BatchConfig struct {
 	MaxRows           int           `yaml:"maxRows"`           // Max rows before forced flush
 	FlushInterval     time.Duration `yaml:"flushInterval"`     // Max time to wait before flush
 	ChannelBufferSize int           `yaml:"channelBufferSize"` // Max tasks that can be queued
-	ChunkSize         int           `yaml:"chunkSize"`         // Chunk size for large single transactions (fallback)
+	FlushTimeout      time.Duration `yaml:"flushTimeout"`      // Timeout for ClickHouse flush operations
 }
 
 // TransactionStructlogConfig holds configuration for transaction structlog processor
@@ -51,12 +51,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("batch config channel buffer size must be greater than 0")
 		}
 
-		if c.BatchConfig.ChunkSize <= 0 {
-			return fmt.Errorf("batch config chunk size must be greater than 0")
+		if c.BatchConfig.FlushTimeout <= 0 {
+			c.BatchConfig.FlushTimeout = 5 * time.Minute
 		}
-	} else if c.BatchConfig.ChunkSize <= 0 {
-		// When batch aggregation is disabled, we still need chunk size for fallback
-		return fmt.Errorf("batch config chunk size must be greater than 0")
 	}
 
 	return nil
