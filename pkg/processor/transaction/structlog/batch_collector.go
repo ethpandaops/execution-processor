@@ -76,6 +76,14 @@ func (bc *BatchCollector) Stop(ctx context.Context) error {
 
 // SubmitBatch submits a task batch for processing
 func (bc *BatchCollector) SubmitBatch(taskBatch TaskBatch) error {
+	// Check shutdown first
+	select {
+	case <-bc.shutdown:
+		return context.Canceled
+	default:
+	}
+
+	// Then try to submit
 	select {
 	case bc.taskChannel <- taskBatch:
 		return nil
@@ -134,6 +142,29 @@ func (bc *BatchCollector) processPendingTask(taskBatch TaskBatch) {
 	bc.accumulatedRows = append(bc.accumulatedRows, taskBatch.Rows...)
 	bc.pendingTasks = append(bc.pendingTasks, taskBatch)
 
+	// Check memory usage after adding rows
+	currentRows := len(bc.accumulatedRows)
+	estimatedMemoryMB := uint64(currentRows) * 1 / 1024 // Rough estimate: 1KB per structlog
+
+	// Update metrics
+	common.BatchCollectorSize.WithLabelValues(bc.processor.network.Name, ProcessorName, "rows").Set(float64(currentRows))
+	common.BatchCollectorSize.WithLabelValues(bc.processor.network.Name, ProcessorName, "tasks").Set(float64(len(bc.pendingTasks)))
+	common.BatchCollectorSize.WithLabelValues(bc.processor.network.Name, ProcessorName, "memory_estimate_mb").Set(float64(estimatedMemoryMB))
+
+	// Log warning if accumulated rows are getting high
+	if currentRows > bc.maxBatchSize/2 {
+		bc.log.WithFields(logrus.Fields{
+			"accumulated_rows":    currentRows,
+			"max_batch_size":      bc.maxBatchSize,
+			"estimated_memory_mb": estimatedMemoryMB,
+			"pending_tasks":       len(bc.pendingTasks),
+		}).Warn("Batch collector accumulation reaching high levels")
+
+		// Check actual memory usage
+		LogMemoryWarning(bc.log, "batch_collector_accumulation", bc.processor.memoryThresholds.BatchCollectorWarningMB)
+		common.MemoryPressureEvents.WithLabelValues("batch_collector", "warning").Inc()
+	}
+
 	bc.log.WithFields(logrus.Fields{
 		"task_id":          taskBatch.TaskID,
 		"task_rows":        len(taskBatch.Rows),
@@ -150,10 +181,26 @@ func (bc *BatchCollector) processPendingTask(taskBatch TaskBatch) {
 
 // processLargeTask handles tasks with more rows than maxBatchSize by chunking
 func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
+	taskRows := len(taskBatch.Rows)
+	estimatedMemoryMB := uint64(taskRows) * 1 / 1024 // Rough estimate: 1KB per structlog
+
+	// Log warning for very large tasks
+	if taskRows > bc.maxBatchSize*2 {
+		bc.log.WithFields(logrus.Fields{
+			"task_id":             taskBatch.TaskID,
+			"rows":                taskRows,
+			"estimated_memory_mb": estimatedMemoryMB,
+			"max_batch_size":      bc.maxBatchSize,
+		}).Warn("Processing extremely large transaction task")
+
+		// Check actual memory usage
+		LogMemoryWarning(bc.log, "large_task_processing", bc.processor.memoryThresholds.LargeTaskWarningMB)
+	}
+
 	bc.log.WithFields(logrus.Fields{
 		"task_id": taskBatch.TaskID,
-		"rows":    len(taskBatch.Rows),
-		"chunks":  (len(taskBatch.Rows) + bc.maxBatchSize - 1) / bc.maxBatchSize,
+		"rows":    taskRows,
+		"chunks":  (taskRows + bc.maxBatchSize - 1) / bc.maxBatchSize,
 	}).Info("Processing large task in chunks")
 
 	var finalErr error
