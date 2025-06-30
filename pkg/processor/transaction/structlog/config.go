@@ -19,9 +19,10 @@ type BatchConfig struct {
 // TransactionStructlogConfig holds configuration for transaction structlog processor
 type Config struct {
 	clickhouse.Config `yaml:",inline"`
-	Enabled           bool        `yaml:"enabled"`
-	Table             string      `yaml:"table"`
-	BatchConfig       BatchConfig `yaml:"batchConfig"`
+	Enabled           bool              `yaml:"enabled"`
+	Table             string            `yaml:"table"`
+	BatchConfig       BatchConfig       `yaml:"batchConfig"`
+	MemoryThresholds  *MemoryThresholds `yaml:"memoryThresholds"`
 }
 
 func (c *Config) Validate() error {
@@ -54,6 +55,12 @@ func (c *Config) Validate() error {
 		if c.BatchConfig.FlushTimeout <= 0 {
 			c.BatchConfig.FlushTimeout = 5 * time.Minute
 		}
+	}
+
+	// Set default memory thresholds if not provided
+	if c.MemoryThresholds == nil {
+		defaultThresholds := DefaultMemoryThresholds()
+		c.MemoryThresholds = &defaultThresholds
 	}
 
 	return nil

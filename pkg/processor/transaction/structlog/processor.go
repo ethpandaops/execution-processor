@@ -26,16 +26,17 @@ type Dependencies struct {
 
 // Processor handles transaction structlog processing
 type Processor struct {
-	log            logrus.FieldLogger
-	pool           *ethereum.Pool
-	stateManager   *state.Manager
-	clickhouse     *clickhouse.Client
-	config         *Config
-	network        *ethereum.Network
-	asynqClient    *asynq.Client
-	processingMode string
-	redisPrefix    string
-	batchCollector *BatchCollector
+	log              logrus.FieldLogger
+	pool             *ethereum.Pool
+	stateManager     *state.Manager
+	clickhouse       *clickhouse.Client
+	config           *Config
+	network          *ethereum.Network
+	asynqClient      *asynq.Client
+	processingMode   string
+	redisPrefix      string
+	batchCollector   *BatchCollector
+	memoryThresholds MemoryThresholds
 }
 
 // New creates a new transaction structlog processor
@@ -53,14 +54,15 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 	}
 
 	processor := &Processor{
-		log:            deps.Log.WithField("processor", ProcessorName),
-		pool:           deps.Pool,
-		stateManager:   deps.State,
-		clickhouse:     clickhouseClient,
-		config:         config,
-		asynqClient:    deps.AsynqClient,
-		processingMode: c.FORWARDS_MODE, // Default mode
-		redisPrefix:    deps.RedisPrefix,
+		log:              deps.Log.WithField("processor", ProcessorName),
+		pool:             deps.Pool,
+		stateManager:     deps.State,
+		clickhouse:       clickhouseClient,
+		config:           config,
+		asynqClient:      deps.AsynqClient,
+		processingMode:   c.FORWARDS_MODE, // Default mode
+		redisPrefix:      deps.RedisPrefix,
+		memoryThresholds: *config.MemoryThresholds,
 	}
 
 	processor.network = deps.Network

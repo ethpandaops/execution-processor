@@ -289,6 +289,8 @@ func (p *Processor) handleVerifyForwardsTask(ctx context.Context, task *asynq.Ta
 
 			// Track re-enqueue metric
 			common.TasksEnqueued.WithLabelValues(p.network.Name, ProcessorName, queue, ProcessForwardsTaskType).Inc()
+			common.RetryCount.WithLabelValues(p.network.Name, ProcessorName, "count_mismatch").Inc()
+			common.VerificationMismatchRate.WithLabelValues(p.network.Name, ProcessorName, payload.TransactionHash).Inc()
 
 			// Record successful handling (re-enqueue)
 			common.TasksProcessed.WithLabelValues(p.network.Name, ProcessorName, c.VerifyForwardsQueue(ProcessorName), VerifyForwardsTaskType, "reenqueued").Inc()

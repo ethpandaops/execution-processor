@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/0xsequence/ethkit/go-ethereum/core/types"
+	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 )
@@ -81,6 +82,36 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 	trace, err := node.DebugTraceTransaction(processCtx, tx.Hash().String(), block.Number())
 	if err != nil {
 		return nil, fmt.Errorf("failed to trace transaction: %w", err)
+	}
+
+	// Track trace size metrics
+	if trace != nil {
+		traceSize := len(trace.Structlogs)
+		common.TransactionTraceSize.WithLabelValues(p.network.Name, ProcessorName).Observe(float64(traceSize))
+
+		// Log warning for large traces
+		if traceSize > 10000 {
+			estimatedMemoryMB := uint64(traceSize) * 1 / 1024 // Rough estimate
+			p.log.WithFields(logrus.Fields{
+				"transaction_hash":    tx.Hash().String(),
+				"block_number":        block.Number().Uint64(),
+				"structlog_count":     traceSize,
+				"estimated_memory_mb": estimatedMemoryMB,
+			}).Warn("Processing transaction with very large trace")
+
+			// Check actual memory usage
+			LogMemoryWarning(p.log, "large_trace_extraction", p.memoryThresholds.LargeTraceWarningMB)
+			common.MemoryPressureEvents.WithLabelValues("trace_extraction", "warning").Inc()
+
+			// Track large transaction categories
+			if traceSize > 50000 {
+				common.LargeTransactionCount.WithLabelValues(p.network.Name, ProcessorName, "50k+").Inc()
+			} else if traceSize > 10000 {
+				common.LargeTransactionCount.WithLabelValues(p.network.Name, ProcessorName, "10k-50k").Inc()
+			}
+		} else if traceSize > 1000 {
+			common.LargeTransactionCount.WithLabelValues(p.network.Name, ProcessorName, "1k-10k").Inc()
+		}
 	}
 
 	// Convert trace to structlog rows

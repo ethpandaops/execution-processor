@@ -61,6 +61,19 @@ processors:
       flushInterval: "5s"           # Max time to wait before flush
       flushTimeout: "5m"            # Timeout for ClickHouse flush operations
       channelBufferSize: 100        # Max tasks that can be queued
+    
+    # Memory threshold configuration (optional, defaults shown)
+    memoryThresholds:
+      batchCollectorWarningMB: 500  # Warn when batch collector uses >500MB
+      largeTraceWarningMB: 800      # Warn when trace extraction uses >800MB
+      largeTaskWarningMB: 1000      # Warn when processing tasks >1GB
 
 # Application settings
 shutdownTimeout: "30s"
+
+# Memory monitoring configuration
+memoryMonitor:
+  enabled: true                     # Enable memory monitoring
+  interval: "30s"                   # How often to collect memory stats
+  warningThresholdMB: 1024          # Log warning when memory exceeds this (MB)
+  criticalThresholdMB: 2048         # Log critical when memory exceeds this (MB)
