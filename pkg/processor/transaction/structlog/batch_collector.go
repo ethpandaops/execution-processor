@@ -267,13 +267,24 @@ func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
 	// Clear the task data to allow GC, especially important for failed large tasks
 	taskBatch.Rows = nil
 
-	// Force GC for very large tasks that failed
-	if finalErr != nil && taskRows > 100000 {
-		bc.log.WithFields(logrus.Fields{
-			"task_id": taskBatch.TaskID,
-			"rows":    taskRows,
-			"error":   finalErr.Error(),
-		}).Info("Forcing GC after large task failure")
+	// Force GC for very large tasks (both success and failure)
+	if taskRows > 100000 {
+		if finalErr != nil {
+			bc.log.WithFields(logrus.Fields{
+				"task_id": taskBatch.TaskID,
+				"rows":    taskRows,
+				"error":   finalErr.Error(),
+			}).Info("Forcing GC after large task failure")
+		} else {
+			bc.log.WithFields(logrus.Fields{
+				"task_id": taskBatch.TaskID,
+				"rows":    taskRows,
+			}).Info("Forcing GC after large task success")
+		}
+
+		runtime.GC()
+	} else if taskRows > 50000 {
+		// For medium-large tasks, also trigger GC
 		runtime.GC()
 	}
 }
@@ -297,10 +308,20 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 	flushCtx, cancel := context.WithTimeout(context.Background(), bc.flushTimeout)
 	defer cancel()
 
+	// Log memory usage before insert for large batches
+	if rowCount > 100000 {
+		LogMemoryWarning(bc.log, "before_batch_insert", 0)
+	}
+
 	// Perform the batch insert
 	err := bc.processor.insertStructlogBatch(flushCtx, bc.accumulatedRows)
 
 	duration := time.Since(start)
+
+	// Log memory usage after insert for large batches
+	if rowCount > 100000 {
+		LogMemoryWarning(bc.log, "after_batch_insert", 0)
+	}
 
 	// Update metrics
 	if err != nil {
@@ -348,12 +369,22 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 	bc.accumulatedRows = nil
 	bc.pendingTasks = nil
 
-	// Force GC on large batch failures
-	if err != nil && rowCount > 50000 {
-		bc.log.WithFields(logrus.Fields{
-			"rows":  rowCount,
-			"error": err.Error(),
-		}).Info("Forcing GC after large batch failure")
+	// Force GC on large batches (both success and failure)
+	if rowCount > 50000 {
+		if err != nil {
+			bc.log.WithFields(logrus.Fields{
+				"rows":  rowCount,
+				"error": err.Error(),
+			}).Info("Forcing GC after large batch failure")
+		} else {
+			bc.log.WithFields(logrus.Fields{
+				"rows": rowCount,
+			}).Info("Forcing GC after large batch success")
+		}
+
+		runtime.GC()
+	} else if rowCount > 10000 {
+		// For medium-sized batches, also trigger GC but less aggressively
 		runtime.GC()
 	}
 }

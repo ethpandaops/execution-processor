@@ -137,6 +137,12 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 	uIndex := uint32(index) //nolint:gosec // index is bounded by block.Transactions() length
 
 	if trace != nil {
+		// Pre-allocate slice for better memory efficiency
+		structlogs = make([]Structlog, 0, len(trace.Structlogs))
+
+		// For extremely large traces, log memory usage periodically
+		logInterval := 100000
+
 		for i, structLog := range trace.Structlogs {
 			row := Structlog{
 				UpdatedDateTime:        time.Now(),
@@ -160,7 +166,23 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 			}
 
 			structlogs = append(structlogs, row)
+
+			// For very large traces, periodically log memory usage
+			if i > 0 && i%logInterval == 0 && len(trace.Structlogs) > 200000 {
+				p.log.WithFields(logrus.Fields{
+					"transaction_hash": tx.Hash().String(),
+					"progress":         fmt.Sprintf("%d/%d", i, len(trace.Structlogs)),
+				}).Debug("Processing large trace")
+
+				// Force GC during processing of extremely large traces
+				if i%200000 == 0 {
+					runtime.GC()
+				}
+			}
 		}
+
+		// Clear the original trace data to free memory
+		trace.Structlogs = nil
 	}
 
 	return structlogs, nil
