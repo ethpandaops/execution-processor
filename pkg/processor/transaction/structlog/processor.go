@@ -215,9 +215,25 @@ func (p *Processor) sendToBatchCollector(ctx context.Context, structlogs []Struc
 		TaskID:       fmt.Sprintf("%d-%d", time.Now().UnixNano(), len(structlogs)),
 	}
 
+	// Ensure response channel is cleaned up on any exit path
+	defer func() {
+		// Drain the channel if it has any pending data
+		select {
+		case <-taskBatch.ResponseChan:
+		default:
+		}
+		close(taskBatch.ResponseChan)
+	}()
+
 	// Submit to batch collector
 	if err := p.batchCollector.SubmitBatch(taskBatch); err != nil {
 		// Let Asynq handle retries - don't fallback to direct insert
+		p.log.WithFields(logrus.Fields{
+			"task_id": taskBatch.TaskID,
+			"rows":    len(taskBatch.Rows),
+			"error":   err.Error(),
+		}).Debug("Failed to submit batch to collector, channel will be cleaned up")
+
 		return fmt.Errorf("failed to submit batch: %w", err)
 	}
 

@@ -41,23 +41,40 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.B
 		return 0, err
 	}
 
+	// Store count before processing
+	structlogCount := len(structlogs)
+
+	// Ensure we clear the slice on exit to allow GC, especially important for failed inserts
+	defer func() {
+		// Clear the slice to release memory
+		structlogs = nil
+		// Force GC for large transactions or on errors
+		if structlogCount > 1000 {
+			runtime.GC()
+		}
+	}()
+
 	// Send to batch collector for insertion
 	if err := p.sendToBatchCollector(ctx, structlogs); err != nil {
 		common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
+		// Log memory cleanup for large failed batches
+		if structlogCount > 10000 {
+			p.log.WithFields(logrus.Fields{
+				"transaction_hash": tx.Hash().String(),
+				"structlog_count":  structlogCount,
+				"error":            err.Error(),
+			}).Info("Cleaning up memory after failed batch insert")
+		}
+
 		runtime.GC()
 
 		return 0, fmt.Errorf("failed to insert structlogs via batch collector: %w", err)
 	}
 
-	// Force garbage collection for large data processing to prevent memory buildup
-	if len(structlogs) > 1000 {
-		runtime.GC()
-	}
-
 	// Record success metrics
 	common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
 
-	return len(structlogs), nil
+	return structlogCount, nil
 }
 
 // ExtractStructlogs extracts structlog data from a transaction without inserting to database

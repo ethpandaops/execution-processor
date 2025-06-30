@@ -3,6 +3,7 @@ package structlog
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
@@ -261,6 +262,20 @@ func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
 		// Response channel might be closed
 		bc.log.WithField("task_id", taskBatch.TaskID).Warn("Failed to send response to task")
 	}
+	// Note: Channel cleanup is handled by the sender's defer in sendToBatchCollector
+
+	// Clear the task data to allow GC, especially important for failed large tasks
+	taskBatch.Rows = nil
+
+	// Force GC for very large tasks that failed
+	if finalErr != nil && taskRows > 100000 {
+		bc.log.WithFields(logrus.Fields{
+			"task_id": taskBatch.TaskID,
+			"rows":    taskRows,
+			"error":   finalErr.Error(),
+		}).Info("Forcing GC after large task failure")
+		runtime.GC()
+	}
 }
 
 // flushBatch performs the actual database insert and responds to all pending tasks
@@ -324,11 +339,23 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 			// Response channel might be closed, log warning
 			bc.log.WithField("task_id", task.TaskID).Warn("Failed to send response to task")
 		}
+		// Clear task data to allow GC
+		// Note: Channel cleanup is handled by the sender's defer in sendToBatchCollector
+		task.Rows = nil
 	}
 
-	// Reset state
+	// Reset state - this is critical for releasing memory
 	bc.accumulatedRows = nil
 	bc.pendingTasks = nil
+
+	// Force GC on large batch failures
+	if err != nil && rowCount > 50000 {
+		bc.log.WithFields(logrus.Fields{
+			"rows":  rowCount,
+			"error": err.Error(),
+		}).Info("Forcing GC after large batch failure")
+		runtime.GC()
+	}
 }
 
 // flushRemaining flushes any remaining rows during shutdown
