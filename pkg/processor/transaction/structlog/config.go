@@ -31,7 +31,6 @@ type Config struct {
 	Enabled                bool                    `yaml:"enabled"`
 	Table                  string                  `yaml:"table"`
 	BatchConfig            BatchConfig             `yaml:"batchConfig"`
-	MemoryThresholds       *MemoryThresholds       `yaml:"memoryThresholds"`
 	LargeTransactionConfig *LargeTransactionConfig `yaml:"largeTransactionConfig"`
 }
 
@@ -65,12 +64,6 @@ func (c *Config) Validate() error {
 		if c.BatchConfig.FlushTimeout <= 0 {
 			c.BatchConfig.FlushTimeout = 5 * time.Minute
 		}
-	}
-
-	// Set default memory thresholds if not provided
-	if c.MemoryThresholds == nil {
-		defaultThresholds := DefaultMemoryThresholds()
-		c.MemoryThresholds = &defaultThresholds
 	}
 
 	// Set default large transaction config if not provided

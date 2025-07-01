@@ -242,8 +242,8 @@ func (p *Processor) handleVerifyForwardsTask(ctx context.Context, task *asynq.Ta
 		"network":           payload.NetworkName,
 	}).Debug("Processing verify task")
 
-	// Verify the transaction
-	if err := p.VerifyTransaction(ctx, &payload.BlockNumber, payload.TransactionHash, payload.TransactionIndex, payload.NetworkName, payload.InsertedCount); err != nil {
+	// Verify the transaction with large transaction handling
+	if err := p.verifyTransactionWithLargeTxHandling(ctx, &payload.BlockNumber, payload.TransactionHash, payload.TransactionIndex, payload.NetworkName, payload.InsertedCount); err != nil {
 		// Check if it's a count mismatch error
 		var countMismatchErr *CountMismatchError
 		if errors.As(err, &countMismatchErr) {
@@ -345,8 +345,8 @@ func (p *Processor) handleVerifyBackwardsTask(ctx context.Context, task *asynq.T
 		"network":           payload.NetworkName,
 	}).Debug("Processing verify task")
 
-	// Verify the transaction
-	if err := p.VerifyTransaction(ctx, &payload.BlockNumber, payload.TransactionHash, payload.TransactionIndex, payload.NetworkName, payload.InsertedCount); err != nil {
+	// Verify the transaction with large transaction handling
+	if err := p.verifyTransactionWithLargeTxHandling(ctx, &payload.BlockNumber, payload.TransactionHash, payload.TransactionIndex, payload.NetworkName, payload.InsertedCount); err != nil {
 		// Check if it's a count mismatch error
 		var countMismatchErr *CountMismatchError
 		if errors.As(err, &countMismatchErr) {

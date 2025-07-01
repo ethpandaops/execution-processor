@@ -27,11 +27,10 @@ type Server struct {
 	config    *Config
 	namespace string
 
-	redis           *r.Client
-	pool            *ethereum.Pool
-	processor       *processor.Manager
-	state           *state.Manager
-	memoryCollector *MemoryStatsCollector
+	redis     *r.Client
+	pool      *ethereum.Pool
+	processor *processor.Manager
+	state     *state.Manager
 
 	pprofServer  *http.Server
 	healthServer *http.Server
@@ -60,19 +59,14 @@ func NewServer(ctx context.Context, log logrus.FieldLogger, namespace string, co
 		return nil, fmt.Errorf("failed to create processor manager: %w", err)
 	}
 
-	// Create memory stats collector
-	// Always create the collector, let it decide internally if it's enabled
-	memoryCollector := NewMemoryStatsCollector(log, config.MemoryMonitor)
-
 	return &Server{
-		config:          config,
-		log:             log,
-		namespace:       namespace,
-		redis:           redisClient,
-		pool:            pool,
-		state:           stateManager,
-		processor:       p,
-		memoryCollector: memoryCollector,
+		config:    config,
+		log:       log,
+		namespace: namespace,
+		redis:     redisClient,
+		pool:      pool,
+		state:     stateManager,
+		processor: p,
 	}, nil
 }
 
@@ -88,7 +82,6 @@ func (s *Server) Start(ctx context.Context) error {
 		"has_state":     s.state != nil,
 		"has_processor": s.processor != nil,
 		"has_redis":     s.redis != nil,
-		"has_memory":    s.memoryCollector != nil,
 	}).Debug("Server component states")
 
 	// Start metrics server
@@ -168,19 +161,6 @@ func (s *Server) Start(ctx context.Context) error {
 		return s.processor.Start(ctx)
 	})
 
-	// Start memory stats collector
-	g.Go(func() error {
-		if err := s.memoryCollector.Start(ctx); err != nil {
-			s.log.WithError(err).Error("Memory collector start failed")
-
-			return err
-		}
-
-		<-ctx.Done()
-
-		return nil
-	})
-
 	// Wait for shutdown signal
 	g.Go(func() error {
 		<-ctx.Done()
@@ -206,14 +186,6 @@ func (s *Server) stop(ctx context.Context) error {
 
 		if err := s.processor.Stop(ctx); err != nil {
 			s.log.WithError(err).Error("failed to stop processor")
-		}
-	}
-
-	if s.memoryCollector != nil {
-		s.log.Info("Stopping memory collector...")
-
-		if err := s.memoryCollector.Stop(ctx); err != nil {
-			s.log.WithError(err).Error("failed to stop memory collector")
 		}
 	}
 

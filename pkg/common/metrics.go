@@ -176,45 +176,13 @@ var (
 		Buckets: prometheus.ExponentialBuckets(10, 2, 15),
 	}, []string{"network", "processor"})
 
-	// Memory monitoring metrics
-	MemoryUsage = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "execution_processor_memory_usage_bytes",
-		Help: "Current memory usage in bytes",
-	}, []string{"type"}) // type: alloc, sys, heap_alloc, heap_sys
-
-	GoroutineCount = promauto.NewGauge(prometheus.GaugeOpts{
-		Name: "execution_processor_goroutines",
-		Help: "Current number of goroutines",
-	})
-
-	BatchCollectorSize = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "execution_processor_batch_collector_size",
-		Help: "Current size of batch collector accumulation",
-	}, []string{"network", "processor", "type"}) // type: rows, tasks, memory_estimate_mb
-
-	TransactionTraceSize = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "execution_processor_transaction_trace_size",
-		Help:    "Size of transaction traces in structlog count",
-		Buckets: []float64{10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000},
-	}, []string{"network", "processor"})
-
 	RetryCount = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "execution_processor_retry_count_total",
 		Help: "Total number of retry attempts",
 	}, []string{"network", "processor", "reason"})
 
-	MemoryPressureEvents = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "execution_processor_memory_pressure_events_total",
-		Help: "Total number of memory pressure events",
-	}, []string{"component", "severity"}) // severity: warning, critical
-
 	VerificationMismatchRate = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "execution_processor_verification_mismatch_total",
 		Help: "Total number of verification mismatches",
 	}, []string{"network", "processor", "transaction_hash"})
-
-	LargeTransactionCount = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "execution_processor_large_transaction_total",
-		Help: "Total number of large transactions processed",
-	}, []string{"network", "processor", "size_category"}) // size_category: 1k-10k, 10k-50k, 50k+
 )

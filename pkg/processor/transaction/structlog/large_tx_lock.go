@@ -16,6 +16,7 @@ type LargeTxLockManager struct {
 	active                atomic.Bool
 	currentTx             string
 	currentSize           int
+	currentOperation      string
 	startTime             time.Time
 	waitingWorkers        atomic.Int32
 	waitingLargeTx        atomic.Int32
@@ -40,7 +41,7 @@ func (m *LargeTxLockManager) IsLargeTransaction(structlogCount int) bool {
 }
 
 // AcquireLock attempts to acquire the lock for processing a large transaction
-func (m *LargeTxLockManager) AcquireLock(ctx context.Context, txHash string, size int) error {
+func (m *LargeTxLockManager) AcquireLock(ctx context.Context, txHash string, size int, operation string) error {
 	// Increment waiting counter
 	m.waitingLargeTx.Add(1)
 	defer m.waitingLargeTx.Add(-1)
@@ -52,6 +53,7 @@ func (m *LargeTxLockManager) AcquireLock(ctx context.Context, txHash string, siz
 			"current_tx":       m.currentTx,
 			"tx_hash":          txHash,
 			"size":             size,
+			"operation":        operation,
 		}).Info("Multiple large transactions queued")
 	}
 
@@ -96,6 +98,7 @@ func (m *LargeTxLockManager) AcquireLock(ctx context.Context, txHash string, siz
 				"waiting_duration": time.Since(waitStart),
 				"current_tx":       m.currentTx,
 				"waiting_workers":  m.waitingLargeTx.Load(),
+				"operation":        operation,
 			}).Info("Still waiting for large transaction lock")
 			// Continue waiting
 
@@ -104,15 +107,23 @@ func (m *LargeTxLockManager) AcquireLock(ctx context.Context, txHash string, siz
 			m.active.Store(true)
 			m.currentTx = txHash
 			m.currentSize = size
+			m.currentOperation = operation
 			m.startTime = time.Now()
 
-			m.log.WithFields(logrus.Fields{
-				"tx_hash":         txHash,
-				"size":            size,
-				"wait_duration":   time.Since(waitStart),
-				"last_completed":  m.lastCompletedTx,
-				"time_since_last": time.Since(m.lastCompletionTime),
-			}).Info("Large transaction acquired lock")
+			logFields := logrus.Fields{
+				"tx_hash":       txHash,
+				"size":          size,
+				"wait_duration": time.Since(waitStart),
+				"operation":     operation,
+			}
+
+			// Only add last_completed and time_since_last if there was a previous completion
+			if m.lastCompletedTx != "" {
+				logFields["last_completed"] = m.lastCompletedTx
+				logFields["time_since_last"] = time.Since(m.lastCompletionTime)
+			}
+
+			m.log.WithFields(logFields).Info("Large transaction acquired lock")
 
 			return nil
 		}
@@ -122,6 +133,7 @@ func (m *LargeTxLockManager) AcquireLock(ctx context.Context, txHash string, siz
 // ReleaseLock releases the lock after processing a large transaction
 func (m *LargeTxLockManager) ReleaseLock(txHash string) {
 	processingDuration := time.Since(m.startTime)
+	operation := m.currentOperation
 
 	// Update completion tracking
 	m.lastCompletedTx = txHash
@@ -132,6 +144,7 @@ func (m *LargeTxLockManager) ReleaseLock(txHash string) {
 	m.active.Store(false)
 	m.currentTx = ""
 	m.currentSize = 0
+	m.currentOperation = ""
 	m.startTime = time.Time{}
 
 	// Release the lock
@@ -142,6 +155,7 @@ func (m *LargeTxLockManager) ReleaseLock(txHash string) {
 		"processing_duration": processingDuration,
 		"total_processed":     m.totalLargeTxProcessed.Load(),
 		"waiting_large_tx":    m.waitingLargeTx.Load(),
+		"operation":           operation,
 	}).Info("Large transaction released lock")
 }
 
@@ -223,6 +237,7 @@ func (m *LargeTxLockManager) GetStatus() map[string]interface{} {
 	if m.active.Load() {
 		status["current_tx"] = m.currentTx
 		status["current_size"] = m.currentSize
+		status["current_operation"] = m.currentOperation
 		status["processing_duration"] = time.Since(m.startTime).String()
 	}
 

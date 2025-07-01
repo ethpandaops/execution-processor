@@ -30,20 +30,6 @@ type Config struct { // MetricsAddr is the address to listen on for metrics.
 	Processors processor.Config `yaml:"processors"`
 	// ShutdownTimeout is the timeout for shutting down the server.
 	ShutdownTimeout time.Duration `yaml:"shutdownTimeout" default:"10s"`
-	// MemoryMonitor is the memory monitoring configuration.
-	MemoryMonitor MemoryMonitorConfig `yaml:"memoryMonitor"`
-}
-
-// MemoryMonitorConfig holds configuration for memory monitoring
-type MemoryMonitorConfig struct {
-	// Enabled enables memory monitoring
-	Enabled bool `yaml:"enabled" default:"true"`
-	// Interval is the interval to collect memory stats
-	Interval time.Duration `yaml:"interval" default:"30s"`
-	// WarningThresholdMB is the memory threshold in MB to log warnings
-	WarningThresholdMB uint64 `yaml:"warningThresholdMB" default:"1024"`
-	// CriticalThresholdMB is the memory threshold in MB to log critical warnings
-	CriticalThresholdMB uint64 `yaml:"criticalThresholdMB" default:"2048"`
 }
 
 func (c *Config) Validate() error {

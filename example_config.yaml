@@ -61,41 +61,14 @@ processors:
       flushInterval: "5s"           # Max time to wait before flush
       flushTimeout: "5m"            # Timeout for ClickHouse flush operations
       channelBufferSize: 100        # Max tasks that can be queued
-    
-    # Memory threshold configuration (optional, defaults shown)
-    memoryThresholds:
-      batchCollectorWarningMB: 500  # Warn when batch collector uses >500MB
-      largeTraceWarningMB: 800      # Warn when trace extraction uses >800MB
-      largeTaskWarningMB: 1000      # Warn when processing tasks >1GB
 
     # Large transaction configuration
     largeTransactionConfig:
-      # Enable large transaction handling
-      enabled: true
-      
-      # Number of structlogs to consider a transaction "large"
-      structlogThreshold: 100000
-      
-      # How long workers wait before returning task to queue
-      # This applies to both normal workers waiting for large tx and
-      # large tx workers waiting for another large tx to complete
-      workerWaitTimeout: 60s
-      
-      # Maximum time allowed for processing a large transaction
-      # This is a safety check - if a large tx takes longer than this,
-      # it's logged as an error (but not forcefully stopped)
-      maxProcessingTime: 5m
-      
-      # If true, large transactions are processed one at a time
-      # If false, multiple large transactions can process concurrently
-      enableSequentialMode: true
-    
-# Application settings
-shutdownTimeout: "30s"
+      enabled: true                 # Enable large transaction handling
+      structlogThreshold: 250000    # Number of structlogs to consider a transaction "large"
+      workerWaitTimeout: 4m         # How long workers wait before returning task to queue (applies to both normal workers waiting for large tx and large tx workers waiting for another large tx to complete)
+      maxProcessingTime: 5m         # Maximum time allowed for processing a large transaction (safety check - if a large tx takes longer than this, it's logged as an error but not forcefully stopped)
+      enableSequentialMode: true    # If true, large transactions are processed one at a time; if false, multiple large transactions can process concurrently
 
-# Memory monitoring configuration
-memoryMonitor:
-  enabled: true                     # Enable memory monitoring
-  interval: "30s"                   # How often to collect memory stats
-  warningThresholdMB: 1024          # Log warning when memory exceeds this (MB)
-  criticalThresholdMB: 2048         # Log critical when memory exceeds this (MB)
+# Application settings
+shutdownTimeout: 6m

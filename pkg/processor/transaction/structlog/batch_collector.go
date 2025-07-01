@@ -143,29 +143,6 @@ func (bc *BatchCollector) processPendingTask(taskBatch TaskBatch) {
 	bc.accumulatedRows = append(bc.accumulatedRows, taskBatch.Rows...)
 	bc.pendingTasks = append(bc.pendingTasks, taskBatch)
 
-	// Check memory usage after adding rows
-	currentRows := len(bc.accumulatedRows)
-	estimatedMemoryMB := uint64(currentRows) * 1 / 1024 // Rough estimate: 1KB per structlog
-
-	// Update metrics
-	common.BatchCollectorSize.WithLabelValues(bc.processor.network.Name, ProcessorName, "rows").Set(float64(currentRows))
-	common.BatchCollectorSize.WithLabelValues(bc.processor.network.Name, ProcessorName, "tasks").Set(float64(len(bc.pendingTasks)))
-	common.BatchCollectorSize.WithLabelValues(bc.processor.network.Name, ProcessorName, "memory_estimate_mb").Set(float64(estimatedMemoryMB))
-
-	// Log warning if accumulated rows are getting high
-	if currentRows > bc.maxBatchSize/2 {
-		bc.log.WithFields(logrus.Fields{
-			"accumulated_rows":    currentRows,
-			"max_batch_size":      bc.maxBatchSize,
-			"estimated_memory_mb": estimatedMemoryMB,
-			"pending_tasks":       len(bc.pendingTasks),
-		}).Warn("Batch collector accumulation reaching high levels")
-
-		// Check actual memory usage
-		LogMemoryWarning(bc.log, "batch_collector_accumulation", bc.processor.memoryThresholds.BatchCollectorWarningMB)
-		common.MemoryPressureEvents.WithLabelValues("batch_collector", "warning").Inc()
-	}
-
 	bc.log.WithFields(logrus.Fields{
 		"task_id":          taskBatch.TaskID,
 		"task_rows":        len(taskBatch.Rows),
@@ -183,19 +160,14 @@ func (bc *BatchCollector) processPendingTask(taskBatch TaskBatch) {
 // processLargeTask handles tasks with more rows than maxBatchSize by chunking
 func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
 	taskRows := len(taskBatch.Rows)
-	estimatedMemoryMB := uint64(taskRows) * 1 / 1024 // Rough estimate: 1KB per structlog
 
 	// Log warning for very large tasks
 	if taskRows > bc.maxBatchSize*2 {
 		bc.log.WithFields(logrus.Fields{
-			"task_id":             taskBatch.TaskID,
-			"rows":                taskRows,
-			"estimated_memory_mb": estimatedMemoryMB,
-			"max_batch_size":      bc.maxBatchSize,
+			"task_id":        taskBatch.TaskID,
+			"rows":           taskRows,
+			"max_batch_size": bc.maxBatchSize,
 		}).Warn("Processing extremely large transaction task")
-
-		// Check actual memory usage
-		LogMemoryWarning(bc.log, "large_task_processing", bc.processor.memoryThresholds.LargeTaskWarningMB)
 	}
 
 	bc.log.WithFields(logrus.Fields{
@@ -269,19 +241,6 @@ func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
 
 	// Force GC for very large tasks (both success and failure)
 	if taskRows > 100000 {
-		if finalErr != nil {
-			bc.log.WithFields(logrus.Fields{
-				"task_id": taskBatch.TaskID,
-				"rows":    taskRows,
-				"error":   finalErr.Error(),
-			}).Info("Forcing GC after large task failure")
-		} else {
-			bc.log.WithFields(logrus.Fields{
-				"task_id": taskBatch.TaskID,
-				"rows":    taskRows,
-			}).Info("Forcing GC after large task success")
-		}
-
 		runtime.GC()
 	} else if taskRows > 50000 {
 		// For medium-large tasks, also trigger GC
@@ -308,20 +267,10 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 	flushCtx, cancel := context.WithTimeout(context.Background(), bc.flushTimeout)
 	defer cancel()
 
-	// Log memory usage before insert for large batches
-	if rowCount > 100000 {
-		LogMemoryWarning(bc.log, "before_batch_insert", 0)
-	}
-
 	// Perform the batch insert
 	err := bc.processor.insertStructlogBatch(flushCtx, bc.accumulatedRows)
 
 	duration := time.Since(start)
-
-	// Log memory usage after insert for large batches
-	if rowCount > 100000 {
-		LogMemoryWarning(bc.log, "after_batch_insert", 0)
-	}
 
 	// Update metrics
 	if err != nil {
@@ -348,7 +297,7 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 			"rows":     rowCount,
 			"tasks":    taskCount,
 			"duration": duration,
-		}).Info("Batch flush completed successfully")
+		}).Debug("Batch flush completed successfully")
 	}
 
 	// Respond to all pending tasks with the same result
@@ -371,17 +320,6 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 
 	// Force GC on large batches (both success and failure)
 	if rowCount > 50000 {
-		if err != nil {
-			bc.log.WithFields(logrus.Fields{
-				"rows":  rowCount,
-				"error": err.Error(),
-			}).Info("Forcing GC after large batch failure")
-		} else {
-			bc.log.WithFields(logrus.Fields{
-				"rows": rowCount,
-			}).Info("Forcing GC after large batch success")
-		}
-
 		runtime.GC()
 	} else if rowCount > 10000 {
 		// For medium-sized batches, also trigger GC but less aggressively
