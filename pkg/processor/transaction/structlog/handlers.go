@@ -52,8 +52,8 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 		return fmt.Errorf("transaction hash mismatch: expected %s, got %s", payload.TransactionHash, tx.Hash().String())
 	}
 
-	// Process the transaction
-	structlogCount, err := p.ProcessSingleTransaction(ctx, block, int(payload.TransactionIndex), tx)
+	// Process the transaction with large transaction handling
+	structlogCount, err := p.processTransactionWithLargeTxHandling(ctx, block, int(payload.TransactionIndex), tx, payload.TransactionHash)
 	if err != nil {
 		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessForwardsQueue(ProcessorName), ProcessForwardsTaskType, "processing_error").Inc()
 
@@ -154,8 +154,8 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 		return fmt.Errorf("transaction hash mismatch: expected %s, got %s", payload.TransactionHash, tx.Hash().String())
 	}
 
-	// Process the transaction
-	structlogCount, err := p.ProcessSingleTransaction(ctx, block, int(payload.TransactionIndex), tx)
+	// Process the transaction with large transaction handling
+	structlogCount, err := p.processTransactionWithLargeTxHandling(ctx, block, int(payload.TransactionIndex), tx, payload.TransactionHash)
 	if err != nil {
 		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType, "processing_error").Inc()
 

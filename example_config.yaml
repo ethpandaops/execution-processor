@@ -68,6 +68,28 @@ processors:
       largeTraceWarningMB: 800      # Warn when trace extraction uses >800MB
       largeTaskWarningMB: 1000      # Warn when processing tasks >1GB
 
+    # Large transaction configuration
+    largeTransactionConfig:
+      # Enable large transaction handling
+      enabled: true
+      
+      # Number of structlogs to consider a transaction "large"
+      structlogThreshold: 100000
+      
+      # How long workers wait before returning task to queue
+      # This applies to both normal workers waiting for large tx and
+      # large tx workers waiting for another large tx to complete
+      workerWaitTimeout: 60s
+      
+      # Maximum time allowed for processing a large transaction
+      # This is a safety check - if a large tx takes longer than this,
+      # it's logged as an error (but not forcefully stopped)
+      maxProcessingTime: 5m
+      
+      # If true, large transactions are processed one at a time
+      # If false, multiple large transactions can process concurrently
+      enableSequentialMode: true
+    
 # Application settings
 shutdownTimeout: "30s"
 

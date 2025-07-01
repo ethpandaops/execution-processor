@@ -37,6 +37,7 @@ type Processor struct {
 	redisPrefix      string
 	batchCollector   *BatchCollector
 	memoryThresholds MemoryThresholds
+	largeTxLock      *LargeTxLockManager
 }
 
 // New creates a new transaction structlog processor
@@ -78,6 +79,19 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 		processor.log.Info("Batch collector enabled")
 	} else {
 		processor.log.Info("Batch collector disabled")
+	}
+
+	// Initialize large transaction lock manager
+	if config.LargeTransactionConfig != nil && config.LargeTransactionConfig.Enabled {
+		processor.largeTxLock = NewLargeTxLockManager(processor.log, config.LargeTransactionConfig)
+		processor.log.WithFields(logrus.Fields{
+			"threshold":           config.LargeTransactionConfig.StructlogThreshold,
+			"worker_wait_timeout": config.LargeTransactionConfig.WorkerWaitTimeout,
+			"max_processing_time": config.LargeTransactionConfig.MaxProcessingTime,
+			"sequential_mode":     config.LargeTransactionConfig.EnableSequentialMode,
+		}).Info("Large transaction handling enabled")
+	} else {
+		processor.log.Info("Large transaction handling disabled")
 	}
 
 	return processor, nil
@@ -185,6 +199,17 @@ func (p *Processor) getVerifyForwardsQueue() string {
 // getVerifyBackwardsQueue returns the prefixed verify backwards queue name
 func (p *Processor) getVerifyBackwardsQueue() string {
 	return c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix)
+}
+
+// GetLargeTxStatus returns the current status of large transaction processing
+func (p *Processor) GetLargeTxStatus() map[string]interface{} {
+	if p.largeTxLock == nil {
+		return map[string]interface{}{
+			"enabled": false,
+		}
+	}
+
+	return p.largeTxLock.GetStatus()
 }
 
 // sendToBatchCollector sends structlog rows to the batch collector for aggregated insertion
