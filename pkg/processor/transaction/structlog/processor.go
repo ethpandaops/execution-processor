@@ -320,14 +320,14 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 				"table":           p.config.Table,
 				"error":           err.Error(),
 				"structlog_count": len(structlogs),
-			}).Error("Column metadata error - connection has stale metadata cache")
+			}).Error("Column metadata error - reconnecting ClickHouse client")
 
-			// Force connection pool refresh for next attempt
-			db := p.clickhouse.GetDB()
-			if db != nil {
-				// Reset idle connections to force fresh connections next time
-				db.SetMaxIdleConns(0)
-				db.SetMaxIdleConns(p.config.MaxIdleConns)
+			// Nuclear option - recreate the entire connection
+			reconnectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if reconnectErr := p.clickhouse.Reconnect(reconnectCtx); reconnectErr != nil {
+				p.log.WithError(reconnectErr).Error("Failed to reconnect ClickHouse client")
 			}
 		} else {
 			p.log.WithFields(logrus.Fields{
