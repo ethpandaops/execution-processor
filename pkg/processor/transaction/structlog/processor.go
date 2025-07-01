@@ -278,6 +278,22 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 	// Begin transaction
 	tx, err := p.clickhouse.GetDB().BeginTx(ctx, nil)
 	if err != nil {
+		// Check if this is a connection error
+		if isConnectionError(err) {
+			p.log.WithFields(logrus.Fields{
+				"error":           err.Error(),
+				"structlog_count": len(structlogs),
+			}).Error("Connection error when beginning transaction - reconnecting ClickHouse client")
+
+			// Nuclear option - recreate the entire connection
+			reconnectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if reconnectErr := p.clickhouse.Reconnect(reconnectCtx); reconnectErr != nil {
+				p.log.WithError(reconnectErr).Error("Failed to reconnect ClickHouse client")
+			}
+		}
+
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
@@ -397,6 +413,22 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "batch_insert", p.config.Table, "failed", code).Inc()
 		common.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "failed", code).Add(float64(len(structlogs)))
 
+		// Check if this is a connection error
+		if isConnectionError(err) {
+			p.log.WithFields(logrus.Fields{
+				"error":           err.Error(),
+				"structlog_count": len(structlogs),
+			}).Error("Connection error during commit - reconnecting ClickHouse client")
+
+			// Nuclear option - recreate the entire connection
+			reconnectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if reconnectErr := p.clickhouse.Reconnect(reconnectCtx); reconnectErr != nil {
+				p.log.WithError(reconnectErr).Error("Failed to reconnect ClickHouse client after connection error")
+			}
+		}
+
 		return fmt.Errorf("failed to commit batch transaction: %w", err)
 	}
 
@@ -418,4 +450,17 @@ func isColumnMetadataError(err error) bool {
 	errStr := err.Error()
 
 	return strings.Contains(errStr, "column") && strings.Contains(errStr, "is not present in the table")
+}
+
+// isConnectionError checks if the error indicates a connection problem
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	return strings.Contains(errStr, "driver: bad connection") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "broken pipe")
 }
