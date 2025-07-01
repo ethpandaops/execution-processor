@@ -51,7 +51,7 @@ func (c *Client) Start(ctx context.Context) error {
 	// Configure connection pool
 	c.db.SetMaxOpenConns(c.config.MaxOpenConns)
 	c.db.SetMaxIdleConns(c.config.MaxIdleConns)
-	c.db.SetConnMaxLifetime(time.Hour)
+	c.db.SetConnMaxLifetime(5 * time.Minute)
 
 	// Test connection
 	start := time.Now()

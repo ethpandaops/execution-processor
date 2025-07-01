@@ -3,6 +3,7 @@ package structlog
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
@@ -274,7 +275,6 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 	if len(structlogs) == 0 {
 		return nil
 	}
-
 	// Begin transaction
 	tx, err := p.clickhouse.GetDB().BeginTx(ctx, nil)
 	if err != nil {
@@ -314,11 +314,28 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 		common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "prepare_batch_insert", p.config.Table, "failed", code).Observe(duration.Seconds())
 		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "prepare_batch_insert", p.config.Table, "failed", code).Inc()
 
-		p.log.WithFields(logrus.Fields{
-			"table":           p.config.Table,
-			"error":           err.Error(),
-			"structlog_count": len(structlogs),
-		}).Error("Failed to prepare ClickHouse batch statement")
+		// Check if this is a column metadata error
+		if isColumnMetadataError(err) {
+			p.log.WithFields(logrus.Fields{
+				"table":           p.config.Table,
+				"error":           err.Error(),
+				"structlog_count": len(structlogs),
+			}).Error("Column metadata error - connection has stale metadata cache")
+
+			// Force connection pool refresh for next attempt
+			db := p.clickhouse.GetDB()
+			if db != nil {
+				// Reset idle connections to force fresh connections next time
+				db.SetMaxIdleConns(0)
+				db.SetMaxIdleConns(p.config.MaxIdleConns)
+			}
+		} else {
+			p.log.WithFields(logrus.Fields{
+				"table":           p.config.Table,
+				"error":           err.Error(),
+				"structlog_count": len(structlogs),
+			}).Error("Failed to prepare ClickHouse batch statement")
+		}
 
 		return fmt.Errorf("failed to prepare batch statement for table %s: %w", p.config.Table, err)
 	}
@@ -390,4 +407,15 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 	common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "batch_insert", p.config.Table, "success", "").Observe(duration.Seconds())
 
 	return nil
+}
+
+// isColumnMetadataError checks if the error is related to column metadata issues
+func isColumnMetadataError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	return strings.Contains(errStr, "column") && strings.Contains(errStr, "is not present in the table")
 }
