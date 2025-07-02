@@ -29,6 +29,7 @@ type Structlog struct {
 	ReturnData             *string   `json:"return_data"`
 	Refund                 *uint64   `json:"refund"`
 	Error                  *string   `json:"error"`
+	CallToAddress          *string   `json:"call_to_address"`
 	MetaNetworkID          int32     `json:"meta_network_id"`
 	MetaNetworkName        string    `json:"meta_network_name"`
 }
@@ -114,6 +115,13 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 		logInterval := 100000
 
 		for i, structLog := range trace.Structlogs {
+			var callToAddress *string
+
+			if structLog.Op == "CALL" && structLog.Stack != nil && len(*structLog.Stack) > 1 {
+				stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
+				callToAddress = &stackValue
+			}
+
 			row := Structlog{
 				UpdatedDateTime:        time.Now(),
 				BlockNumber:            block.Number().Uint64(),
@@ -131,6 +139,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 				ReturnData:             structLog.ReturnData,
 				Refund:                 structLog.Refund,
 				Error:                  structLog.Error,
+				CallToAddress:          callToAddress,
 				MetaNetworkID:          p.network.ID,
 				MetaNetworkName:        p.network.Name,
 			}
