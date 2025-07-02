@@ -32,10 +32,9 @@ type Server struct {
 	processor *processor.Manager
 	state     *state.Manager
 
-	metricsServer *http.Server
-	pprofServer   *http.Server
-	healthServer  *http.Server
-	apiServer     *http.Server
+	pprofServer  *http.Server
+	healthServer *http.Server
+	apiServer    *http.Server
 }
 
 func NewServer(ctx context.Context, log logrus.FieldLogger, namespace string, config *Config) (*Server, error) {
@@ -77,9 +76,23 @@ func (s *Server) Start(ctx context.Context) error {
 
 	g, ctx := errgroup.WithContext(ctx)
 
+	// Log component states
+	s.log.WithFields(logrus.Fields{
+		"has_pool":      s.pool != nil,
+		"has_state":     s.state != nil,
+		"has_processor": s.processor != nil,
+		"has_redis":     s.redis != nil,
+	}).Debug("Server component states")
+
 	// Start metrics server
 	g.Go(func() error {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				s.log.WithField("panic", recovered).Error("Panic in metrics server goroutine")
+			}
+		}()
 		observability.StartMetricsServer(ctx, s.config.MetricsAddr)
+		<-ctx.Done()
 
 		return nil
 	})
@@ -90,6 +103,8 @@ func (s *Server) Start(ctx context.Context) error {
 			if err := s.startPProf(); err != nil && err != http.ErrServerClosed {
 				return err
 			}
+
+			<-ctx.Done()
 
 			return nil
 		})
@@ -102,6 +117,8 @@ func (s *Server) Start(ctx context.Context) error {
 				return err
 			}
 
+			<-ctx.Done()
+
 			return nil
 		})
 	}
@@ -113,6 +130,8 @@ func (s *Server) Start(ctx context.Context) error {
 				return err
 			}
 
+			<-ctx.Done()
+
 			return nil
 		})
 	}
@@ -120,12 +139,21 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start ethereum pool
 	g.Go(func() error {
 		s.pool.Start(ctx)
+		<-ctx.Done()
 
 		return nil
 	})
 
 	g.Go(func() error {
-		return s.state.Start(ctx)
+		if err := s.state.Start(ctx); err != nil {
+			s.log.WithError(err).Error("State manager start failed")
+
+			return err
+		}
+
+		<-ctx.Done()
+
+		return nil
 	})
 
 	// Start processor
@@ -137,7 +165,10 @@ func (s *Server) Start(ctx context.Context) error {
 	g.Go(func() error {
 		<-ctx.Done()
 
-		return s.stop(ctx)
+		// Use a fresh context for cleanup since the current one is cancelled
+		cleanupCtx := context.Background()
+
+		return s.stop(cleanupCtx)
 	})
 
 	return g.Wait()
@@ -194,14 +225,9 @@ func (s *Server) stop(ctx context.Context) error {
 		}
 	}
 
-	if s.metricsServer != nil {
-		if err := s.metricsServer.Shutdown(cleanupCtx); err != nil {
-			s.log.WithError(err).Error("failed to shutdown metrics server")
-		}
-
-		if err := observability.StopMetricsServer(ctx); err != nil {
-			s.log.WithError(err).Error("failed to stop metrics server")
-		}
+	// Stop metrics server using observability package
+	if err := observability.StopMetricsServer(cleanupCtx); err != nil {
+		s.log.WithError(err).Error("failed to stop metrics server")
 	}
 
 	s.log.Info("Worker stopped gracefully")

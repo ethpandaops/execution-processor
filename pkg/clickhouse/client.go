@@ -14,6 +14,11 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/common"
 )
 
+const (
+	statusSuccess = "success"
+	statusFailed  = "failed"
+)
+
 // Client represents a ClickHouse client for data storage
 type Client struct {
 	log       logrus.FieldLogger
@@ -51,7 +56,7 @@ func (c *Client) Start(ctx context.Context) error {
 	// Configure connection pool
 	c.db.SetMaxOpenConns(c.config.MaxOpenConns)
 	c.db.SetMaxIdleConns(c.config.MaxIdleConns)
-	c.db.SetConnMaxLifetime(time.Hour)
+	c.db.SetConnMaxLifetime(5 * time.Minute)
 
 	// Test connection
 	start := time.Now()
@@ -59,11 +64,11 @@ func (c *Client) Start(ctx context.Context) error {
 	duration := time.Since(start)
 
 	// Record ClickHouse connection metrics
-	status := "success"
+	status := statusSuccess
 	code := ""
 
 	if err != nil {
-		status = "failed"
+		status = statusFailed
 		code = ParseErrorCode(err)
 	}
 
@@ -99,6 +104,61 @@ func (c *Client) Stop(ctx context.Context) error {
 	return nil
 }
 
+// Reconnect closes the existing connection and creates a new one
+func (c *Client) Reconnect(ctx context.Context) error {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	c.log.Warn("Reconnecting ClickHouse client due to metadata issues")
+
+	// Close existing connection if it exists
+	if c.db != nil {
+		if err := c.db.Close(); err != nil {
+			c.log.WithError(err).Warn("Error closing existing ClickHouse connection")
+		}
+
+		c.db = nil
+	}
+
+	// Create new connection
+	db, err := sql.Open("clickhouse", c.config.DSN)
+	if err != nil {
+		return fmt.Errorf("failed to open new ClickHouse connection: %w", err)
+	}
+
+	c.db = db
+
+	// Configure connection pool
+	c.db.SetMaxOpenConns(c.config.MaxOpenConns)
+	c.db.SetMaxIdleConns(c.config.MaxIdleConns)
+	c.db.SetConnMaxLifetime(5 * time.Minute)
+
+	// Test connection
+	start := time.Now()
+	err = c.db.PingContext(ctx)
+	duration := time.Since(start)
+
+	// Record ClickHouse connection metrics
+	status := statusSuccess
+	code := ""
+
+	if err != nil {
+		status = statusFailed
+		code = ParseErrorCode(err)
+	}
+
+	common.ClickHouseOperationDuration.WithLabelValues(c.network, c.processor, "ping", "reconnection", status, code).Observe(duration.Seconds())
+	common.ClickHouseConnectionsActive.WithLabelValues(c.network, c.processor).Set(float64(c.db.Stats().OpenConnections))
+
+	if err != nil {
+		return fmt.Errorf("failed to ping ClickHouse after reconnection: %w", err)
+	}
+
+	c.log.Info("Successfully reconnected to ClickHouse")
+
+	return nil
+}
+
 // QueryRow executes a query and returns a single row
 func (c *Client) QueryRow(ctx context.Context, table, query string) *sql.Row {
 	c.lock.Lock()
@@ -117,11 +177,11 @@ func (c *Client) QueryRow(ctx context.Context, table, query string) *sql.Row {
 	duration := time.Since(start)
 
 	code := ""
-	status := "success"
+	status := statusSuccess
 
 	if row.Err() != nil {
 		code = ParseErrorCode(row.Err())
-		status = "failed"
+		status = statusFailed
 	}
 
 	common.ClickHouseOperationDuration.WithLabelValues(c.network, c.processor, "query", table, status, code).Observe(duration.Seconds())

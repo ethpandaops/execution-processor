@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/0xsequence/ethkit/go-ethereum/core/types"
+	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 )
@@ -40,23 +41,40 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.B
 		return 0, err
 	}
 
+	// Store count before processing
+	structlogCount := len(structlogs)
+
+	// Ensure we clear the slice on exit to allow GC, especially important for failed inserts
+	defer func() {
+		// Clear the slice to release memory
+		structlogs = nil
+		// Force GC for large transactions or on errors
+		if structlogCount > 1000 {
+			runtime.GC()
+		}
+	}()
+
 	// Send to batch collector for insertion
 	if err := p.sendToBatchCollector(ctx, structlogs); err != nil {
 		common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
+		// Log memory cleanup for large failed batches
+		if structlogCount > 10000 {
+			p.log.WithFields(logrus.Fields{
+				"transaction_hash": tx.Hash().String(),
+				"structlog_count":  structlogCount,
+				"error":            err.Error(),
+			}).Info("Cleaning up memory after failed batch insert")
+		}
+
 		runtime.GC()
 
 		return 0, fmt.Errorf("failed to insert structlogs via batch collector: %w", err)
 	}
 
-	// Force garbage collection for large data processing to prevent memory buildup
-	if len(structlogs) > 1000 {
-		runtime.GC()
-	}
-
 	// Record success metrics
 	common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
 
-	return len(structlogs), nil
+	return structlogCount, nil
 }
 
 // ExtractStructlogs extracts structlog data from a transaction without inserting to database
@@ -89,6 +107,12 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 	uIndex := uint32(index) //nolint:gosec // index is bounded by block.Transactions() length
 
 	if trace != nil {
+		// Pre-allocate slice for better memory efficiency
+		structlogs = make([]Structlog, 0, len(trace.Structlogs))
+
+		// For extremely large traces, log memory usage periodically
+		logInterval := 100000
+
 		for i, structLog := range trace.Structlogs {
 			row := Structlog{
 				UpdatedDateTime:        time.Now(),
@@ -112,7 +136,23 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 			}
 
 			structlogs = append(structlogs, row)
+
+			// For very large traces, periodically log memory usage
+			if i > 0 && i%logInterval == 0 && len(trace.Structlogs) > 200000 {
+				p.log.WithFields(logrus.Fields{
+					"transaction_hash": tx.Hash().String(),
+					"progress":         fmt.Sprintf("%d/%d", i, len(trace.Structlogs)),
+				}).Debug("Processing large trace")
+
+				// Force GC during processing of extremely large traces
+				if i%200000 == 0 {
+					runtime.GC()
+				}
+			}
 		}
+
+		// Clear the original trace data to free memory
+		trace.Structlogs = nil
 	}
 
 	return structlogs, nil

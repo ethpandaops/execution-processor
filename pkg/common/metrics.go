@@ -175,4 +175,14 @@ var (
 		Help:    "Size of batches being flushed",
 		Buckets: prometheus.ExponentialBuckets(10, 2, 15),
 	}, []string{"network", "processor"})
+
+	RetryCount = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "execution_processor_retry_count_total",
+		Help: "Total number of retry attempts",
+	}, []string{"network", "processor", "reason"})
+
+	VerificationMismatchRate = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "execution_processor_verification_mismatch_total",
+		Help: "Total number of verification mismatches",
+	}, []string{"network", "processor", "transaction_hash"})
 )

@@ -49,6 +49,22 @@ func (p *Processor) VerifyTransaction(ctx context.Context, blockNumber *big.Int,
 
 	expectedCount := len(trace.Structlogs)
 
+	// Path 2: Late detection - check if this is actually a large transaction
+	if p.largeTxLock != nil && p.largeTxLock.config.Enabled {
+		actuallyLarge := expectedCount >= p.largeTxLock.config.StructlogThreshold
+		potentiallyLarge := insertedCount >= p.largeTxLock.config.StructlogThreshold
+
+		if actuallyLarge && !potentiallyLarge {
+			// We discovered it's large after tracing, but insertedCount didn't indicate it
+			p.log.WithFields(logrus.Fields{
+				"transaction_hash": transactionHash,
+				"inserted_count":   insertedCount,
+				"actual_count":     expectedCount,
+				"threshold":        p.largeTxLock.config.StructlogThreshold,
+			}).Warn("Large transaction detected late during verification - insertedCount was incorrect")
+		}
+	}
+
 	// Query ClickHouse to count the structlog entries for this transaction
 	query := fmt.Sprintf(`
 		SELECT COUNT(*) as count

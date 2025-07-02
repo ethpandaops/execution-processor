@@ -3,6 +3,7 @@ package structlog
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"time"
 
@@ -76,6 +77,14 @@ func (bc *BatchCollector) Stop(ctx context.Context) error {
 
 // SubmitBatch submits a task batch for processing
 func (bc *BatchCollector) SubmitBatch(taskBatch TaskBatch) error {
+	// Check shutdown first
+	select {
+	case <-bc.shutdown:
+		return context.Canceled
+	default:
+	}
+
+	// Then try to submit
 	select {
 	case bc.taskChannel <- taskBatch:
 		return nil
@@ -150,10 +159,21 @@ func (bc *BatchCollector) processPendingTask(taskBatch TaskBatch) {
 
 // processLargeTask handles tasks with more rows than maxBatchSize by chunking
 func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
+	taskRows := len(taskBatch.Rows)
+
+	// Log warning for very large tasks
+	if taskRows > bc.maxBatchSize*2 {
+		bc.log.WithFields(logrus.Fields{
+			"task_id":        taskBatch.TaskID,
+			"rows":           taskRows,
+			"max_batch_size": bc.maxBatchSize,
+		}).Warn("Processing extremely large transaction task")
+	}
+
 	bc.log.WithFields(logrus.Fields{
 		"task_id": taskBatch.TaskID,
-		"rows":    len(taskBatch.Rows),
-		"chunks":  (len(taskBatch.Rows) + bc.maxBatchSize - 1) / bc.maxBatchSize,
+		"rows":    taskRows,
+		"chunks":  (taskRows + bc.maxBatchSize - 1) / bc.maxBatchSize,
 	}).Info("Processing large task in chunks")
 
 	var finalErr error
@@ -214,6 +234,18 @@ func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
 		// Response channel might be closed
 		bc.log.WithField("task_id", taskBatch.TaskID).Warn("Failed to send response to task")
 	}
+	// Note: Channel cleanup is handled by the sender's defer in sendToBatchCollector
+
+	// Clear the task data to allow GC, especially important for failed large tasks
+	taskBatch.Rows = nil
+
+	// Force GC for very large tasks (both success and failure)
+	if taskRows > 100000 {
+		runtime.GC()
+	} else if taskRows > 50000 {
+		// For medium-large tasks, also trigger GC
+		runtime.GC()
+	}
 }
 
 // flushBatch performs the actual database insert and responds to all pending tasks
@@ -265,7 +297,7 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 			"rows":     rowCount,
 			"tasks":    taskCount,
 			"duration": duration,
-		}).Info("Batch flush completed successfully")
+		}).Debug("Batch flush completed successfully")
 	}
 
 	// Respond to all pending tasks with the same result
@@ -277,11 +309,22 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 			// Response channel might be closed, log warning
 			bc.log.WithField("task_id", task.TaskID).Warn("Failed to send response to task")
 		}
+		// Clear task data to allow GC
+		// Note: Channel cleanup is handled by the sender's defer in sendToBatchCollector
+		task.Rows = nil
 	}
 
-	// Reset state
+	// Reset state - this is critical for releasing memory
 	bc.accumulatedRows = nil
 	bc.pendingTasks = nil
+
+	// Force GC on large batches (both success and failure)
+	if rowCount > 50000 {
+		runtime.GC()
+	} else if rowCount > 10000 {
+		// For medium-sized batches, also trigger GC but less aggressively
+		runtime.GC()
+	}
 }
 
 // flushRemaining flushes any remaining rows during shutdown

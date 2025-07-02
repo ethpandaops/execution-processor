@@ -811,7 +811,6 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 
 	skipReasons := []string{}
 	shouldSkip := false
-	anyBackpressure := false
 
 	for name := range m.processors {
 		// Check all queues based on mode
@@ -846,8 +845,6 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 			if info.Size > m.config.MaxProcessQueueSize {
 				shouldSkip = true
 
-				anyBackpressure = true
-
 				skipReasons = append(skipReasons,
 					fmt.Sprintf("%s: %d/%d", queueName, info.Size, m.config.MaxProcessQueueSize))
 
@@ -879,12 +876,6 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 		common.BlockProcessingSkipped.WithLabelValues(
 			m.network.Name, "all", "queue_backpressure",
 		).Inc()
-
-		m.log.WithFields(logrus.Fields{
-			"reasons":        reason,
-			"backpressure":   anyBackpressure,
-			"max_queue_size": m.config.MaxProcessQueueSize,
-		}).Info("Skipping block processing due to queue backpressure")
 	}
 
 	return shouldSkip, reason

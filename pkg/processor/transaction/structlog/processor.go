@@ -3,6 +3,7 @@ package structlog
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
@@ -36,6 +37,7 @@ type Processor struct {
 	processingMode string
 	redisPrefix    string
 	batchCollector *BatchCollector
+	largeTxLock    *LargeTxLockManager
 }
 
 // New creates a new transaction structlog processor
@@ -76,6 +78,19 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 		processor.log.Info("Batch collector enabled")
 	} else {
 		processor.log.Info("Batch collector disabled")
+	}
+
+	// Initialize large transaction lock manager
+	if config.LargeTransactionConfig != nil && config.LargeTransactionConfig.Enabled {
+		processor.largeTxLock = NewLargeTxLockManager(processor.log, config.LargeTransactionConfig)
+		processor.log.WithFields(logrus.Fields{
+			"threshold":           config.LargeTransactionConfig.StructlogThreshold,
+			"worker_wait_timeout": config.LargeTransactionConfig.WorkerWaitTimeout,
+			"max_processing_time": config.LargeTransactionConfig.MaxProcessingTime,
+			"sequential_mode":     config.LargeTransactionConfig.EnableSequentialMode,
+		}).Info("Large transaction handling enabled")
+	} else {
+		processor.log.Info("Large transaction handling disabled")
 	}
 
 	return processor, nil
@@ -185,6 +200,17 @@ func (p *Processor) getVerifyBackwardsQueue() string {
 	return c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
+// GetLargeTxStatus returns the current status of large transaction processing
+func (p *Processor) GetLargeTxStatus() map[string]interface{} {
+	if p.largeTxLock == nil {
+		return map[string]interface{}{
+			"enabled": false,
+		}
+	}
+
+	return p.largeTxLock.GetStatus()
+}
+
 // sendToBatchCollector sends structlog rows to the batch collector for aggregated insertion
 func (p *Processor) sendToBatchCollector(ctx context.Context, structlogs []Structlog) error {
 	// Short-circuit for empty structlog arrays - no need to process
@@ -213,9 +239,25 @@ func (p *Processor) sendToBatchCollector(ctx context.Context, structlogs []Struc
 		TaskID:       fmt.Sprintf("%d-%d", time.Now().UnixNano(), len(structlogs)),
 	}
 
+	// Ensure response channel is cleaned up on any exit path
+	defer func() {
+		// Drain the channel if it has any pending data
+		select {
+		case <-taskBatch.ResponseChan:
+		default:
+		}
+		close(taskBatch.ResponseChan)
+	}()
+
 	// Submit to batch collector
 	if err := p.batchCollector.SubmitBatch(taskBatch); err != nil {
 		// Let Asynq handle retries - don't fallback to direct insert
+		p.log.WithFields(logrus.Fields{
+			"task_id": taskBatch.TaskID,
+			"rows":    len(taskBatch.Rows),
+			"error":   err.Error(),
+		}).Debug("Failed to submit batch to collector, channel will be cleaned up")
+
 		return fmt.Errorf("failed to submit batch: %w", err)
 	}
 
@@ -233,10 +275,25 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 	if len(structlogs) == 0 {
 		return nil
 	}
-
 	// Begin transaction
 	tx, err := p.clickhouse.GetDB().BeginTx(ctx, nil)
 	if err != nil {
+		// Check if this is a connection error
+		if isConnectionError(err) {
+			p.log.WithFields(logrus.Fields{
+				"error":           err.Error(),
+				"structlog_count": len(structlogs),
+			}).Error("Connection error when beginning transaction - reconnecting ClickHouse client")
+
+			// Nuclear option - recreate the entire connection
+			reconnectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if reconnectErr := p.clickhouse.Reconnect(reconnectCtx); reconnectErr != nil {
+				p.log.WithError(reconnectErr).Error("Failed to reconnect ClickHouse client")
+			}
+		}
+
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 
@@ -273,11 +330,28 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 		common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "prepare_batch_insert", p.config.Table, "failed", code).Observe(duration.Seconds())
 		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "prepare_batch_insert", p.config.Table, "failed", code).Inc()
 
-		p.log.WithFields(logrus.Fields{
-			"table":           p.config.Table,
-			"error":           err.Error(),
-			"structlog_count": len(structlogs),
-		}).Error("Failed to prepare ClickHouse batch statement")
+		// Check if this is a column metadata error
+		if isColumnMetadataError(err) {
+			p.log.WithFields(logrus.Fields{
+				"table":           p.config.Table,
+				"error":           err.Error(),
+				"structlog_count": len(structlogs),
+			}).Error("Column metadata error - reconnecting ClickHouse client")
+
+			// Nuclear option - recreate the entire connection
+			reconnectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if reconnectErr := p.clickhouse.Reconnect(reconnectCtx); reconnectErr != nil {
+				p.log.WithError(reconnectErr).Error("Failed to reconnect ClickHouse client")
+			}
+		} else {
+			p.log.WithFields(logrus.Fields{
+				"table":           p.config.Table,
+				"error":           err.Error(),
+				"structlog_count": len(structlogs),
+			}).Error("Failed to prepare ClickHouse batch statement")
+		}
 
 		return fmt.Errorf("failed to prepare batch statement for table %s: %w", p.config.Table, err)
 	}
@@ -339,6 +413,22 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "batch_insert", p.config.Table, "failed", code).Inc()
 		common.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "failed", code).Add(float64(len(structlogs)))
 
+		// Check if this is a connection error
+		if isConnectionError(err) {
+			p.log.WithFields(logrus.Fields{
+				"error":           err.Error(),
+				"structlog_count": len(structlogs),
+			}).Error("Connection error during commit - reconnecting ClickHouse client")
+
+			// Nuclear option - recreate the entire connection
+			reconnectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			if reconnectErr := p.clickhouse.Reconnect(reconnectCtx); reconnectErr != nil {
+				p.log.WithError(reconnectErr).Error("Failed to reconnect ClickHouse client after connection error")
+			}
+		}
+
 		return fmt.Errorf("failed to commit batch transaction: %w", err)
 	}
 
@@ -349,4 +439,28 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 	common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "batch_insert", p.config.Table, "success", "").Observe(duration.Seconds())
 
 	return nil
+}
+
+// isColumnMetadataError checks if the error is related to column metadata issues
+func isColumnMetadataError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	return strings.Contains(errStr, "column") && strings.Contains(errStr, "is not present in the table")
+}
+
+// isConnectionError checks if the error indicates a connection problem
+func isConnectionError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	errStr := err.Error()
+
+	return strings.Contains(errStr, "driver: bad connection") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "broken pipe")
 }
