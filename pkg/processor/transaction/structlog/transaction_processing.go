@@ -49,25 +49,6 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.B
 	return structlogCount, nil
 }
 
-// ProcessSingleTransactionWithSizeInfo processes a transaction and returns size info for large tx handling
-func (p *Processor) ProcessSingleTransactionWithSizeInfo(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, bool, error) {
-	// This will be called from handlers_large_tx.go to get size info during processing
-	structlogCount, err := p.ExtractAndProcessStructlogs(ctx, block, index, tx)
-	if err != nil {
-		return 0, false, err
-	}
-
-	isLarge := false
-	if p.largeTxLock != nil && p.largeTxLock.config.Enabled {
-		isLarge = p.largeTxLock.IsLargeTransaction(structlogCount)
-	}
-
-	// Record success metrics
-	common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
-
-	return structlogCount, isLarge, nil
-}
-
 // ExtractAndProcessStructlogs extracts and processes structlog data with optimized memory handling
 func (p *Processor) ExtractAndProcessStructlogs(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
 	start := time.Now()

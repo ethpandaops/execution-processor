@@ -2,10 +2,14 @@ package structlog
 
 import (
 	"context"
+	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/0xsequence/ethkit/go-ethereum/core/types"
 	"github.com/sirupsen/logrus"
+
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
 // processTransactionWithLargeTxHandling processes a transaction with large transaction lock management
@@ -15,36 +19,73 @@ func (p *Processor) processTransactionWithLargeTxHandling(ctx context.Context, b
 		return p.ProcessSingleTransaction(ctx, block, index, tx)
 	}
 
-	// Check if a large transaction is currently being processed
-	if p.largeTxLock.active.Load() {
-		// Wait for the large transaction to complete before processing
-		if err := p.largeTxLock.WaitForLargeTransaction(ctx, txHash); err != nil {
-			p.log.WithError(err).WithFields(logrus.Fields{
-				"tx_hash": txHash,
-			}).Warn("Failed to wait for large transaction")
+	// Check if this transaction already holds the lock (for retries)
+	if p.largeTxLock.HasLock(txHash) {
+		// This transaction already has the lock, process it
+		defer p.largeTxLock.ReleaseLock(txHash)
 
-			return 0, err
+		return p.ProcessSingleTransaction(ctx, block, index, tx)
+	}
+
+	// Check if we need to determine the transaction size first
+	if p.largeTxLock.config.EnableSequentialMode {
+		// We need to check the size before deciding whether to wait or acquire lock
+		// Get a quick trace to count structlogs
+		node := p.pool.GetHealthyExecutionNode()
+		if node == nil {
+			return 0, fmt.Errorf("no healthy execution node available")
 		}
-	}
 
-	// Process the transaction and get size info
-	structlogCount, isLarge, err := p.ProcessSingleTransactionWithSizeInfo(ctx, block, index, tx)
-	if err != nil {
-		return 0, err
-	}
+		// Use a short timeout for the size check
+		sizeCheckCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
 
-	// If it turned out to be a large transaction and we haven't acquired the lock yet
-	if isLarge && p.largeTxLock.config.EnableSequentialMode && !p.largeTxLock.HasLock(txHash) {
-		// This is a large transaction that we just discovered
-		// For now, we've already processed it, but log this for monitoring
+		trace, err := node.DebugTraceTransaction(sizeCheckCtx, tx.Hash().String(), block.Number(), execution.DefaultTraceOptions())
+		if err != nil {
+			return 0, fmt.Errorf("failed to get trace for size check: %w", err)
+		}
+
+		structlogCount := len(trace.Structlogs)
+		isLargeTx := p.largeTxLock.IsLargeTransaction(structlogCount)
+
 		p.log.WithFields(logrus.Fields{
 			"tx_hash":         txHash,
 			"structlog_count": structlogCount,
+			"is_large_tx":     isLargeTx,
 			"threshold":       p.largeTxLock.config.StructlogThreshold,
-		}).Info("Processed large transaction without pre-acquired lock - consider implementing retry logic")
+		}).Debug("Checked transaction size")
+
+		if isLargeTx {
+			// This is a large transaction, acquire lock
+			if err := p.largeTxLock.AcquireLock(ctx, txHash, structlogCount, "process"); err != nil {
+				p.log.WithError(err).WithFields(logrus.Fields{
+					"tx_hash":         txHash,
+					"structlog_count": structlogCount,
+				}).Warn("Failed to acquire large transaction lock")
+
+				return 0, err
+			}
+			defer p.largeTxLock.ReleaseLock(txHash)
+
+			// Process the large transaction
+			return p.ProcessSingleTransaction(ctx, block, index, tx)
+		}
+
+		// Not a large transaction, but check if we need to wait for an active large tx
+		if p.largeTxLock.active.Load() {
+			// Wait for the large transaction to complete before processing
+			if err := p.largeTxLock.WaitForLargeTransaction(ctx, txHash); err != nil {
+				p.log.WithError(err).WithFields(logrus.Fields{
+					"tx_hash": txHash,
+				}).Warn("Failed to wait for large transaction")
+
+				return 0, err
+			}
+		}
 	}
 
-	return structlogCount, nil
+	// Process the transaction normally
+	return p.ProcessSingleTransaction(ctx, block, index, tx)
 }
 
 // verifyTransactionWithLargeTxHandling verifies a transaction with large transaction lock management
