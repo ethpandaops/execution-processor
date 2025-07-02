@@ -7,6 +7,8 @@ import (
 
 	"github.com/0xsequence/ethkit/go-ethereum/core/types"
 	"github.com/sirupsen/logrus"
+
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
 // processTransactionWithLargeTxHandling processes a transaction with large transaction lock management
@@ -25,7 +27,7 @@ func (p *Processor) processTransactionWithLargeTxHandling(ctx context.Context, b
 	}
 
 	// Get trace to count structlogs
-	trace, err := node.DebugTraceTransaction(ctx, tx.Hash().String(), block.Number())
+	trace, err := node.DebugTraceTransaction(ctx, tx.Hash().String(), block.Number(), execution.DefaultTraceOptions())
 	if err != nil {
 		return 0, fmt.Errorf("failed to get trace for size check: %w", err)
 	}

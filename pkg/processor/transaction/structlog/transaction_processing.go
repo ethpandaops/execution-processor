@@ -10,6 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
 type Structlog struct {
@@ -97,7 +98,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 	defer cancel()
 
 	// Get transaction trace
-	trace, err := node.DebugTraceTransaction(processCtx, tx.Hash().String(), block.Number())
+	trace, err := node.DebugTraceTransaction(processCtx, tx.Hash().String(), block.Number(), execution.StackTraceOptions())
 	if err != nil {
 		return nil, fmt.Errorf("failed to trace transaction: %w", err)
 	}

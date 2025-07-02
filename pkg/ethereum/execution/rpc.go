@@ -68,24 +68,24 @@ func (n *Node) BlockByNumber(ctx context.Context, blockNumber *big.Int) (*types.
 	return block, nil
 }
 
-// getDefaultTraceParams returns standard VM trace parameters
-func getTraceParams(hash string) []any {
+// getTraceParams returns VM trace parameters with configurable options
+func getTraceParams(hash string, options TraceOptions) []any {
 	return []any{
 		hash,
 		map[string]any{
-			"disableStorage":   true,  // Don't include storage changes
-			"disableStack":     false, // Include stack for call to address
-			"disableMemory":    true,  // Don't include memory
-			"enableReturnData": true,  // Do include return data
+			"disableStorage":   options.DisableStorage,
+			"disableStack":     options.DisableStack,
+			"disableMemory":    options.DisableMemory,
+			"enableReturnData": options.EnableReturnData,
 		},
 	}
 }
 
 // traceTransactionErigon handles tracing for Erigon clients
-func (n *Node) traceTransactionErigon(ctx context.Context, hash string) (*TraceTransaction, error) {
+func (n *Node) traceTransactionErigon(ctx context.Context, hash string, options TraceOptions) (*TraceTransaction, error) {
 	var rsp ErigonResult
 
-	call := ethrpc.NewCallBuilder[ErigonResult]("debug_traceTransaction", nil, getTraceParams(hash)...)
+	call := ethrpc.NewCallBuilder[ErigonResult]("debug_traceTransaction", nil, getTraceParams(hash, options)...)
 
 	start := time.Now()
 	_, err := n.rpc.Do(ctx, call.Into(&rsp))
@@ -144,7 +144,7 @@ func (n *Node) traceTransactionErigon(ctx context.Context, hash string) (*TraceT
 }
 
 // DebugTraceTransaction traces a transaction execution using the client's debug API
-func (n *Node) DebugTraceTransaction(ctx context.Context, hash string, blockNumber *big.Int) (*TraceTransaction, error) {
+func (n *Node) DebugTraceTransaction(ctx context.Context, hash string, blockNumber *big.Int, options TraceOptions) (*TraceTransaction, error) {
 	// Add a timeout if the context doesn't already have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -166,9 +166,9 @@ func (n *Node) DebugTraceTransaction(ctx context.Context, hash string, blockNumb
 	case "reth":
 		return nil, fmt.Errorf("reth is not supported")
 	case "erigon":
-		return n.traceTransactionErigon(ctx, hash)
+		return n.traceTransactionErigon(ctx, hash, options)
 	default:
 		// Default to Erigon format if client is unknown
-		return n.traceTransactionErigon(ctx, hash)
+		return n.traceTransactionErigon(ctx, hash, options)
 	}
 }

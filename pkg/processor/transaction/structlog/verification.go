@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/sirupsen/logrus"
+
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
 // CountMismatchError represents a structlog count mismatch between expected and actual counts
@@ -42,7 +44,7 @@ func (p *Processor) VerifyTransaction(ctx context.Context, blockNumber *big.Int,
 	defer cancel()
 
 	// Get transaction trace
-	trace, err := node.DebugTraceTransaction(processCtx, transactionHash, blockNumber)
+	trace, err := node.DebugTraceTransaction(processCtx, transactionHash, blockNumber, execution.DefaultTraceOptions())
 	if err != nil {
 		return fmt.Errorf("failed to trace transaction: %w", err)
 	}
