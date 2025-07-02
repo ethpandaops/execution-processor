@@ -221,6 +221,11 @@ func (m *LargeTxLockManager) WaitForLargeTransaction(ctx context.Context, worker
 	}
 }
 
+// HasLock checks if the given transaction currently holds the lock
+func (m *LargeTxLockManager) HasLock(txHash string) bool {
+	return m.active.Load() && m.currentTx == txHash
+}
+
 // GetStatus returns current status of the lock manager
 func (m *LargeTxLockManager) GetStatus() map[string]interface{} {
 	status := map[string]interface{}{
