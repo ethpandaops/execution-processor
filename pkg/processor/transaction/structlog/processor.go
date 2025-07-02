@@ -318,8 +318,8 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 		updated_date_time, block_number, transaction_hash, transaction_index,
 		transaction_gas, transaction_failed, transaction_return_value,
 		index, program_counter, operation, gas, gas_cost, depth,
-		return_data, refund, error, meta_network_id, meta_network_name
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, p.config.Table)
+		return_data, refund, error, call_to_address, meta_network_id, meta_network_name
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, p.config.Table)
 
 	start := time.Now()
 	stmt, err := tx.PrepareContext(ctx, query)
@@ -386,6 +386,7 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 			row.ReturnData,
 			row.Refund,
 			row.Error,
+			row.CallToAddress,
 			row.MetaNetworkID,
 			row.MetaNetworkName,
 		)

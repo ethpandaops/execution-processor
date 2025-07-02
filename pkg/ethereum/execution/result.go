@@ -9,12 +9,13 @@ type ErigonResult struct {
 }
 
 type ErigonStructLog struct {
-	PC         uint32  `json:"pc"`
-	Op         string  `json:"op"`
-	Gas        uint64  `json:"gas"`
-	GasCost    uint64  `json:"gasCost"`
-	Depth      uint64  `json:"depth"`
-	ReturnData []byte  `json:"returnData"`
-	Refund     *uint64 `json:"refund,omitempty"`
-	Error      *string `json:"error,omitempty"`
+	PC         uint32    `json:"pc"`
+	Op         string    `json:"op"`
+	Gas        uint64    `json:"gas"`
+	GasCost    uint64    `json:"gasCost"`
+	Depth      uint64    `json:"depth"`
+	ReturnData []byte    `json:"returnData"`
+	Refund     *uint64   `json:"refund,omitempty"`
+	Error      *string   `json:"error,omitempty"`
+	Stack      *[]string `json:"stack,omitempty"`
 }

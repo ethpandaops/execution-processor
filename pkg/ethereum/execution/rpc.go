@@ -73,10 +73,10 @@ func getTraceParams(hash string) []any {
 	return []any{
 		hash,
 		map[string]any{
-			"disableStorage":   true, // Don't include storage changes
-			"disableStack":     true, // Don't include stack
-			"disableMemory":    true, // Don't include memory
-			"enableReturnData": true, // Do include return data
+			"disableStorage":   true,  // Don't include storage changes
+			"disableStack":     false, // Include stack for call to address
+			"disableMemory":    true,  // Don't include memory
+			"enableReturnData": true,  // Do include return data
 		},
 	}
 }
@@ -136,6 +136,7 @@ func (n *Node) traceTransactionErigon(ctx context.Context, hash string) (*TraceT
 			ReturnData: returnData,
 			Refund:     log.Refund,
 			Error:      log.Error,
+			Stack:      log.Stack,
 		})
 	}
 
