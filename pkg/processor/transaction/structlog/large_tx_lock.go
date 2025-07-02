@@ -59,11 +59,42 @@ func (m *LargeTxLockManager) AcquireLock(ctx context.Context, txHash string, siz
 
 	waitStart := time.Now()
 
-	// Try to acquire lock with timeout
+	// Try to acquire lock with proper cleanup
 	lockChan := make(chan struct{})
+	lockAcquired := make(chan bool, 1)
+
 	go func() {
-		m.mu.Lock()
-		close(lockChan)
+		// Use TryLock first to check if we can acquire immediately
+		if m.mu.TryLock() {
+			lockAcquired <- true
+
+			close(lockChan)
+
+			return
+		}
+
+		// Otherwise wait for the lock, but with ability to cancel
+		lockDone := make(chan struct{})
+		go func() {
+			m.mu.Lock()
+			close(lockDone)
+		}()
+
+		select {
+		case <-lockDone:
+			lockAcquired <- true
+
+			close(lockChan)
+		case <-ctx.Done():
+			// Context cancelled, abandon lock acquisition
+			lockAcquired <- false
+			// Note: the inner goroutine might still be waiting, but it will
+			// eventually get the lock and unlock it when this function returns
+			go func() {
+				<-lockDone
+				m.mu.Unlock()
+			}()
+		}
 	}()
 
 	// Periodic logging ticker
@@ -103,6 +134,11 @@ func (m *LargeTxLockManager) AcquireLock(ctx context.Context, txHash string, siz
 			// Continue waiting
 
 		case <-lockChan:
+			// Check if we actually got the lock or if it was cancelled
+			if !<-lockAcquired {
+				return fmt.Errorf("lock acquisition cancelled")
+			}
+
 			// Got the lock!
 			m.active.Store(true)
 			m.currentTx = txHash

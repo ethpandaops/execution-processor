@@ -22,6 +22,7 @@ func (p *Processor) processTransactionWithLargeTxHandling(ctx context.Context, b
 			p.log.WithError(err).WithFields(logrus.Fields{
 				"tx_hash": txHash,
 			}).Warn("Failed to wait for large transaction")
+
 			return 0, err
 		}
 	}

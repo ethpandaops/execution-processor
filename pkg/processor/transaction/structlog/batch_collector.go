@@ -264,7 +264,7 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 	}).Debug("Starting batch flush")
 
 	// Create a timeout context for the flush operation
-	flushCtx, cancel := context.WithTimeout(context.Background(), bc.flushTimeout)
+	flushCtx, cancel := context.WithTimeout(ctx, bc.flushTimeout)
 	defer cancel()
 
 	// Perform the batch insert

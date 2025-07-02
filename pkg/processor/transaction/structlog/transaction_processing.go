@@ -101,6 +101,7 @@ func (p *Processor) ExtractAndProcessStructlogs(ctx context.Context, block *type
 
 	// Pre-extract call addresses into a map to avoid keeping stack data
 	callAddresses := make(map[int]string)
+
 	for i, structLog := range trace.Structlogs {
 		if structLog.Op == "CALL" && structLog.Stack != nil && len(*structLog.Stack) > 1 {
 			callAddresses[i] = (*structLog.Stack)[len(*structLog.Stack)-2]
@@ -111,9 +112,21 @@ func (p *Processor) ExtractAndProcessStructlogs(ctx context.Context, block *type
 
 	// Process in batches for better memory efficiency
 	const batchSize = 10000
+
 	uIndex := uint32(index) //nolint:gosec // index is bounded by block.Transactions() length
-	
+
 	for batchStart := 0; batchStart < len(trace.Structlogs); batchStart += batchSize {
+		// Check for context cancellation before processing each batch
+		select {
+		case <-ctx.Done():
+			// Clean up allocated memory before returning
+			trace.Structlogs = nil
+			trace = nil
+
+			return 0, fmt.Errorf("context cancelled during batch processing: %w", ctx.Err())
+		default:
+		}
+
 		batchEnd := batchStart + batchSize
 		if batchEnd > len(trace.Structlogs) {
 			batchEnd = len(trace.Structlogs)
@@ -121,10 +134,10 @@ func (p *Processor) ExtractAndProcessStructlogs(ctx context.Context, block *type
 
 		// Create batch of structlogs
 		batch := make([]Structlog, 0, batchEnd-batchStart)
-		
+
 		for i := batchStart; i < batchEnd; i++ {
 			structLog := trace.Structlogs[i]
-			
+
 			var callToAddress *string
 			if addr, exists := callAddresses[i]; exists {
 				callToAddress = &addr
@@ -158,7 +171,7 @@ func (p *Processor) ExtractAndProcessStructlogs(ctx context.Context, block *type
 		// Send batch to collector
 		if err := p.sendToBatchCollector(ctx, batch); err != nil {
 			common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
-			
+
 			// Log memory cleanup for large failed batches
 			if structlogCount > 10000 {
 				p.log.WithFields(logrus.Fields{
@@ -170,17 +183,13 @@ func (p *Processor) ExtractAndProcessStructlogs(ctx context.Context, block *type
 				}).Info("Failed to insert batch")
 			}
 
-			// Clear batch and force GC on error
-			batch = nil
+			// Force GC on error for large traces
 			if structlogCount > 100000 {
 				runtime.GC()
 			}
 
 			return 0, fmt.Errorf("failed to insert structlogs via batch collector: %w", err)
 		}
-
-		// Clear batch after successful insertion
-		batch = nil
 
 		// Log progress for very large traces
 		if batchEnd > 100000 && batchEnd%100000 == 0 {
@@ -199,7 +208,6 @@ func (p *Processor) ExtractAndProcessStructlogs(ctx context.Context, block *type
 	// Clear all remaining data
 	trace.Structlogs = nil
 	trace = nil
-	callAddresses = nil
 
 	// Final GC for very large transactions
 	if structlogCount > 100000 {
@@ -208,4 +216,3 @@ func (p *Processor) ExtractAndProcessStructlogs(ctx context.Context, block *type
 
 	return structlogCount, nil
 }
-
