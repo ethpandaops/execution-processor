@@ -231,13 +231,13 @@ func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, networ
 
 	row := s.storageClient.QueryRow(ctx, s.storageTable, query)
 	if row == nil {
-		// ClickHouse client not started, return genesis block
+		// ClickHouse client not started - this is a connection error, not empty table
 		s.log.WithFields(logrus.Fields{
 			"processor": processor,
 			"network":   network,
-		}).Warn("Storage ClickHouse client not available, starting from genesis block")
+		}).Error("Storage ClickHouse client not available")
 
-		return big.NewInt(0), nil
+		return nil, fmt.Errorf("storage ClickHouse client not available")
 	}
 
 	err := row.Scan(&blockNumber)
@@ -296,11 +296,11 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 
 	row := s.storageClient.QueryRow(ctx, s.storageTable, query)
 	if row == nil {
-		// ClickHouse client not started, need to find chain tip
+		// ClickHouse client not started - this is a connection error
 		s.log.WithFields(logrus.Fields{
 			"processor": processor,
 			"network":   network,
-		}).Warn("Storage ClickHouse client not available for backwards mode")
+		}).Error("Storage ClickHouse client not available for backwards mode")
 
 		return nil, fmt.Errorf("storage client not available for backwards processing")
 	}
@@ -369,6 +369,12 @@ func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.
 
 	row := s.limiterClient.QueryRow(ctx, s.limiterTable, query)
 	if row == nil {
+		// ClickHouse client not started - this is a connection error
+		s.log.WithFields(logrus.Fields{
+			"network": network,
+			"table":   s.limiterTable,
+		}).Error("Limiter ClickHouse client not available")
+
 		return nil, fmt.Errorf("limiter ClickHouse client not available")
 	}
 
