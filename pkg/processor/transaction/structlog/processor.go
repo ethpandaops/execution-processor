@@ -250,7 +250,7 @@ func (p *Processor) sendToBatchCollector(ctx context.Context, structlogs []Struc
 	}()
 
 	// Submit to batch collector
-	if err := p.batchCollector.SubmitBatch(taskBatch); err != nil {
+	if err := p.batchCollector.SubmitBatch(ctx, taskBatch); err != nil {
 		// Let Asynq handle retries - don't fallback to direct insert
 		p.log.WithFields(logrus.Fields{
 			"task_id": taskBatch.TaskID,

@@ -2,7 +2,6 @@ package structlog
 
 import (
 	"context"
-	"fmt"
 	"runtime"
 	"sync"
 	"time"
@@ -76,7 +75,7 @@ func (bc *BatchCollector) Stop(ctx context.Context) error {
 }
 
 // SubmitBatch submits a task batch for processing
-func (bc *BatchCollector) SubmitBatch(taskBatch TaskBatch) error {
+func (bc *BatchCollector) SubmitBatch(ctx context.Context, taskBatch TaskBatch) error {
 	// Check shutdown first
 	select {
 	case <-bc.shutdown:
@@ -84,15 +83,14 @@ func (bc *BatchCollector) SubmitBatch(taskBatch TaskBatch) error {
 	default:
 	}
 
-	// Then try to submit
+	// Block and wait for space in the channel
 	select {
 	case bc.taskChannel <- taskBatch:
 		return nil
 	case <-bc.shutdown:
 		return context.Canceled
-	default:
-		// Channel is full, caller should fallback to direct insert
-		return ErrChannelFull
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -344,6 +342,3 @@ func (bc *BatchCollector) flushRemaining() {
 		bc.flushBatch(ctx)
 	}
 }
-
-// Custom error for when channel is full
-var ErrChannelFull = fmt.Errorf("batch collector channel is full")

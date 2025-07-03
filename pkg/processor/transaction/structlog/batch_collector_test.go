@@ -131,8 +131,8 @@ func TestBatchCollector_ProcessLargeTask(t *testing.T) {
 	assert.True(t, len(largeTask.Rows) > bc.maxBatchSize)
 }
 
-func TestBatchCollector_ChannelFull(t *testing.T) {
-	// Test behavior when channel is full
+func TestBatchCollector_ChannelBlocking(t *testing.T) {
+	// Test blocking behavior when channel is full
 	config := BatchConfig{
 		Enabled:           true,
 		MaxRows:           1000,
@@ -155,18 +155,23 @@ func TestBatchCollector_ChannelFull(t *testing.T) {
 			ResponseChan: make(chan error, 1),
 			TaskID:       "test-" + string(rune(i)),
 		}
-		err := bc.SubmitBatch(task)
+		err := bc.SubmitBatch(context.Background(), task)
 		assert.NoError(t, err)
 	}
 
-	// Next submit should fail with channel full
+	// Next submit should block, test with timeout
 	task := TaskBatch{
 		Rows:         createTestStructlogs(100),
 		ResponseChan: make(chan error, 1),
-		TaskID:       "test-full",
+		TaskID:       "test-blocking",
 	}
-	err := bc.SubmitBatch(task)
-	assert.Equal(t, ErrChannelFull, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	err := bc.SubmitBatch(ctx, task)
+	assert.Error(t, err)
+	assert.Equal(t, context.DeadlineExceeded, err)
 }
 
 func TestBatchCollector_StartStop(t *testing.T) {
@@ -196,14 +201,14 @@ func TestBatchCollector_StartStop(t *testing.T) {
 	}
 
 	// Can submit before shutdown
-	err := bc.SubmitBatch(task)
+	err := bc.SubmitBatch(context.Background(), task)
 	assert.NoError(t, err)
 
 	// Close shutdown channel
 	close(bc.shutdown)
 
 	// Should not accept new tasks after shutdown
-	err = bc.SubmitBatch(task)
+	err = bc.SubmitBatch(context.Background(), task)
 	assert.Equal(t, context.Canceled, err)
 }
 
@@ -352,7 +357,7 @@ func TestBatchCollector_ConcurrentAccess(t *testing.T) {
 				TaskID:       "concurrent-" + string(rune(id)),
 			}
 
-			if err := bc.SubmitBatch(task); err != nil && err != ErrChannelFull {
+			if err := bc.SubmitBatch(context.Background(), task); err != nil {
 				errors <- err
 			}
 			done <- true
