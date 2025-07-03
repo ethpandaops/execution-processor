@@ -37,40 +37,10 @@ type Structlog struct {
 
 // ProcessSingleTransaction processes a single transaction using batch collector (exposed for worker handlers)
 func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
-	// Extract structlog data
-	structlogs, err := p.ExtractStructlogs(ctx, block, index, tx)
+	// Extract structlog data with optimized memory handling
+	structlogCount, err := p.ExtractAndProcessStructlogs(ctx, block, index, tx)
 	if err != nil {
 		return 0, err
-	}
-
-	// Store count before processing
-	structlogCount := len(structlogs)
-
-	// Ensure we clear the slice on exit to allow GC, especially important for failed inserts
-	defer func() {
-		// Clear the slice to release memory
-		structlogs = nil
-		// Force GC for large transactions or on errors
-		if structlogCount > 1000 {
-			runtime.GC()
-		}
-	}()
-
-	// Send to batch collector for insertion
-	if err := p.sendToBatchCollector(ctx, structlogs); err != nil {
-		common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
-		// Log memory cleanup for large failed batches
-		if structlogCount > 10000 {
-			p.log.WithFields(logrus.Fields{
-				"transaction_hash": tx.Hash().String(),
-				"structlog_count":  structlogCount,
-				"error":            err.Error(),
-			}).Info("Cleaning up memory after failed batch insert")
-		}
-
-		runtime.GC()
-
-		return 0, fmt.Errorf("failed to insert structlogs via batch collector: %w", err)
 	}
 
 	// Record success metrics
@@ -79,8 +49,27 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.B
 	return structlogCount, nil
 }
 
-// ExtractStructlogs extracts structlog data from a transaction without inserting to database
-func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, index int, tx *types.Transaction) ([]Structlog, error) {
+// ProcessSingleTransactionWithSizeInfo processes a transaction and returns size info for large tx handling
+func (p *Processor) ProcessSingleTransactionWithSizeInfo(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, bool, error) {
+	// This will be called from handlers_large_tx.go to get size info during processing
+	structlogCount, err := p.ExtractAndProcessStructlogs(ctx, block, index, tx)
+	if err != nil {
+		return 0, false, err
+	}
+
+	isLarge := false
+	if p.largeTxLock != nil && p.largeTxLock.config.Enabled {
+		isLarge = p.largeTxLock.IsLargeTransaction(structlogCount)
+	}
+
+	// Record success metrics
+	common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
+
+	return structlogCount, isLarge, nil
+}
+
+// ExtractAndProcessStructlogs extracts and processes structlog data with optimized memory handling
+func (p *Processor) ExtractAndProcessStructlogs(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
 	start := time.Now()
 	defer func() {
 		duration := time.Since(start)
@@ -90,37 +79,55 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 	// Get execution node
 	node := p.pool.GetHealthyExecutionNode()
 	if node == nil {
-		return nil, fmt.Errorf("no healthy execution node available")
+		return 0, fmt.Errorf("no healthy execution node available")
 	}
 
 	// Process transaction with timeout
 	processCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	// Get transaction trace
+	// Get transaction trace with stack enabled for CALL operations
 	trace, err := node.DebugTraceTransaction(processCtx, tx.Hash().String(), block.Number(), execution.StackTraceOptions())
 	if err != nil {
-		return nil, fmt.Errorf("failed to trace transaction: %w", err)
+		return 0, fmt.Errorf("failed to trace transaction: %w", err)
 	}
 
-	// Convert trace to structlog rows
-	var structlogs []Structlog
+	if trace == nil || len(trace.Structlogs) == 0 {
+		return 0, nil
+	}
 
+	// Store the count for return
+	structlogCount := len(trace.Structlogs)
+
+	// Pre-extract call addresses into a map to avoid keeping stack data
+	callAddresses := make(map[int]string)
+	for i, structLog := range trace.Structlogs {
+		if structLog.Op == "CALL" && structLog.Stack != nil && len(*structLog.Stack) > 1 {
+			callAddresses[i] = (*structLog.Stack)[len(*structLog.Stack)-2]
+		}
+		// Clear stack data immediately after extraction
+		structLog.Stack = nil
+	}
+
+	// Process in batches for better memory efficiency
+	const batchSize = 10000
 	uIndex := uint32(index) //nolint:gosec // index is bounded by block.Transactions() length
+	
+	for batchStart := 0; batchStart < len(trace.Structlogs); batchStart += batchSize {
+		batchEnd := batchStart + batchSize
+		if batchEnd > len(trace.Structlogs) {
+			batchEnd = len(trace.Structlogs)
+		}
 
-	if trace != nil {
-		// Pre-allocate slice for better memory efficiency
-		structlogs = make([]Structlog, 0, len(trace.Structlogs))
-
-		// For extremely large traces, log memory usage periodically
-		logInterval := 100000
-
-		for i, structLog := range trace.Structlogs {
+		// Create batch of structlogs
+		batch := make([]Structlog, 0, batchEnd-batchStart)
+		
+		for i := batchStart; i < batchEnd; i++ {
+			structLog := trace.Structlogs[i]
+			
 			var callToAddress *string
-
-			if structLog.Op == "CALL" && structLog.Stack != nil && len(*structLog.Stack) > 1 {
-				stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
-				callToAddress = &stackValue
+			if addr, exists := callAddresses[i]; exists {
+				callToAddress = &addr
 			}
 
 			row := Structlog{
@@ -145,25 +152,60 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 				MetaNetworkName:        p.network.Name,
 			}
 
-			structlogs = append(structlogs, row)
-
-			// For very large traces, periodically log memory usage
-			if i > 0 && i%logInterval == 0 && len(trace.Structlogs) > 200000 {
-				p.log.WithFields(logrus.Fields{
-					"transaction_hash": tx.Hash().String(),
-					"progress":         fmt.Sprintf("%d/%d", i, len(trace.Structlogs)),
-				}).Debug("Processing large trace")
-
-				// Force GC during processing of extremely large traces
-				if i%200000 == 0 {
-					runtime.GC()
-				}
-			}
+			batch = append(batch, row)
 		}
 
-		// Clear the original trace data to free memory
-		trace.Structlogs = nil
+		// Send batch to collector
+		if err := p.sendToBatchCollector(ctx, batch); err != nil {
+			common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
+			
+			// Log memory cleanup for large failed batches
+			if structlogCount > 10000 {
+				p.log.WithFields(logrus.Fields{
+					"transaction_hash": tx.Hash().String(),
+					"structlog_count":  structlogCount,
+					"batch_start":      batchStart,
+					"batch_end":        batchEnd,
+					"error":            err.Error(),
+				}).Info("Failed to insert batch")
+			}
+
+			// Clear batch and force GC on error
+			batch = nil
+			if structlogCount > 100000 {
+				runtime.GC()
+			}
+
+			return 0, fmt.Errorf("failed to insert structlogs via batch collector: %w", err)
+		}
+
+		// Clear batch after successful insertion
+		batch = nil
+
+		// Log progress for very large traces
+		if batchEnd > 100000 && batchEnd%100000 == 0 {
+			p.log.WithFields(logrus.Fields{
+				"transaction_hash": tx.Hash().String(),
+				"progress":         fmt.Sprintf("%d/%d", batchEnd, structlogCount),
+			}).Debug("Processing large trace")
+		}
+
+		// Force GC periodically for extremely large traces
+		if batchEnd > 500000 && batchEnd%500000 == 0 {
+			runtime.GC()
+		}
 	}
 
-	return structlogs, nil
+	// Clear all remaining data
+	trace.Structlogs = nil
+	trace = nil
+	callAddresses = nil
+
+	// Final GC for very large transactions
+	if structlogCount > 100000 {
+		runtime.GC()
+	}
+
+	return structlogCount, nil
 }
+
