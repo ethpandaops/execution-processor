@@ -2,7 +2,6 @@ package state
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"math/big"
@@ -18,10 +17,21 @@ var (
 	ErrNoMoreBlocks = errors.New("no more blocks to process")
 )
 
+// blockNumberResult is used for queries that return a single block number
+type blockNumberResult struct {
+	BlockNumber JSONInt64 `json:"block_number"`
+}
+
+// minMaxResult is used for queries that return min and max values
+type minMaxResult struct {
+	Min JSONInt64 `json:"min"`
+	Max JSONInt64 `json:"max"`
+}
+
 type Manager struct {
 	log            logrus.FieldLogger
-	storageClient  *clickhouse.Client
-	limiterClient  *clickhouse.Client
+	storageClient  clickhouse.ClientInterface
+	limiterClient  clickhouse.ClientInterface
 	storageTable   string
 	limiterTable   string
 	limiterEnabled bool
@@ -30,11 +40,10 @@ type Manager struct {
 
 func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*Manager, error) {
 	// Create storage client
-	storageClient, err := clickhouse.NewClient(ctx, log, &clickhouse.Config{
-		DSN:          config.Storage.DSN,
-		MaxOpenConns: config.Storage.MaxOpenConns,
-		MaxIdleConns: config.Storage.MaxIdleConns,
-	})
+	storageConfig := config.Storage.Config
+	storageConfig.Processor = "state"
+
+	storageClient, err := clickhouse.New(&storageConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage clickhouse client: %w", err)
 	}
@@ -48,11 +57,10 @@ func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*M
 
 	// Create limiter client if enabled
 	if config.Limiter.Enabled {
-		limiterClient, err := clickhouse.NewClient(ctx, log, &clickhouse.Config{
-			DSN:          config.Limiter.DSN,
-			MaxOpenConns: config.Limiter.MaxOpenConns,
-			MaxIdleConns: config.Limiter.MaxIdleConns,
-		})
+		limiterConfig := config.Limiter.Config
+		limiterConfig.Processor = "state-limiter"
+
+		limiterClient, err := clickhouse.New(&limiterConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create limiter clickhouse client: %w", err)
 		}
@@ -67,23 +75,15 @@ func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*M
 // SetNetwork sets the network name for metrics labeling
 func (s *Manager) SetNetwork(network string) {
 	s.network = network
-	// Update ClickHouse clients with network label
-	if s.storageClient != nil {
-		s.storageClient.WithLabels(network, "")
-	}
-
-	if s.limiterClient != nil {
-		s.limiterClient.WithLabels(network, "")
-	}
 }
 
 func (s *Manager) Start(ctx context.Context) error {
-	if err := s.storageClient.Start(ctx); err != nil {
+	if err := s.storageClient.Start(); err != nil {
 		return fmt.Errorf("failed to start storage client: %w", err)
 	}
 
 	if s.limiterEnabled && s.limiterClient != nil {
-		if err := s.limiterClient.Start(ctx); err != nil {
+		if err := s.limiterClient.Start(); err != nil {
 			return fmt.Errorf("failed to start limiter client: %w", err)
 		}
 	}
@@ -94,12 +94,12 @@ func (s *Manager) Start(ctx context.Context) error {
 func (s *Manager) Stop(ctx context.Context) error {
 	var err error
 
-	if stopErr := s.storageClient.Stop(ctx); stopErr != nil {
+	if stopErr := s.storageClient.Stop(); stopErr != nil {
 		err = fmt.Errorf("failed to stop storage client: %w", stopErr)
 	}
 
 	if s.limiterEnabled && s.limiterClient != nil {
-		if stopErr := s.limiterClient.Stop(ctx); stopErr != nil {
+		if stopErr := s.limiterClient.Stop(); stopErr != nil {
 			if err != nil {
 				err = fmt.Errorf("%w; failed to stop limiter client: %w", err, stopErr)
 			} else {
@@ -227,25 +227,15 @@ func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, networ
 		"table":     s.storageTable,
 	}).Debug("Querying for last processed block")
 
-	var blockNumber sql.NullInt64
+	var result blockNumberResult
+	err := s.storageClient.QueryOne(ctx, query, &result)
 
-	row := s.storageClient.QueryRow(ctx, s.storageTable, query)
-	if row == nil {
-		// ClickHouse client not started, return genesis block
-		s.log.WithFields(logrus.Fields{
-			"processor": processor,
-			"network":   network,
-		}).Warn("Storage ClickHouse client not available, starting from genesis block")
-
-		return big.NewInt(0), nil
-	}
-
-	err := row.Scan(&blockNumber)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil {
 		return nil, fmt.Errorf("failed to get next block from %s: %w", s.storageTable, err)
 	}
 
-	if !blockNumber.Valid {
+	// Check if we got a result
+	if result.BlockNumber == 0 {
 		// No entry in table - start from chain head if available, otherwise genesis
 		if chainHead != nil && chainHead.Int64() > 0 {
 			s.log.WithFields(logrus.Fields{
@@ -265,11 +255,11 @@ func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, networ
 		}
 	}
 
-	nextBlock := big.NewInt(blockNumber.Int64 + 1)
+	nextBlock := big.NewInt(result.BlockNumber.Int64() + 1)
 	s.log.WithFields(logrus.Fields{
 		"processor":        processor,
 		"network":          network,
-		"last_processed":   blockNumber.Int64,
+		"last_processed":   result.BlockNumber.Int64(),
 		"progressive_next": nextBlock.String(),
 	}).Debug("Found last processed block, calculated progressive next block")
 
@@ -292,25 +282,15 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 		"table":     s.storageTable,
 	}).Debug("Querying for earliest processed block (backwards mode)")
 
-	var blockNumber sql.NullInt64
+	var result blockNumberResult
+	err := s.storageClient.QueryOne(ctx, query, &result)
 
-	row := s.storageClient.QueryRow(ctx, s.storageTable, query)
-	if row == nil {
-		// ClickHouse client not started, need to find chain tip
-		s.log.WithFields(logrus.Fields{
-			"processor": processor,
-			"network":   network,
-		}).Warn("Storage ClickHouse client not available for backwards mode")
-
-		return nil, fmt.Errorf("storage client not available for backwards processing")
-	}
-
-	err := row.Scan(&blockNumber)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil {
 		return nil, fmt.Errorf("failed to get earliest block from %s: %w", s.storageTable, err)
 	}
 
-	if !blockNumber.Valid {
+	// Check if we got a result
+	if result.BlockNumber == 0 {
 		// No entry in table, need to start from chain tip for backwards processing
 		if chainHead != nil && chainHead.Int64() > 0 {
 			s.log.WithFields(logrus.Fields{
@@ -332,7 +312,7 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 	}
 
 	// Calculate previous block (go backwards)
-	if blockNumber.Int64 <= 0 {
+	if result.BlockNumber <= 0 {
 		// Already at genesis, no more blocks to process backwards
 		s.log.WithFields(logrus.Fields{
 			"processor": processor,
@@ -342,11 +322,11 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 		return nil, ErrNoMoreBlocks
 	}
 
-	prevBlock := big.NewInt(blockNumber.Int64 - 1)
+	prevBlock := big.NewInt(result.BlockNumber.Int64() - 1)
 	s.log.WithFields(logrus.Fields{
 		"processor":          processor,
 		"network":            network,
-		"earliest_processed": blockNumber.Int64,
+		"earliest_processed": result.BlockNumber,
 		"progressive_prev":   prevBlock.String(),
 	}).Debug("Found earliest processed block, calculated previous block for backwards processing")
 
@@ -365,19 +345,15 @@ func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.
 		"table":   s.limiterTable,
 	}).Debug("Querying for maximum execution payload block number")
 
-	var maxBlockNumber sql.NullInt64
+	var result blockNumberResult
+	err := s.limiterClient.QueryOne(ctx, query, &result)
 
-	row := s.limiterClient.QueryRow(ctx, s.limiterTable, query)
-	if row == nil {
-		return nil, fmt.Errorf("limiter ClickHouse client not available")
-	}
-
-	err := row.Scan(&maxBlockNumber)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil {
 		return nil, fmt.Errorf("failed to get max execution payload block from %s: %w", s.limiterTable, err)
 	}
 
-	if !maxBlockNumber.Valid {
+	// Check if we got a result
+	if result.BlockNumber == 0 {
 		// No blocks in limiter table, return genesis
 		s.log.WithFields(logrus.Fields{
 			"network": network,
@@ -386,7 +362,7 @@ func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.
 		return big.NewInt(0), nil
 	}
 
-	maxBlock := big.NewInt(maxBlockNumber.Int64)
+	maxBlock := big.NewInt(result.BlockNumber.Int64())
 	s.log.WithFields(logrus.Fields{
 		"network":     network,
 		"limiter_max": maxBlock.String(),
@@ -398,9 +374,9 @@ func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.
 func (s *Manager) MarkBlockProcessed(ctx context.Context, blockNumber uint64, network, processor string) error {
 	// Insert using direct string substitution for table name
 	// Table name is validated during config initialization
-	query := fmt.Sprintf("INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name) VALUES (?, ?, ?, ?)", s.storageTable)
+	query := fmt.Sprintf("INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name) VALUES ('%s', %d, '%s', '%s')", s.storageTable, time.Now().Format("2006-01-02 15:04:05"), blockNumber, processor, network)
 
-	_, err := s.storageClient.GetDB().ExecContext(ctx, query, time.Now(), blockNumber, processor, network)
+	err := s.storageClient.Execute(ctx, query)
 	if err != nil {
 		return fmt.Errorf("failed to mark block as processed in %s: %w", s.storageTable, err)
 	}
@@ -427,24 +403,19 @@ func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor 
 		"table":     s.storageTable,
 	}).Debug("Querying for min/max stored blocks")
 
-	var minVal, maxVal sql.NullInt64
+	var result minMaxResult
+	err = s.storageClient.QueryOne(ctx, query, &result)
 
-	row := s.storageClient.QueryRow(ctx, s.storageTable, query)
-	if row == nil {
-		return nil, nil, fmt.Errorf("storage ClickHouse client not available")
-	}
-
-	err = row.Scan(&minVal, &maxVal)
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get min/max blocks: %w", err)
 	}
 
 	// Handle case where no blocks are stored
-	if !minVal.Valid || !maxVal.Valid {
+	if result.Min == 0 && result.Max == 0 {
 		return nil, nil, nil
 	}
 
-	return big.NewInt(minVal.Int64), big.NewInt(maxVal.Int64), nil
+	return big.NewInt(result.Min.Int64()), big.NewInt(result.Max.Int64()), nil
 }
 
 // IsBlockRecentlyProcessed checks if a block was processed within the specified number of seconds
@@ -466,19 +437,18 @@ func (s *Manager) IsBlockRecentlyProcessed(ctx context.Context, blockNumber uint
 		"table":          s.storageTable,
 	}).Debug("Checking if block was recently processed")
 
-	var count int64
-
-	row := s.storageClient.QueryRow(ctx, s.storageTable, query)
-	if row == nil {
-		return false, fmt.Errorf("storage ClickHouse client not available")
+	type countResult struct {
+		Count int64 `json:"count"`
 	}
 
-	err := row.Scan(&count)
-	if err != nil && err != sql.ErrNoRows {
+	var result countResult
+	err := s.storageClient.QueryOne(ctx, query, &result)
+
+	if err != nil {
 		return false, fmt.Errorf("failed to check recent block processing: %w", err)
 	}
 
-	return count > 0, nil
+	return result.Count > 0, nil
 }
 
 // GetHeadDistance calculates the distance between current processing block and the relevant head

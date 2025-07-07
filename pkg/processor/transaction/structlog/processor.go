@@ -30,7 +30,7 @@ type Processor struct {
 	log            logrus.FieldLogger
 	pool           *ethereum.Pool
 	stateManager   *state.Manager
-	clickhouse     *clickhouse.Client
+	clickhouse     clickhouse.ClientInterface
 	config         *Config
 	network        *ethereum.Network
 	asynqClient    *asynq.Client
@@ -42,13 +42,12 @@ type Processor struct {
 
 // New creates a new transaction structlog processor
 func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, error) {
-	clickhouseClient, err := clickhouse.NewClient(ctx, deps.Log.WithField("processor", "transaction_structlog"), &clickhouse.Config{
-		DSN:          config.DSN,
-		MaxOpenConns: config.MaxOpenConns,
-		MaxIdleConns: config.MaxIdleConns,
-		Network:      deps.Network.Name,
-		Processor:    ProcessorName,
-	})
+	// Create a copy of the embedded config and set processor-specific values
+	clickhouseConfig := config.Config
+	clickhouseConfig.Network = deps.Network.Name
+	clickhouseConfig.Processor = ProcessorName
+
+	clickhouseClient, err := clickhouse.New(&clickhouseConfig)
 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clickhouse client for transaction_structlog: %w", err)
@@ -99,7 +98,7 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 // Start starts the processor
 func (p *Processor) Start(ctx context.Context) error {
 	// Start the ClickHouse client
-	if err := p.clickhouse.Start(ctx); err != nil {
+	if err := p.clickhouse.Start(); err != nil {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
 	}
 
@@ -127,7 +126,7 @@ func (p *Processor) Stop(ctx context.Context) error {
 	}
 
 	// Stop the ClickHouse client
-	return p.clickhouse.Stop(ctx)
+	return p.clickhouse.Stop()
 }
 
 // Name returns the processor name
@@ -275,193 +274,50 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 	if len(structlogs) == 0 {
 		return nil
 	}
-	// Begin transaction
-	tx, err := p.clickhouse.GetDB().BeginTx(ctx, nil)
-	if err != nil {
-		// Check if this is a connection error
-		if isConnectionError(err) {
-			p.log.WithFields(logrus.Fields{
-				"error":           err.Error(),
-				"structlog_count": len(structlogs),
-			}).Error("Connection error when beginning transaction - reconnecting ClickHouse client")
 
-			// Nuclear option - recreate the entire connection
-			reconnectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			if reconnectErr := p.clickhouse.Reconnect(reconnectCtx); reconnectErr != nil {
-				p.log.WithError(reconnectErr).Error("Failed to reconnect ClickHouse client")
-			}
-		}
-
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-
-	// Track transaction state properly to avoid double rollback
-	var (
-		committed  bool
-		rolledBack bool
-	)
-
-	defer func() {
-		if !committed && !rolledBack {
-			if rollbackErr := tx.Rollback(); rollbackErr != nil {
-				p.log.WithError(rollbackErr).Warn("Failed to rollback transaction (may already be closed)")
-			}
-
-			rolledBack = true
-		}
-	}()
-
-	//nolint:gosec // safe to use user input in query
-	query := fmt.Sprintf(`INSERT INTO %s (
-		updated_date_time, block_number, transaction_hash, transaction_index,
-		transaction_gas, transaction_failed, transaction_return_value,
-		index, program_counter, operation, gas, gas_cost, depth,
-		return_data, refund, error, call_to_address, meta_network_id, meta_network_name
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, p.config.Table)
-
+	// Use the new BulkInsert API
 	start := time.Now()
-	stmt, err := tx.PrepareContext(ctx, query)
+	err := p.clickhouse.BulkInsert(ctx, p.config.Table, structlogs)
 	duration := time.Since(start)
 
 	if err != nil {
-		code := clickhouse.ParseErrorCode(err)
-		common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "prepare_batch_insert", p.config.Table, "failed", code).Observe(duration.Seconds())
-		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "prepare_batch_insert", p.config.Table, "failed", code).Inc()
-
-		// Check if this is a column metadata error
-		if isColumnMetadataError(err) {
-			p.log.WithFields(logrus.Fields{
-				"table":           p.config.Table,
-				"error":           err.Error(),
-				"structlog_count": len(structlogs),
-			}).Error("Column metadata error - reconnecting ClickHouse client")
-
-			// Nuclear option - recreate the entire connection
-			reconnectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			if reconnectErr := p.clickhouse.Reconnect(reconnectCtx); reconnectErr != nil {
-				p.log.WithError(reconnectErr).Error("Failed to reconnect ClickHouse client")
-			}
-		} else {
-			p.log.WithFields(logrus.Fields{
-				"table":           p.config.Table,
-				"error":           err.Error(),
-				"structlog_count": len(structlogs),
-			}).Error("Failed to prepare ClickHouse batch statement")
-		}
-
-		return fmt.Errorf("failed to prepare batch statement for table %s: %w", p.config.Table, err)
-	}
-
-	// Ensure statement is closed to release resources
-	defer func() {
-		if closeErr := stmt.Close(); closeErr != nil {
-			p.log.WithError(closeErr).Warn("Failed to close prepared statement")
-		}
-	}()
-
-	common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "prepare_batch_insert", p.config.Table, "success", "").Observe(duration.Seconds())
-	common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "prepare_batch_insert", p.config.Table, "success", "").Inc()
-
-	// Insert all structlogs
-	for i := range structlogs {
-		row := &structlogs[i]
-		_, err := stmt.ExecContext(ctx,
-			row.UpdatedDateTime,
-			row.BlockNumber,
-			row.TransactionHash,
-			row.TransactionIndex,
-			row.TransactionGas,
-			row.TransactionFailed,
-			row.TransactionReturnValue,
-			row.Index,
-			row.ProgramCounter,
-			row.Operation,
-			row.Gas,
-			row.GasCost,
-			row.Depth,
-			row.ReturnData,
-			row.Refund,
-			row.Error,
-			row.CallToAddress,
-			row.MetaNetworkID,
-			row.MetaNetworkName,
-		)
-
-		if err != nil {
-			p.log.WithFields(logrus.Fields{
-				"table":           p.config.Table,
-				"structlog_index": i,
-				"transaction":     row.TransactionHash,
-				"block":           row.BlockNumber,
-				"error":           err.Error(),
-			}).Error("Failed to insert structlog row in batch")
-
-			return fmt.Errorf("failed to insert structlog row %d in batch: %w", i, err)
-		}
-	}
-
-	start = time.Now()
-	err = tx.Commit()
-	duration = time.Since(start)
-
-	if err != nil {
-		code := clickhouse.ParseErrorCode(err)
-		common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "batch_insert", p.config.Table, "failed", code).Observe(duration.Seconds())
-		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "batch_insert", p.config.Table, "failed", code).Inc()
+		code := parseErrorCode(err)
+		common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "bulk_insert", p.config.Table, "failed", code).Observe(duration.Seconds())
+		common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "bulk_insert", p.config.Table, "failed", code).Inc()
 		common.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "failed", code).Add(float64(len(structlogs)))
 
-		// Check if this is a connection error
-		if isConnectionError(err) {
-			p.log.WithFields(logrus.Fields{
-				"error":           err.Error(),
-				"structlog_count": len(structlogs),
-			}).Error("Connection error during commit - reconnecting ClickHouse client")
+		p.log.WithFields(logrus.Fields{
+			"table":           p.config.Table,
+			"error":           err.Error(),
+			"structlog_count": len(structlogs),
+		}).Error("Failed to bulk insert structlogs")
 
-			// Nuclear option - recreate the entire connection
-			reconnectCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-
-			if reconnectErr := p.clickhouse.Reconnect(reconnectCtx); reconnectErr != nil {
-				p.log.WithError(reconnectErr).Error("Failed to reconnect ClickHouse client after connection error")
-			}
-		}
-
-		return fmt.Errorf("failed to commit batch transaction: %w", err)
+		return fmt.Errorf("failed to bulk insert %d structlogs: %w", len(structlogs), err)
 	}
 
-	committed = true
-
-	common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "batch_insert", p.config.Table, "success", "").Inc()
+	common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "bulk_insert", p.config.Table, "success", "").Observe(duration.Seconds())
+	common.ClickHouseOperationTotal.WithLabelValues(p.network.Name, ProcessorName, "bulk_insert", p.config.Table, "success", "").Inc()
 	common.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "success", "").Add(float64(len(structlogs)))
-	common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "batch_insert", p.config.Table, "success", "").Observe(duration.Seconds())
 
 	return nil
 }
 
-// isColumnMetadataError checks if the error is related to column metadata issues
-func isColumnMetadataError(err error) bool {
+// parseErrorCode extracts error code from error message
+func parseErrorCode(err error) string {
 	if err == nil {
-		return false
+		return ""
 	}
-
+	// For HTTP client errors, we don't have specific error codes
+	// Return a generic code based on error type
 	errStr := err.Error()
 
-	return strings.Contains(errStr, "column") && strings.Contains(errStr, "is not present in the table")
-}
-
-// isConnectionError checks if the error indicates a connection problem
-func isConnectionError(err error) bool {
-	if err == nil {
-		return false
+	if strings.Contains(errStr, "timeout") {
+		return "TIMEOUT"
 	}
 
-	errStr := err.Error()
+	if strings.Contains(errStr, "connection") {
+		return "CONNECTION"
+	}
 
-	return strings.Contains(errStr, "driver: bad connection") ||
-		strings.Contains(errStr, "connection refused") ||
-		strings.Contains(errStr, "broken pipe")
+	return "UNKNOWN"
 }

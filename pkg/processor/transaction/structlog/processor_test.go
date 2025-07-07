@@ -24,9 +24,7 @@ func TestProcessor_Creation(t *testing.T) {
 		Enabled: true,
 		Table:   "test_structlog",
 		Config: clickhouse.Config{
-			DSN:          "clickhouse://localhost:9000/test",
-			MaxOpenConns: 10,
-			MaxIdleConns: 5,
+			URL: "http://localhost:8123",
 		},
 		BatchConfig: transaction_structlog.BatchConfig{
 			Enabled: false,
@@ -50,9 +48,7 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_table",
 				Config: clickhouse.Config{
-					DSN:          "clickhouse://localhost:9000/test",
-					MaxOpenConns: 10,
-					MaxIdleConns: 5,
+					URL: "http://localhost:8123",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
 					Enabled: false,
@@ -68,7 +64,7 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "missing DSN",
+			name: "missing URL",
 			config: transaction_structlog.Config{
 				Enabled: true,
 				Table:   "test_table",
@@ -83,7 +79,7 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 			config: transaction_structlog.Config{
 				Enabled: true,
 				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
+					URL: "http://localhost:8123",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
 					Enabled: false,
@@ -97,7 +93,7 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_table",
 				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
+					URL: "http://localhost:8123",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
 					Enabled: true,
@@ -132,9 +128,7 @@ func TestProcessor_ConcurrentConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_concurrent",
 				Config: clickhouse.Config{
-					DSN:          "clickhouse://localhost:9000/test",
-					MaxOpenConns: 10,
-					MaxIdleConns: 5,
+					URL: "http://localhost:8123",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
 					Enabled: false,
@@ -163,9 +157,7 @@ func TestProcessor_BatchConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_table",
 				Config: clickhouse.Config{
-					DSN:          "clickhouse://localhost:9000/test",
-					MaxOpenConns: 10,
-					MaxIdleConns: 5,
+					URL: "http://localhost:8123",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
 					Enabled:           true,
@@ -183,7 +175,7 @@ func TestProcessor_BatchConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_table",
 				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
+					URL: "http://localhost:8123",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
 					Enabled:           true,
@@ -201,9 +193,7 @@ func TestProcessor_BatchConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_table",
 				Config: clickhouse.Config{
-					DSN:          "clickhouse://localhost:9000/test",
-					MaxOpenConns: 10,
-					MaxIdleConns: 5,
+					URL: "http://localhost:8123",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
 					Enabled: false,
@@ -217,7 +207,7 @@ func TestProcessor_BatchConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_table",
 				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
+					URL: "http://localhost:8123",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
 					Enabled:           true,
@@ -234,7 +224,7 @@ func TestProcessor_BatchConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_table",
 				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
+					URL: "http://localhost:8123",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
 					Enabled:           true,
@@ -251,7 +241,7 @@ func TestProcessor_BatchConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_table",
 				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
+					URL: "http://localhost:8123",
 				},
 				BatchConfig: transaction_structlog.BatchConfig{
 					Enabled:           true,
@@ -281,9 +271,7 @@ func TestProcessor_BatchingDisabled(t *testing.T) {
 		Enabled: true,
 		Table:   "test_structlog",
 		Config: clickhouse.Config{
-			DSN:          "clickhouse://localhost:9000/test",
-			MaxOpenConns: 10,
-			MaxIdleConns: 5,
+			URL: "http://localhost:8123",
 		},
 		BatchConfig: transaction_structlog.BatchConfig{
 			Enabled: false, // Disabled
@@ -319,9 +307,7 @@ func TestProcessor_BatchingEnabled(t *testing.T) {
 		Enabled: true,
 		Table:   "test_structlog",
 		Config: clickhouse.Config{
-			DSN:          "clickhouse://localhost:9000/test",
-			MaxOpenConns: 10,
-			MaxIdleConns: 5,
+			URL: "http://localhost:8123",
 		},
 		BatchConfig: transaction_structlog.BatchConfig{
 			Enabled:           true,
@@ -399,7 +385,7 @@ func TestBatchConfig_DefaultValues(t *testing.T) {
 			config := transaction_structlog.Config{
 				Enabled:     true,
 				Table:       "test_table",
-				Config:      clickhouse.Config{DSN: "test://localhost"},
+				Config:      clickhouse.Config{URL: "http://localhost:8123"},
 				BatchConfig: tc.config,
 			}
 
@@ -477,7 +463,7 @@ func TestBatchConfig_EdgeCases(t *testing.T) {
 			config := transaction_structlog.Config{
 				Enabled:     true,
 				Table:       "test_table",
-				Config:      clickhouse.Config{DSN: "test://localhost"},
+				Config:      clickhouse.Config{URL: "http://localhost:8123"},
 				BatchConfig: tc.config,
 			}
 
@@ -521,7 +507,7 @@ func TestStructlogCountReturn(t *testing.T) {
 	// Simulate the structlog creation logic
 	for i, structLog := range mockTrace.Structlogs {
 		row := transaction_structlog.Structlog{
-			UpdatedDateTime:        now,
+			UpdatedDateTime:        transaction_structlog.NewClickHouseTime(now),
 			BlockNumber:            12345,
 			TransactionHash:        "0x1234567890abcdef",
 			TransactionIndex:       0,
@@ -602,7 +588,7 @@ func TestMemoryManagement(t *testing.T) {
 
 	for i := range largeStructlogs {
 		largeStructlogs[i] = transaction_structlog.Structlog{
-			UpdatedDateTime:        now,
+			UpdatedDateTime:        transaction_structlog.NewClickHouseTime(now),
 			BlockNumber:            uint64(i), //nolint:gosec // safe to use user input in query
 			TransactionHash:        "0x1234567890abcdef1234567890abcdef12345678",
 			TransactionIndex:       uint32(i % 100), //nolint:gosec // safe to use user input in query

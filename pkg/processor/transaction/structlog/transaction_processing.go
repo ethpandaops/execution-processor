@@ -14,25 +14,25 @@ import (
 )
 
 type Structlog struct {
-	UpdatedDateTime        time.Time `json:"updated_date_time"`
-	BlockNumber            uint64    `json:"block_number"`
-	TransactionHash        string    `json:"transaction_hash"`
-	TransactionIndex       uint32    `json:"transaction_index"`
-	TransactionGas         uint64    `json:"transaction_gas"`
-	TransactionFailed      bool      `json:"transaction_failed"`
-	TransactionReturnValue *string   `json:"transaction_return_value"`
-	Index                  uint32    `json:"index"`
-	ProgramCounter         uint32    `json:"program_counter"`
-	Operation              string    `json:"operation"`
-	Gas                    uint64    `json:"gas"`
-	GasCost                uint64    `json:"gas_cost"`
-	Depth                  uint64    `json:"depth"`
-	ReturnData             *string   `json:"return_data"`
-	Refund                 *uint64   `json:"refund"`
-	Error                  *string   `json:"error"`
-	CallToAddress          *string   `json:"call_to_address"`
-	MetaNetworkID          int32     `json:"meta_network_id"`
-	MetaNetworkName        string    `json:"meta_network_name"`
+	UpdatedDateTime        ClickHouseTime `json:"updated_date_time"`
+	BlockNumber            uint64         `json:"block_number"`
+	TransactionHash        string         `json:"transaction_hash"`
+	TransactionIndex       uint32         `json:"transaction_index"`
+	TransactionGas         uint64         `json:"transaction_gas"`
+	TransactionFailed      bool           `json:"transaction_failed"`
+	TransactionReturnValue *string        `json:"transaction_return_value"`
+	Index                  uint32         `json:"index"`
+	ProgramCounter         uint32         `json:"program_counter"`
+	Operation              string         `json:"operation"`
+	Gas                    uint64         `json:"gas"`
+	GasCost                uint64         `json:"gas_cost"`
+	Depth                  uint64         `json:"depth"`
+	ReturnData             *string        `json:"return_data"`
+	Refund                 *uint64        `json:"refund"`
+	Error                  *string        `json:"error"`
+	CallToAddress          *string        `json:"call_to_address"`
+	MetaNetworkID          int32          `json:"meta_network_id"`
+	MetaNetworkName        string         `json:"meta_network_name"`
 }
 
 // ProcessSingleTransaction processes a single transaction using batch collector (exposed for worker handlers)
@@ -124,7 +124,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 			}
 
 			row := Structlog{
-				UpdatedDateTime:        time.Now(),
+				UpdatedDateTime:        NewClickHouseTime(time.Now()),
 				BlockNumber:            block.Number().Uint64(),
 				TransactionHash:        tx.Hash().String(),
 				TransactionIndex:       uIndex,

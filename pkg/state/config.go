@@ -28,16 +28,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("storage.table is required")
 	}
 
-	if c.Storage.DSN == "" {
-		return fmt.Errorf("storage.dsn is required")
-	}
-
-	if c.Storage.MaxOpenConns <= 0 {
-		return fmt.Errorf("storage.maxOpenConns must be greater than 0")
-	}
-
-	if c.Storage.MaxIdleConns <= 0 {
-		return fmt.Errorf("storage.maxIdleConns must be greater than 0")
+	if err := c.Storage.Validate(); err != nil {
+		return fmt.Errorf("storage config validation failed: %w", err)
 	}
 
 	// Validate limiter config if enabled
@@ -46,16 +38,8 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("limiter.table is required when limiter is enabled")
 		}
 
-		if c.Limiter.DSN == "" {
-			return fmt.Errorf("limiter.dsn is required when limiter is enabled")
-		}
-
-		if c.Limiter.MaxOpenConns <= 0 {
-			return fmt.Errorf("limiter.maxOpenConns must be greater than 0")
-		}
-
-		if c.Limiter.MaxIdleConns <= 0 {
-			return fmt.Errorf("limiter.maxIdleConns must be greater than 0")
+		if err := c.Limiter.Validate(); err != nil {
+			return fmt.Errorf("limiter config validation failed: %w", err)
 		}
 	}
 

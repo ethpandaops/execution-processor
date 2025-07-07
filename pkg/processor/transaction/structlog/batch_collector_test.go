@@ -271,7 +271,7 @@ func createTestStructlogs(count int) []Structlog {
 
 	for i := 0; i < count; i++ {
 		logs[i] = Structlog{
-			UpdatedDateTime:        now,
+			UpdatedDateTime:        NewClickHouseTime(now),
 			BlockNumber:            uint64(12345),
 			TransactionHash:        "0x1234567890abcdef",
 			TransactionIndex:       0,
