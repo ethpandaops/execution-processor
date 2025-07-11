@@ -11,6 +11,12 @@ type Config struct {
 	clickhouse.Config `yaml:",inline"`
 	Enabled           bool   `yaml:"enabled"`
 	Table             string `yaml:"table"`
+
+	// Big transaction handling
+	BigTransactionThreshold int `yaml:"bigTransactionThreshold"` // Default: 500,000
+	ChunkSize               int `yaml:"chunkSize"`               // Default: 10,000
+	ChannelBufferSize       int `yaml:"channelBufferSize"`       // Default: 2
+	ProgressLogThreshold    int `yaml:"progressLogThreshold"`    // Default: 100,000
 }
 
 func (c *Config) Validate() error {

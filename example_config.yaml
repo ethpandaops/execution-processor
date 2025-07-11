@@ -53,6 +53,11 @@ processors:
     table: "canonical_execution_transaction_structlog"
     # maxOpenConns: 10
     # maxIdleConns: 10
+    # Channel-based batching configuration for memory-efficient processing
+    # bigTransactionThreshold: 500000  # Transactions with more structlogs are considered "big" (default: 500000)
+    # chunkSize: 10000                 # Number of structlogs per batch (default: 10000)
+    # channelBufferSize: 2             # Number of chunks to buffer in channel (default: 2)
+    # progressLogThreshold: 100000     # Log progress every N structlogs for large transactions (default: 100000)
 
 # Application settings
 shutdownTimeout: 6m

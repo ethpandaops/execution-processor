@@ -36,6 +36,7 @@ type Processor struct {
 	asynqClient    *asynq.Client
 	processingMode string
 	redisPrefix    string
+	bigTxManager   *BigTransactionManager
 }
 
 // New creates a new transaction structlog processor
@@ -74,6 +75,18 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 
 // Start starts the processor
 func (p *Processor) Start(ctx context.Context) error {
+	// Use configured value or default
+	threshold := p.config.BigTransactionThreshold
+	if threshold == 0 {
+		threshold = 500_000 // Default
+	}
+
+	p.bigTxManager = NewBigTransactionManager(threshold, p.log)
+
+	p.log.WithFields(logrus.Fields{
+		"big_transaction_threshold": threshold,
+	}).Info("Initialized big transaction manager")
+
 	// Start the ClickHouse client
 	if err := p.clickhouse.Start(); err != nil {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
@@ -200,6 +213,28 @@ func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog
 	common.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "success", "").Add(float64(len(structlogs)))
 
 	return nil
+}
+
+// waitForBigTransactions waits for big transactions to complete before proceeding
+func (p *Processor) waitForBigTransactions(taskType string) {
+	if p.bigTxManager.ShouldPauseNewWork() {
+		p.log.WithFields(logrus.Fields{
+			"task_type":      taskType,
+			"active_big_txs": p.bigTxManager.currentBigCount.Load(),
+		}).Debug("Task waiting for big transactions to complete")
+
+		startWait := time.Now()
+
+		for p.bigTxManager.ShouldPauseNewWork() {
+			time.Sleep(100 * time.Millisecond)
+		}
+
+		waitDuration := time.Since(startWait)
+		p.log.WithFields(logrus.Fields{
+			"task_type":     taskType,
+			"wait_duration": waitDuration.String(),
+		}).Debug("Task resumed after big transactions completed")
+	}
 }
 
 // parseErrorCode extracts error code from error message

@@ -28,6 +28,9 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 		return fmt.Errorf("failed to unmarshal process payload: %w", err)
 	}
 
+	// Wait for any active big transactions before starting
+	p.waitForBigTransactions("process_forwards")
+
 	// Get healthy execution node
 	node := p.pool.GetHealthyExecutionNode()
 	if node == nil {
@@ -53,7 +56,7 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 	}
 
 	// Process the transaction
-	structlogCount, err := p.ProcessSingleTransaction(ctx, block, int(payload.TransactionIndex), tx)
+	structlogCount, err := p.ProcessTransaction(ctx, block, int(payload.TransactionIndex), tx)
 	if err != nil {
 		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessForwardsQueue(ProcessorName), ProcessForwardsTaskType, "processing_error").Inc()
 
@@ -130,6 +133,9 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 		return fmt.Errorf("failed to unmarshal process payload: %w", err)
 	}
 
+	// Wait for any active big transactions before starting
+	p.waitForBigTransactions("process_backwards")
+
 	// Get healthy execution node
 	node := p.pool.GetHealthyExecutionNode()
 	if node == nil {
@@ -155,7 +161,7 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 	}
 
 	// Process the transaction
-	structlogCount, err := p.ProcessSingleTransaction(ctx, block, int(payload.TransactionIndex), tx)
+	structlogCount, err := p.ProcessTransaction(ctx, block, int(payload.TransactionIndex), tx)
 	if err != nil {
 		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType, "processing_error").Inc()
 
@@ -224,6 +230,9 @@ func (p *Processor) handleVerifyForwardsTask(ctx context.Context, task *asynq.Ta
 		duration := time.Since(start)
 		common.TaskProcessingDuration.WithLabelValues(p.network.Name, ProcessorName, c.VerifyForwardsQueue(ProcessorName), VerifyForwardsTaskType).Observe(duration.Seconds())
 	}()
+
+	// Wait for any active big transactions before starting verify
+	p.waitForBigTransactions("verify_forwards")
 
 	p.log.Debug("Received verify task")
 
@@ -327,6 +336,9 @@ func (p *Processor) handleVerifyBackwardsTask(ctx context.Context, task *asynq.T
 		duration := time.Since(start)
 		common.TaskProcessingDuration.WithLabelValues(p.network.Name, ProcessorName, c.VerifyBackwardsQueue(ProcessorName), VerifyBackwardsTaskType).Observe(duration.Seconds())
 	}()
+
+	// Wait for any active big transactions before starting verify
+	p.waitForBigTransactions("verify_backwards")
 
 	p.log.Debug("Received verify task")
 

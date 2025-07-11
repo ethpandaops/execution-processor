@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/0xsequence/ethkit/go-ethereum/core/types"
+	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
@@ -61,6 +62,173 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.B
 	common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
 
 	return structlogCount, nil
+}
+
+// ProcessTransaction processes a transaction using memory-efficient channel-based batching
+func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
+	// Get trace from execution node
+	trace, err := p.getTransactionTrace(ctx, tx, block)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get trace: %w", err)
+	}
+
+	totalCount := len(trace.Structlogs)
+
+	// Check if this is a big transaction and register if needed
+	if totalCount >= p.bigTxManager.GetThreshold() {
+		p.bigTxManager.RegisterBigTransaction(tx.Hash().String())
+		defer p.bigTxManager.UnregisterBigTransaction(tx.Hash().String())
+
+		p.log.WithFields(logrus.Fields{
+			"tx_hash":           tx.Hash().String(),
+			"structlog_count":   totalCount,
+			"current_big_count": p.bigTxManager.currentBigCount.Load(),
+		}).Info("Processing big transaction")
+	}
+
+	chunkSize := p.config.ChunkSize
+	if chunkSize == 0 {
+		chunkSize = 10_000 // Default
+	}
+
+	// Buffered channel holds configured number of chunks
+	bufferSize := p.config.ChannelBufferSize
+	if bufferSize == 0 {
+		bufferSize = 2 // Default
+	}
+
+	batchChan := make(chan []Structlog, bufferSize)
+	errChan := make(chan error, 1)
+
+	// Consumer goroutine - inserts to ClickHouse
+	go func() {
+		inserted := 0
+
+		for batch := range batchChan {
+			if err := p.insertStructlogs(ctx, batch); err != nil {
+				errChan <- fmt.Errorf("failed to insert at %d: %w", inserted, err)
+
+				return
+			}
+
+			inserted += len(batch)
+
+			// Log progress for large transactions
+			progressThreshold := p.config.ProgressLogThreshold
+			if progressThreshold == 0 {
+				progressThreshold = 100_000 // Default
+			}
+
+			if totalCount > progressThreshold && inserted%progressThreshold < chunkSize {
+				p.log.WithFields(logrus.Fields{
+					"tx_hash":  tx.Hash(),
+					"progress": fmt.Sprintf("%d/%d", inserted, totalCount),
+				}).Debug("Processing large transaction")
+			}
+		}
+		errChan <- nil
+	}()
+
+	// Producer - convert and send batches
+	batch := make([]Structlog, 0, chunkSize)
+	for i := 0; i < totalCount; i++ {
+		// Convert structlog
+		batch = append(batch, Structlog{
+			UpdatedDateTime:        NewClickHouseTime(time.Now()),
+			BlockNumber:            block.Number().Uint64(),
+			TransactionHash:        tx.Hash().String(),
+			TransactionIndex:       uint32(index), //nolint:gosec // index is bounded by block.Transactions() length
+			TransactionGas:         trace.Gas,
+			TransactionFailed:      trace.Failed,
+			TransactionReturnValue: trace.ReturnValue,
+			Index:                  uint32(i), //nolint:gosec // index is bounded by structlogs length
+			ProgramCounter:         trace.Structlogs[i].PC,
+			Operation:              trace.Structlogs[i].Op,
+			Gas:                    trace.Structlogs[i].Gas,
+			GasCost:                trace.Structlogs[i].GasCost,
+			Depth:                  trace.Structlogs[i].Depth,
+			ReturnData:             trace.Structlogs[i].ReturnData,
+			Refund:                 trace.Structlogs[i].Refund,
+			Error:                  trace.Structlogs[i].Error,
+			CallToAddress:          p.extractCallAddress(&trace.Structlogs[i]),
+			MetaNetworkID:          p.network.ID,
+			MetaNetworkName:        p.network.Name,
+		})
+
+		// CRITICAL: Free original trace data immediately
+		trace.Structlogs[i] = execution.StructLog{}
+
+		// Send full batch
+		if len(batch) == chunkSize {
+			select {
+			case batchChan <- batch:
+				batch = make([]Structlog, 0, chunkSize)
+			case <-ctx.Done():
+				close(batchChan)
+
+				return 0, ctx.Err()
+			}
+		}
+	}
+
+	// Clear trace reference to help GC
+	trace = nil
+
+	// Send final batch if any
+	if len(batch) > 0 {
+		select {
+		case batchChan <- batch:
+		case <-ctx.Done():
+			close(batchChan)
+
+			return 0, ctx.Err()
+		}
+	}
+
+	// Signal completion and wait
+	close(batchChan)
+
+	// Wait for consumer to finish
+	if err := <-errChan; err != nil {
+		return 0, err
+	}
+
+	// Record success metrics
+	common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
+
+	return totalCount, nil
+}
+
+// getTransactionTrace gets the trace for a transaction
+func (p *Processor) getTransactionTrace(ctx context.Context, tx *types.Transaction, block *types.Block) (*execution.TraceTransaction, error) {
+	// Get execution node
+	node := p.pool.GetHealthyExecutionNode()
+	if node == nil {
+		return nil, fmt.Errorf("no healthy execution node available")
+	}
+
+	// Process transaction with timeout
+	processCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Get transaction trace
+	trace, err := node.DebugTraceTransaction(processCtx, tx.Hash().String(), block.Number(), execution.StackTraceOptions())
+	if err != nil {
+		return nil, fmt.Errorf("failed to trace transaction: %w", err)
+	}
+
+	return trace, nil
+}
+
+// extractCallAddress extracts the call address from a structlog if it's a CALL operation
+func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
+	if structLog.Op == "CALL" && structLog.Stack != nil && len(*structLog.Stack) > 1 {
+		stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
+
+		return &stackValue
+	}
+
+	return nil
 }
 
 // ExtractStructlogs extracts structlog data from a transaction without inserting to database
