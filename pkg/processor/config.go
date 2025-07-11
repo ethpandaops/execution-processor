@@ -97,8 +97,8 @@ func (c *Config) Validate() error {
 	}
 
 	if c.TransactionStructlog.Enabled {
-		if c.TransactionStructlog.DSN == "" {
-			return fmt.Errorf("transaction structlog DSN is required when enabled")
+		if c.TransactionStructlog.URL == "" {
+			return fmt.Errorf("transaction structlog URL is required when enabled")
 		}
 
 		if c.TransactionStructlog.Table == "" {

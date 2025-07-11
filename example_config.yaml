@@ -53,22 +53,16 @@ processors:
     table: "canonical_execution_transaction_structlog"
     # maxOpenConns: 10
     # maxIdleConns: 10
+    # Channel-based batching configuration for memory-efficient processing
+    # bigTransactionThreshold: 500000  # Transactions with more structlogs are considered "big" (default: 500000)
+    # chunkSize: 10000                 # Number of structlogs per batch (default: 10000)
+    # channelBufferSize: 2             # Number of chunks to buffer in channel (default: 2)
+    # progressLogThreshold: 100000     # Log progress every N structlogs for large transactions (default: 100000)
     
-    # Batch configuration
-    batchConfig:
-      enabled: true                 # Enable batch aggregation system
-      maxRows: 100000               # Max rows before forced flush (aggregated batches)
-      flushInterval: "5s"           # Max time to wait before flush
-      flushTimeout: "5m"            # Timeout for ClickHouse flush operations
-      channelBufferSize: 100        # Max tasks that can be queued
-
-    # Large transaction configuration
-    largeTransactionConfig:
-      enabled: true                 # Enable large transaction handling
-      structlogThreshold: 250000    # Number of structlogs to consider a transaction "large"
-      workerWaitTimeout: 4m         # How long workers wait before returning task to queue (applies to both normal workers waiting for large tx and large tx workers waiting for another large tx to complete)
-      maxProcessingTime: 5m         # Maximum time allowed for processing a large transaction (safety check - if a large tx takes longer than this, it's logged as an error but not forcefully stopped)
-      enableSequentialMode: true    # If true, large transactions are processed one at a time; if false, multiple large transactions can process concurrently
+    # Small transaction batching configuration
+    # batchInsertThreshold: 50000      # Transactions with fewer structlogs than this will be batched (default: 50000)
+    # batchFlushInterval: 5s           # Maximum time to wait before flushing a batch (default: 5s)
+    # batchMaxSize: 100000             # Maximum number of structlogs to accumulate in a batch (default: 100000)
 
 # Application settings
 shutdownTimeout: 6m

@@ -148,34 +148,6 @@ var (
 		Help: "Total number of times block processing was skipped",
 	}, []string{"network", "processor", "reason"})
 
-	// Batch collector metrics
-	BatchCollectorFlushes = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "execution_processor_batch_collector_flushes_total",
-		Help: "Total number of batch flushes",
-	}, []string{"network", "processor", "status"})
-
-	BatchCollectorFlushDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "execution_processor_batch_collector_flush_duration_seconds",
-		Help:    "Time taken to flush a batch",
-		Buckets: prometheus.ExponentialBuckets(0.01, 2, 12),
-	}, []string{"network", "processor", "status"})
-
-	BatchCollectorRowsFlushed = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "execution_processor_batch_collector_rows_flushed_total",
-		Help: "Total number of rows flushed in batches",
-	}, []string{"network", "processor"})
-
-	BatchCollectorQueueDepth = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "execution_processor_batch_collector_queue_depth",
-		Help: "Number of tasks waiting in batch collector queue",
-	}, []string{"network", "processor"})
-
-	BatchCollectorBatchSize = promauto.NewHistogramVec(prometheus.HistogramOpts{
-		Name:    "execution_processor_batch_collector_batch_size",
-		Help:    "Size of batches being flushed",
-		Buckets: prometheus.ExponentialBuckets(10, 2, 15),
-	}, []string{"network", "processor"})
-
 	RetryCount = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "execution_processor_retry_count_total",
 		Help: "Total number of retry attempts",

@@ -1,7 +1,6 @@
 package structlog_test
 
 import (
-	"context"
 	"encoding/json"
 	"math/big"
 	"runtime"
@@ -9,14 +8,10 @@ import (
 	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
-	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
 	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
-	"github.com/ethpandaops/execution-processor/pkg/state"
 	"github.com/hibiken/asynq"
-	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 func TestProcessor_Creation(t *testing.T) {
@@ -24,13 +19,12 @@ func TestProcessor_Creation(t *testing.T) {
 		Enabled: true,
 		Table:   "test_structlog",
 		Config: clickhouse.Config{
-			DSN:          "clickhouse://localhost:9000/test",
-			MaxOpenConns: 10,
-			MaxIdleConns: 5,
+			URL: "http://localhost:8123",
 		},
-		BatchConfig: transaction_structlog.BatchConfig{
-			Enabled: false,
-		},
+		BigTransactionThreshold: 500000,
+		BatchInsertThreshold:    50000,
+		BatchFlushInterval:      5 * time.Second,
+		BatchMaxSize:            100000,
 	}
 
 	// Test config validation
@@ -50,13 +44,12 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_table",
 				Config: clickhouse.Config{
-					DSN:          "clickhouse://localhost:9000/test",
-					MaxOpenConns: 10,
-					MaxIdleConns: 5,
+					URL: "http://localhost:8123",
 				},
-				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled: false,
-				},
+				BigTransactionThreshold: 500000,
+				BatchInsertThreshold:    50000,
+				BatchFlushInterval:      5 * time.Second,
+				BatchMaxSize:            100000,
 			},
 			expectError: false,
 		},
@@ -68,13 +61,14 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "missing DSN",
+			name: "missing URL",
 			config: transaction_structlog.Config{
-				Enabled: true,
-				Table:   "test_table",
-				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled: false,
-				},
+				Enabled:                 true,
+				Table:                   "test_table",
+				BigTransactionThreshold: 500000,
+				BatchInsertThreshold:    50000,
+				BatchFlushInterval:      5 * time.Second,
+				BatchMaxSize:            100000,
 			},
 			expectError: true,
 		},
@@ -83,26 +77,12 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 			config: transaction_structlog.Config{
 				Enabled: true,
 				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
+					URL: "http://localhost:8123",
 				},
-				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled: false,
-				},
-			},
-			expectError: true,
-		},
-		{
-			name: "batch enabled but missing required fields",
-			config: transaction_structlog.Config{
-				Enabled: true,
-				Table:   "test_table",
-				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
-				},
-				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled: true,
-					// Missing MaxRows, FlushInterval, ChannelBufferSize
-				},
+				BigTransactionThreshold: 500000,
+				BatchInsertThreshold:    50000,
+				BatchFlushInterval:      5 * time.Second,
+				BatchMaxSize:            100000,
 			},
 			expectError: true,
 		},
@@ -132,13 +112,12 @@ func TestProcessor_ConcurrentConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_concurrent",
 				Config: clickhouse.Config{
-					DSN:          "clickhouse://localhost:9000/test",
-					MaxOpenConns: 10,
-					MaxIdleConns: 5,
+					URL: "http://localhost:8123",
 				},
-				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled: false,
-				},
+				BigTransactionThreshold: 500000,
+				BatchInsertThreshold:    50000,
+				BatchFlushInterval:      5 * time.Second,
+				BatchMaxSize:            100000,
 			}
 			results <- cfg.Validate()
 		}()
@@ -148,346 +127,6 @@ func TestProcessor_ConcurrentConfigValidation(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		err := <-results
 		assert.NoError(t, err)
-	}
-}
-
-func TestProcessor_BatchConfigValidation(t *testing.T) {
-	testCases := []struct {
-		name        string
-		config      transaction_structlog.Config
-		expectError bool
-	}{
-		{
-			name: "valid batch config enabled",
-			config: transaction_structlog.Config{
-				Enabled: true,
-				Table:   "test_table",
-				Config: clickhouse.Config{
-					DSN:          "clickhouse://localhost:9000/test",
-					MaxOpenConns: 10,
-					MaxIdleConns: 5,
-				},
-				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled:           true,
-					MaxRows:           10000,
-					FlushInterval:     5 * time.Second,
-					ChannelBufferSize: 100,
-					FlushTimeout:      5 * time.Minute,
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "batch config with default flush timeout",
-			config: transaction_structlog.Config{
-				Enabled: true,
-				Table:   "test_table",
-				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
-				},
-				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled:           true,
-					MaxRows:           10000,
-					FlushInterval:     5 * time.Second,
-					ChannelBufferSize: 100,
-					FlushTimeout:      0, // Should default to 5 minutes
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "batch config disabled",
-			config: transaction_structlog.Config{
-				Enabled: true,
-				Table:   "test_table",
-				Config: clickhouse.Config{
-					DSN:          "clickhouse://localhost:9000/test",
-					MaxOpenConns: 10,
-					MaxIdleConns: 5,
-				},
-				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled: false,
-				},
-			},
-			expectError: false,
-		},
-		{
-			name: "invalid max rows",
-			config: transaction_structlog.Config{
-				Enabled: true,
-				Table:   "test_table",
-				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
-				},
-				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled:           true,
-					MaxRows:           0, // Invalid
-					FlushInterval:     5 * time.Second,
-					ChannelBufferSize: 100,
-				},
-			},
-			expectError: true,
-		},
-		{
-			name: "invalid flush interval",
-			config: transaction_structlog.Config{
-				Enabled: true,
-				Table:   "test_table",
-				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
-				},
-				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled:           true,
-					MaxRows:           10000,
-					FlushInterval:     0, // Invalid
-					ChannelBufferSize: 100,
-				},
-			},
-			expectError: true,
-		},
-		{
-			name: "invalid channel buffer size",
-			config: transaction_structlog.Config{
-				Enabled: true,
-				Table:   "test_table",
-				Config: clickhouse.Config{
-					DSN: "clickhouse://localhost:9000/test",
-				},
-				BatchConfig: transaction_structlog.BatchConfig{
-					Enabled:           true,
-					MaxRows:           10000,
-					FlushInterval:     5 * time.Second,
-					ChannelBufferSize: 0, // Invalid
-				},
-			},
-			expectError: true,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.config.Validate()
-			if tc.expectError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-func TestProcessor_BatchingDisabled(t *testing.T) {
-	config := transaction_structlog.Config{
-		Enabled: true,
-		Table:   "test_structlog",
-		Config: clickhouse.Config{
-			DSN:          "clickhouse://localhost:9000/test",
-			MaxOpenConns: 10,
-			MaxIdleConns: 5,
-		},
-		BatchConfig: transaction_structlog.BatchConfig{
-			Enabled: false, // Disabled
-		},
-	}
-
-	err := config.Validate()
-	require.NoError(t, err)
-
-	// Create dependencies
-	deps := &transaction_structlog.Dependencies{
-		Log:         logrus.NewEntry(logrus.New()),
-		Pool:        &ethereum.Pool{}, // Mock pool
-		Network:     &ethereum.Network{Name: "test", ID: 1},
-		State:       &state.Manager{}, // Mock state
-		AsynqClient: &asynq.Client{},  // Mock client
-		RedisPrefix: "test",
-	}
-
-	ctx := context.Background()
-
-	// This should not fail even without real dependencies since batch collector is disabled
-	processor, err := transaction_structlog.New(ctx, deps, &config)
-	assert.NoError(t, err)
-	assert.NotNil(t, processor)
-
-	// Batch collector should be nil when disabled
-	// Note: We can not directly access private fields, but the processor should work
-}
-
-func TestProcessor_BatchingEnabled(t *testing.T) {
-	config := transaction_structlog.Config{
-		Enabled: true,
-		Table:   "test_structlog",
-		Config: clickhouse.Config{
-			DSN:          "clickhouse://localhost:9000/test",
-			MaxOpenConns: 10,
-			MaxIdleConns: 5,
-		},
-		BatchConfig: transaction_structlog.BatchConfig{
-			Enabled:           true,
-			MaxRows:           1000,
-			FlushInterval:     5 * time.Second,
-			ChannelBufferSize: 100,
-		},
-	}
-
-	err := config.Validate()
-	require.NoError(t, err)
-
-	// Create dependencies
-	deps := &transaction_structlog.Dependencies{
-		Log:         logrus.NewEntry(logrus.New()),
-		Pool:        &ethereum.Pool{}, // Mock pool
-		Network:     &ethereum.Network{Name: "test", ID: 1},
-		State:       &state.Manager{}, // Mock state
-		AsynqClient: &asynq.Client{},  // Mock client
-		RedisPrefix: "test",
-	}
-
-	ctx := context.Background()
-
-	// This should not fail even without real dependencies since we are not starting
-	processor, err := transaction_structlog.New(ctx, deps, &config)
-	assert.NoError(t, err)
-	assert.NotNil(t, processor)
-
-	// Batch collector should be initialized when enabled
-	// Note: We can not directly access private fields, but the processor should work
-}
-
-func TestBatchConfig_DefaultValues(t *testing.T) {
-	// Test that batch config validation works with various combinations
-	testCases := []struct {
-		name    string
-		config  transaction_structlog.BatchConfig
-		wantErr bool
-	}{
-		{
-			name: "disabled config",
-			config: transaction_structlog.BatchConfig{
-				Enabled: false,
-				// Other fields can be zero when disabled
-			},
-			wantErr: false,
-		},
-		{
-			name: "valid enabled config",
-			config: transaction_structlog.BatchConfig{
-				Enabled:           true,
-				MaxRows:           10000,
-				FlushInterval:     5 * time.Second,
-				ChannelBufferSize: 100,
-				FlushTimeout:      5 * time.Minute,
-			},
-			wantErr: false,
-		},
-		{
-			name: "minimal valid config",
-			config: transaction_structlog.BatchConfig{
-				Enabled:           true,
-				MaxRows:           1,
-				FlushInterval:     1 * time.Millisecond,
-				ChannelBufferSize: 1,
-				FlushTimeout:      1 * time.Second,
-			},
-			wantErr: false,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			config := transaction_structlog.Config{
-				Enabled:     true,
-				Table:       "test_table",
-				Config:      clickhouse.Config{DSN: "test://localhost"},
-				BatchConfig: tc.config,
-			}
-
-			err := config.Validate()
-			if tc.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
-	}
-}
-
-func TestBatchConfig_EdgeCases(t *testing.T) {
-	// Test edge cases for batch configuration
-	testCases := []struct {
-		name    string
-		config  transaction_structlog.BatchConfig
-		wantErr bool
-	}{
-		{
-			name: "zero max rows",
-			config: transaction_structlog.BatchConfig{
-				Enabled:           true,
-				MaxRows:           0, // Invalid
-				FlushInterval:     5 * time.Second,
-				ChannelBufferSize: 100,
-			},
-			wantErr: true,
-		},
-		{
-			name: "zero flush interval",
-			config: transaction_structlog.BatchConfig{
-				Enabled:           true,
-				MaxRows:           1000,
-				FlushInterval:     0, // Invalid
-				ChannelBufferSize: 100,
-			},
-			wantErr: true,
-		},
-		{
-			name: "zero channel buffer size",
-			config: transaction_structlog.BatchConfig{
-				Enabled:           true,
-				MaxRows:           1000,
-				FlushInterval:     5 * time.Second,
-				ChannelBufferSize: 0, // Invalid
-			},
-			wantErr: true,
-		},
-		{
-			name: "negative max rows",
-			config: transaction_structlog.BatchConfig{
-				Enabled:           true,
-				MaxRows:           -1, // Invalid
-				FlushInterval:     5 * time.Second,
-				ChannelBufferSize: 100,
-			},
-			wantErr: true,
-		},
-		{
-			name: "negative flush interval",
-			config: transaction_structlog.BatchConfig{
-				Enabled:           true,
-				MaxRows:           1000,
-				FlushInterval:     -1 * time.Second, // Invalid
-				ChannelBufferSize: 100,
-			},
-			wantErr: true,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			config := transaction_structlog.Config{
-				Enabled:     true,
-				Table:       "test_table",
-				Config:      clickhouse.Config{DSN: "test://localhost"},
-				BatchConfig: tc.config,
-			}
-
-			err := config.Validate()
-			if tc.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
-		})
 	}
 }
 
@@ -521,7 +160,7 @@ func TestStructlogCountReturn(t *testing.T) {
 	// Simulate the structlog creation logic
 	for i, structLog := range mockTrace.Structlogs {
 		row := transaction_structlog.Structlog{
-			UpdatedDateTime:        now,
+			UpdatedDateTime:        transaction_structlog.NewClickHouseTime(now),
 			BlockNumber:            12345,
 			TransactionHash:        "0x1234567890abcdef",
 			TransactionIndex:       0,
@@ -602,7 +241,7 @@ func TestMemoryManagement(t *testing.T) {
 
 	for i := range largeStructlogs {
 		largeStructlogs[i] = transaction_structlog.Structlog{
-			UpdatedDateTime:        now,
+			UpdatedDateTime:        transaction_structlog.NewClickHouseTime(now),
 			BlockNumber:            uint64(i), //nolint:gosec // safe to use user input in query
 			TransactionHash:        "0x1234567890abcdef1234567890abcdef12345678",
 			TransactionIndex:       uint32(i % 100), //nolint:gosec // safe to use user input in query
