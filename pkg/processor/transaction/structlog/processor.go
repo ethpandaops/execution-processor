@@ -36,8 +36,6 @@ type Processor struct {
 	asynqClient    *asynq.Client
 	processingMode string
 	redisPrefix    string
-	batchCollector *BatchCollector
-	largeTxLock    *LargeTxLockManager
 }
 
 // New creates a new transaction structlog processor
@@ -71,27 +69,6 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 		"chain_id": processor.network.ID,
 	}).Info("Detected network")
 
-	// Initialize batch collector if enabled
-	if config.BatchConfig.Enabled {
-		processor.batchCollector = NewBatchCollector(processor, config.BatchConfig)
-		processor.log.Info("Batch collector enabled")
-	} else {
-		processor.log.Info("Batch collector disabled")
-	}
-
-	// Initialize large transaction lock manager
-	if config.LargeTransactionConfig != nil && config.LargeTransactionConfig.Enabled {
-		processor.largeTxLock = NewLargeTxLockManager(processor.log, config.LargeTransactionConfig)
-		processor.log.WithFields(logrus.Fields{
-			"threshold":           config.LargeTransactionConfig.StructlogThreshold,
-			"worker_wait_timeout": config.LargeTransactionConfig.WorkerWaitTimeout,
-			"max_processing_time": config.LargeTransactionConfig.MaxProcessingTime,
-			"sequential_mode":     config.LargeTransactionConfig.EnableSequentialMode,
-		}).Info("Large transaction handling enabled")
-	} else {
-		processor.log.Info("Large transaction handling disabled")
-	}
-
 	return processor, nil
 }
 
@@ -102,13 +79,6 @@ func (p *Processor) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
 	}
 
-	// Start batch collector if enabled
-	if p.batchCollector != nil {
-		if err := p.batchCollector.Start(ctx); err != nil {
-			return fmt.Errorf("failed to start batch collector: %w", err)
-		}
-	}
-
 	p.log.Info("Transaction structlog processor ready")
 
 	return nil
@@ -117,13 +87,6 @@ func (p *Processor) Start(ctx context.Context) error {
 // Stop stops the processor
 func (p *Processor) Stop(ctx context.Context) error {
 	p.log.Info("Stopping transaction structlog processor")
-
-	// Stop batch collector first to flush remaining data
-	if p.batchCollector != nil {
-		if err := p.batchCollector.Stop(ctx); err != nil {
-			p.log.WithError(err).Error("Failed to stop batch collector")
-		}
-	}
 
 	// Stop the ClickHouse client
 	return p.clickhouse.Stop()
@@ -199,74 +162,20 @@ func (p *Processor) getVerifyBackwardsQueue() string {
 	return c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// GetLargeTxStatus returns the current status of large transaction processing
-func (p *Processor) GetLargeTxStatus() map[string]interface{} {
-	if p.largeTxLock == nil {
-		return map[string]interface{}{
-			"enabled": false,
-		}
-	}
-
-	return p.largeTxLock.GetStatus()
-}
-
-// sendToBatchCollector sends structlog rows to the batch collector for aggregated insertion
-func (p *Processor) sendToBatchCollector(ctx context.Context, structlogs []Structlog) error {
+// insertStructlogs sends structlog rows for direct database insertion
+func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog) error {
 	// Short-circuit for empty structlog arrays - no need to process
 	if len(structlogs) == 0 {
 		return nil
 	}
 
-	if p.batchCollector == nil {
-		// Batch collector not enabled, fallback to direct insert
-		// Create timeout context for direct insert using configured timeout
-		timeout := 5 * time.Minute
-		if p.config.BatchConfig.FlushTimeout > 0 {
-			timeout = p.config.BatchConfig.FlushTimeout
-		}
+	// Create timeout context for direct insert
+	timeout := 5 * time.Minute
+	insertCtx, cancel := context.WithTimeout(ctx, timeout)
 
-		insertCtx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
+	defer cancel()
 
-		return p.insertStructlogBatch(insertCtx, structlogs)
-	}
-
-	// Create task batch with unique ID
-	taskBatch := TaskBatch{
-		Rows:         structlogs,
-		ResponseChan: make(chan error, 1),
-		TaskID:       fmt.Sprintf("%d-%d", time.Now().UnixNano(), len(structlogs)),
-	}
-
-	// Ensure response channel is cleaned up on any exit path
-	defer func() {
-		// Drain the channel if it has any pending data
-		select {
-		case <-taskBatch.ResponseChan:
-		default:
-		}
-		close(taskBatch.ResponseChan)
-	}()
-
-	// Submit to batch collector
-	if err := p.batchCollector.SubmitBatch(taskBatch); err != nil {
-		// Let Asynq handle retries - don't fallback to direct insert
-		p.log.WithFields(logrus.Fields{
-			"task_id": taskBatch.TaskID,
-			"rows":    len(taskBatch.Rows),
-			"error":   err.Error(),
-		}).Debug("Failed to submit batch to collector, channel will be cleaned up")
-
-		return fmt.Errorf("failed to submit batch: %w", err)
-	}
-
-	// Wait for batch completion - no timeout
-	select {
-	case err := <-taskBatch.ResponseChan:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return p.insertStructlogBatch(insertCtx, structlogs)
 }
 
 // insertStructlogBatch performs the actual batch insert to ClickHouse

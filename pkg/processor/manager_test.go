@@ -265,9 +265,6 @@ func TestManager_ModeSpecificLeaderElection(t *testing.T) {
 					Config: clickhouse.Config{
 						URL: "http://localhost:8123",
 					},
-					BatchConfig: structlog.BatchConfig{
-						Enabled: false, // Will use default chunk size
-					},
 				},
 			}
 

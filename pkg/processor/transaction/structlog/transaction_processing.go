@@ -56,8 +56,8 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.B
 		}
 	}()
 
-	// Send to batch collector for insertion
-	if err := p.sendToBatchCollector(ctx, structlogs); err != nil {
+	// Send for direct insertion
+	if err := p.insertStructlogs(ctx, structlogs); err != nil {
 		common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
 		// Log memory cleanup for large failed batches
 		if structlogCount > 10000 {
