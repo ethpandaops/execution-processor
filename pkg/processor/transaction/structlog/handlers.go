@@ -55,8 +55,30 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 		return fmt.Errorf("transaction hash mismatch: expected %s, got %s", payload.TransactionHash, tx.Hash().String())
 	}
 
-	// Process the transaction
-	structlogCount, err := p.ProcessTransaction(ctx, block, int(payload.TransactionIndex), tx)
+	// Extract structlogs from the transaction
+	structlogs, err := p.ExtractStructlogs(ctx, block, int(payload.TransactionIndex), tx)
+	if err != nil {
+		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessForwardsQueue(ProcessorName), ProcessForwardsTaskType, "extraction_error").Inc()
+
+		return fmt.Errorf("failed to extract structlogs: %w", err)
+	}
+
+	structlogCount := int64(len(structlogs))
+
+	// Check if transaction should be batched
+	if p.ShouldBatch(structlogCount) {
+		// Route to batch manager
+		if err := p.batchManager.Add(structlogs, task, &payload); err != nil {
+			common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessForwardsQueue(ProcessorName), ProcessForwardsTaskType, "batch_add_error").Inc()
+
+			return fmt.Errorf("failed to add to batch: %w", err)
+		}
+		// Note: Task completion handled by batch manager
+		return nil
+	}
+
+	// Process large transaction using existing logic
+	_, err = p.ProcessTransaction(ctx, block, int(payload.TransactionIndex), tx)
 	if err != nil {
 		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessForwardsQueue(ProcessorName), ProcessForwardsTaskType, "processing_error").Inc()
 
@@ -79,7 +101,7 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 		NetworkID:        payload.NetworkID,
 		NetworkName:      payload.NetworkName,
 		Network:          payload.Network,
-		InsertedCount:    structlogCount,
+		InsertedCount:    int(structlogCount),
 	}
 
 	p.log.WithFields(logrus.Fields{
@@ -160,8 +182,30 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 		return fmt.Errorf("transaction hash mismatch: expected %s, got %s", payload.TransactionHash, tx.Hash().String())
 	}
 
-	// Process the transaction
-	structlogCount, err := p.ProcessTransaction(ctx, block, int(payload.TransactionIndex), tx)
+	// Extract structlogs from the transaction
+	structlogs, err := p.ExtractStructlogs(ctx, block, int(payload.TransactionIndex), tx)
+	if err != nil {
+		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType, "extraction_error").Inc()
+
+		return fmt.Errorf("failed to extract structlogs: %w", err)
+	}
+
+	structlogCount := int64(len(structlogs))
+
+	// Check if transaction should be batched
+	if p.ShouldBatch(structlogCount) {
+		// Route to batch manager
+		if err := p.batchManager.Add(structlogs, task, &payload); err != nil {
+			common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType, "batch_add_error").Inc()
+
+			return fmt.Errorf("failed to add to batch: %w", err)
+		}
+		// Note: Task completion handled by batch manager
+		return nil
+	}
+
+	// Process large transaction using existing logic
+	_, err = p.ProcessTransaction(ctx, block, int(payload.TransactionIndex), tx)
 	if err != nil {
 		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType, "processing_error").Inc()
 
@@ -184,7 +228,7 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 		NetworkID:        payload.NetworkID,
 		NetworkName:      payload.NetworkName,
 		Network:          payload.Network,
-		InsertedCount:    structlogCount,
+		InsertedCount:    int(structlogCount),
 	}
 
 	p.log.WithFields(logrus.Fields{

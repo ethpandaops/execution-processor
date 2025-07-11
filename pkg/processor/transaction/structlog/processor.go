@@ -37,6 +37,7 @@ type Processor struct {
 	processingMode string
 	redisPrefix    string
 	bigTxManager   *BigTransactionManager
+	batchManager   *BatchManager
 }
 
 // New creates a new transaction structlog processor
@@ -87,6 +88,12 @@ func (p *Processor) Start(ctx context.Context) error {
 		"big_transaction_threshold": threshold,
 	}).Info("Initialized big transaction manager")
 
+	// Create and start batch manager
+	p.batchManager = NewBatchManager(p, p.config)
+	if err := p.batchManager.Start(); err != nil {
+		return fmt.Errorf("failed to start batch manager: %w", err)
+	}
+
 	// Start the ClickHouse client
 	if err := p.clickhouse.Start(); err != nil {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
@@ -100,6 +107,11 @@ func (p *Processor) Start(ctx context.Context) error {
 // Stop stops the processor
 func (p *Processor) Stop(ctx context.Context) error {
 	p.log.Info("Stopping transaction structlog processor")
+
+	// Stop the batch manager first to flush any pending batches
+	if p.batchManager != nil {
+		p.batchManager.Stop()
+	}
 
 	// Stop the ClickHouse client
 	return p.clickhouse.Stop()
@@ -255,4 +267,9 @@ func parseErrorCode(err error) string {
 	}
 
 	return "UNKNOWN"
+}
+
+// ShouldBatch determines if a transaction should be batched based on structlog count
+func (p *Processor) ShouldBatch(structlogCount int64) bool {
+	return structlogCount > 0 && structlogCount < p.config.BatchInsertThreshold
 }

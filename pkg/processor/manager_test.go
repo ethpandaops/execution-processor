@@ -265,6 +265,10 @@ func TestManager_ModeSpecificLeaderElection(t *testing.T) {
 					Config: clickhouse.Config{
 						URL: "http://localhost:8123",
 					},
+					BigTransactionThreshold: 500000,
+					BatchInsertThreshold:    50000,
+					BatchFlushInterval:      5 * time.Second,
+					BatchMaxSize:            100000,
 				},
 			}
 

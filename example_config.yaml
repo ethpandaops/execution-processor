@@ -58,6 +58,11 @@ processors:
     # chunkSize: 10000                 # Number of structlogs per batch (default: 10000)
     # channelBufferSize: 2             # Number of chunks to buffer in channel (default: 2)
     # progressLogThreshold: 100000     # Log progress every N structlogs for large transactions (default: 100000)
+    
+    # Small transaction batching configuration
+    # batchInsertThreshold: 50000      # Transactions with fewer structlogs than this will be batched (default: 50000)
+    # batchFlushInterval: 5s           # Maximum time to wait before flushing a batch (default: 5s)
+    # batchMaxSize: 100000             # Maximum number of structlogs to accumulate in a batch (default: 100000)
 
 # Application settings
 shutdownTimeout: 6m

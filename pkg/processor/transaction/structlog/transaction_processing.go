@@ -76,7 +76,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 
 	// Check if this is a big transaction and register if needed
 	if totalCount >= p.bigTxManager.GetThreshold() {
-		p.bigTxManager.RegisterBigTransaction(tx.Hash().String())
+		p.bigTxManager.RegisterBigTransaction(tx.Hash().String(), p)
 		defer p.bigTxManager.UnregisterBigTransaction(tx.Hash().String())
 
 		p.log.WithFields(logrus.Fields{

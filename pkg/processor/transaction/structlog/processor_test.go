@@ -21,6 +21,10 @@ func TestProcessor_Creation(t *testing.T) {
 		Config: clickhouse.Config{
 			URL: "http://localhost:8123",
 		},
+		BigTransactionThreshold: 500000,
+		BatchInsertThreshold:    50000,
+		BatchFlushInterval:      5 * time.Second,
+		BatchMaxSize:            100000,
 	}
 
 	// Test config validation
@@ -42,6 +46,10 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 				Config: clickhouse.Config{
 					URL: "http://localhost:8123",
 				},
+				BigTransactionThreshold: 500000,
+				BatchInsertThreshold:    50000,
+				BatchFlushInterval:      5 * time.Second,
+				BatchMaxSize:            100000,
 			},
 			expectError: false,
 		},
@@ -55,8 +63,12 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 		{
 			name: "missing URL",
 			config: transaction_structlog.Config{
-				Enabled: true,
-				Table:   "test_table",
+				Enabled:                 true,
+				Table:                   "test_table",
+				BigTransactionThreshold: 500000,
+				BatchInsertThreshold:    50000,
+				BatchFlushInterval:      5 * time.Second,
+				BatchMaxSize:            100000,
 			},
 			expectError: true,
 		},
@@ -67,6 +79,10 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 				Config: clickhouse.Config{
 					URL: "http://localhost:8123",
 				},
+				BigTransactionThreshold: 500000,
+				BatchInsertThreshold:    50000,
+				BatchFlushInterval:      5 * time.Second,
+				BatchMaxSize:            100000,
 			},
 			expectError: true,
 		},
@@ -98,6 +114,10 @@ func TestProcessor_ConcurrentConfigValidation(t *testing.T) {
 				Config: clickhouse.Config{
 					URL: "http://localhost:8123",
 				},
+				BigTransactionThreshold: 500000,
+				BatchInsertThreshold:    50000,
+				BatchFlushInterval:      5 * time.Second,
+				BatchMaxSize:            100000,
 			}
 			results <- cfg.Validate()
 		}()

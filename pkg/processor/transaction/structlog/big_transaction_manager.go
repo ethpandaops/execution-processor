@@ -26,7 +26,12 @@ func NewBigTransactionManager(threshold int, log logrus.FieldLogger) *BigTransac
 }
 
 // RegisterBigTransaction marks a big transaction as actively processing
-func (btm *BigTransactionManager) RegisterBigTransaction(txHash string) {
+func (btm *BigTransactionManager) RegisterBigTransaction(txHash string, processor *Processor) {
+	// Flush any pending batches before blocking
+	if processor.batchManager != nil {
+		processor.batchManager.Flush()
+	}
+
 	count := btm.currentBigCount.Add(1)
 
 	// Set pause flag when ANY big transaction is active
