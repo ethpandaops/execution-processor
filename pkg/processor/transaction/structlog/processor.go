@@ -162,31 +162,22 @@ func (p *Processor) getVerifyBackwardsQueue() string {
 	return c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// insertStructlogs sends structlog rows for direct database insertion
+// insertStructlogs inserts structlog rows directly into ClickHouse
 func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog) error {
-	// Short-circuit for empty structlog arrays - no need to process
+	// Short-circuit for empty structlog arrays
 	if len(structlogs) == 0 {
 		return nil
 	}
 
-	// Create timeout context for direct insert
+	// Create timeout context for insert
 	timeout := 5 * time.Minute
 	insertCtx, cancel := context.WithTimeout(ctx, timeout)
 
 	defer cancel()
 
-	return p.insertStructlogBatch(insertCtx, structlogs)
-}
-
-// insertStructlogBatch performs the actual batch insert to ClickHouse
-func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Structlog) error {
-	if len(structlogs) == 0 {
-		return nil
-	}
-
-	// Use the new BulkInsert API
+	// Perform the insert with metrics tracking
 	start := time.Now()
-	err := p.clickhouse.BulkInsert(ctx, p.config.Table, structlogs)
+	err := p.clickhouse.BulkInsert(insertCtx, p.config.Table, structlogs)
 	duration := time.Since(start)
 
 	if err != nil {
@@ -199,9 +190,9 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 			"table":           p.config.Table,
 			"error":           err.Error(),
 			"structlog_count": len(structlogs),
-		}).Error("Failed to bulk insert structlogs")
+		}).Error("Failed to insert structlogs")
 
-		return fmt.Errorf("failed to bulk insert %d structlogs: %w", len(structlogs), err)
+		return fmt.Errorf("failed to insert %d structlogs: %w", len(structlogs), err)
 	}
 
 	common.ClickHouseOperationDuration.WithLabelValues(p.network.Name, ProcessorName, "bulk_insert", p.config.Table, "success", "").Observe(duration.Seconds())

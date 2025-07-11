@@ -33,7 +33,7 @@ type Structlog struct {
 	MetaNetworkName        string         `json:"meta_network_name"`
 }
 
-// ProcessSingleTransaction processes a single transaction using batch collector (exposed for worker handlers)
+// ProcessSingleTransaction processes a single transaction and inserts its structlogs directly to ClickHouse
 func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
 	// Extract structlog data
 	structlogs, err := p.ExtractStructlogs(ctx, block, index, tx)
@@ -54,7 +54,7 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.B
 	if err := p.insertStructlogs(ctx, structlogs); err != nil {
 		common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
 
-		return 0, fmt.Errorf("failed to insert structlogs via batch collector: %w", err)
+		return 0, fmt.Errorf("failed to insert structlogs: %w", err)
 	}
 
 	// Record success metrics
