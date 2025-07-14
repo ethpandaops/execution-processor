@@ -360,6 +360,51 @@ func (c *client) getTimeout(ctx context.Context, operation string) time.Duration
 	}
 }
 
+func (c *client) IsStorageEmpty(ctx context.Context, table string, conditions map[string]interface{}) (bool, error) {
+	start := time.Now()
+	operation := "is_storage_empty"
+	status := statusSuccess
+
+	defer func() {
+		c.recordMetrics(operation, status, time.Since(start))
+	}()
+
+	// Build the query
+	query := fmt.Sprintf("SELECT COUNT(*) as count FROM %s FINAL", table)
+
+	if len(conditions) > 0 {
+		query += " WHERE "
+
+		var conditionParts []string
+
+		for key, value := range conditions {
+			// Handle different value types
+			switch v := value.(type) {
+			case string:
+				conditionParts = append(conditionParts, fmt.Sprintf("%s = '%s'", key, v))
+			case int, int64, uint64:
+				conditionParts = append(conditionParts, fmt.Sprintf("%s = %v", key, v))
+			default:
+				conditionParts = append(conditionParts, fmt.Sprintf("%s = '%v'", key, v))
+			}
+		}
+
+		query += strings.Join(conditionParts, " AND ")
+	}
+
+	var result struct {
+		Count uint64 `json:"count"`
+	}
+
+	if err := c.QueryOne(ctx, query, &result); err != nil {
+		status = statusFailed
+
+		return false, fmt.Errorf("failed to check if table is empty: %w", err)
+	}
+
+	return result.Count == 0, nil
+}
+
 func (c *client) recordMetrics(operation, status string, duration time.Duration) {
 	// Use existing metrics from common package
 	common.ClickHouseOperationDuration.WithLabelValues(c.network, c.processor, operation, "", status, "").Observe(duration.Seconds())

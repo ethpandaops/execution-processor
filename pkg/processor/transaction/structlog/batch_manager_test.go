@@ -49,6 +49,11 @@ func (m *MockClickHouseClient) Execute(ctx context.Context, query string) error 
 	return args.Error(0)
 }
 
+func (m *MockClickHouseClient) IsStorageEmpty(ctx context.Context, table string, conditions map[string]interface{}) (bool, error) {
+	args := m.Called(ctx, table, conditions)
+	return args.Bool(0), args.Error(1)
+}
+
 // MockProcessor is a test wrapper around structlog.Processor for testing
 type MockProcessor struct {
 	log          logrus.FieldLogger

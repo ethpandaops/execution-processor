@@ -19,13 +19,13 @@ var (
 
 // blockNumberResult is used for queries that return a single block number
 type blockNumberResult struct {
-	BlockNumber JSONInt64 `json:"block_number"`
+	BlockNumber *JSONInt64 `json:"block_number"`
 }
 
 // minMaxResult is used for queries that return min and max values
 type minMaxResult struct {
-	Min JSONInt64 `json:"min"`
-	Max JSONInt64 `json:"max"`
+	Min *JSONInt64 `json:"min"`
+	Max *JSONInt64 `json:"max"`
 }
 
 type Manager struct {
@@ -115,13 +115,15 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 	// Get progressive next block from storage based on mode
 	var progressiveNext *big.Int
 
+	var isEmpty bool
+
 	var err error
 
 	if mode == common.BACKWARDS_MODE {
 		progressiveNext, err = s.getProgressiveNextBlockBackwards(ctx, processor, network, chainHead)
 	} else {
 		// Default to forwards mode
-		progressiveNext, err = s.getProgressiveNextBlock(ctx, processor, network, chainHead)
+		progressiveNext, isEmpty, err = s.getProgressiveNextBlock(ctx, processor, network, chainHead)
 	}
 
 	if err != nil {
@@ -148,9 +150,8 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 		return progressiveNext, nil //nolint:nilerr // we want to continue processing even if limiter fails
 	}
 
-	// Check if admin.execution_block table is empty by seeing if progressive next equals chain head
-	// This happens when getProgressiveNextBlock returns chain head due to no entries in storage table
-	isStorageEmpty := chainHead != nil && progressiveNext.Cmp(chainHead) == 0
+	// Use isEmpty from getProgressiveNextBlock
+	isStorageEmpty := isEmpty
 
 	// If storage is empty, start with max(0, maxAllowed - 1) to allow initial processing
 	if isStorageEmpty && maxAllowed.Int64() > 0 {
@@ -211,7 +212,7 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 	return progressiveNext, nil
 }
 
-func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, network string, chainHead *big.Int) (*big.Int, error) {
+func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, network string, chainHead *big.Int) (*big.Int, bool, error) {
 	query := fmt.Sprintf(`
 		SELECT block_number
 		FROM %s FINAL
@@ -231,28 +232,49 @@ func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, networ
 	err := s.storageClient.QueryOne(ctx, query, &result)
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to get next block from %s: %w", s.storageTable, err)
+		return nil, false, fmt.Errorf("failed to get next block from %s: %w", s.storageTable, err)
 	}
 
 	// Check if we got a result
-	if result.BlockNumber == 0 {
-		// No entry in table - start from chain head if available, otherwise genesis
-		if chainHead != nil && chainHead.Int64() > 0 {
-			s.log.WithFields(logrus.Fields{
-				"processor":  processor,
-				"network":    network,
-				"chain_head": chainHead.String(),
-			}).Info("No blocks found in storage table, starting forwards processing from chain head")
+	if result.BlockNumber == nil {
+		// Double-check if this is actually empty or no data
+		isEmpty, err := s.storageClient.IsStorageEmpty(ctx, s.storageTable, map[string]interface{}{
+			"processor":         processor,
+			"meta_network_name": network,
+		})
+		if err != nil {
+			s.log.WithError(err).Warn("Failed to verify if storage is empty, assuming no data")
 
-			return chainHead, nil
-		} else {
-			s.log.WithFields(logrus.Fields{
-				"processor": processor,
-				"network":   network,
-			}).Debug("No blocks found in storage table, starting from genesis (block 0)")
-
-			return big.NewInt(0), nil
+			isEmpty = true
 		}
+
+		if isEmpty {
+			// No entries in table - return appropriate starting point
+			if chainHead != nil && chainHead.Int64() > 0 {
+				s.log.WithFields(logrus.Fields{
+					"processor":  processor,
+					"network":    network,
+					"chain_head": chainHead.String(),
+				}).Info("Storage table is empty, will determine starting point based on mode")
+
+				return chainHead, true, nil
+			} else {
+				s.log.WithFields(logrus.Fields{
+					"processor": processor,
+					"network":   network,
+				}).Info("Storage table is empty and no chain head available, will start from genesis")
+
+				return big.NewInt(0), true, nil
+			}
+		}
+
+		// Block 0 was actually processed but BlockNumber is nil (shouldn't happen but be defensive)
+		s.log.WithFields(logrus.Fields{
+			"processor": processor,
+			"network":   network,
+		}).Warn("Unexpected state: BlockNumber is nil but storage is not empty")
+
+		return big.NewInt(0), false, nil
 	}
 
 	nextBlock := big.NewInt(result.BlockNumber.Int64() + 1)
@@ -263,7 +285,7 @@ func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, networ
 		"progressive_next": nextBlock.String(),
 	}).Debug("Found last processed block, calculated progressive next block")
 
-	return nextBlock, nil
+	return nextBlock, false, nil
 }
 
 func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processor, network string, chainHead *big.Int) (*big.Int, error) {
@@ -290,7 +312,7 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 	}
 
 	// Check if we got a result
-	if result.BlockNumber == 0 {
+	if result.BlockNumber == nil {
 		// No entry in table, need to start from chain tip for backwards processing
 		if chainHead != nil && chainHead.Int64() > 0 {
 			s.log.WithFields(logrus.Fields{
@@ -312,7 +334,7 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 	}
 
 	// Calculate previous block (go backwards)
-	if result.BlockNumber <= 0 {
+	if result.BlockNumber.Int64() <= 0 {
 		// Already at genesis, no more blocks to process backwards
 		s.log.WithFields(logrus.Fields{
 			"processor": processor,
@@ -326,7 +348,7 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 	s.log.WithFields(logrus.Fields{
 		"processor":          processor,
 		"network":            network,
-		"earliest_processed": result.BlockNumber,
+		"earliest_processed": result.BlockNumber.Int64(),
 		"progressive_prev":   prevBlock.String(),
 	}).Debug("Found earliest processed block, calculated previous block for backwards processing")
 
@@ -335,7 +357,7 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 
 func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.Int, error) {
 	query := fmt.Sprintf(`
-		SELECT max(execution_payload_block_number)
+		SELECT max(execution_payload_block_number) AS block_number
 		FROM %s FINAL
 		WHERE meta_network_name = '%s'
 	`, s.limiterTable, network)
@@ -353,7 +375,7 @@ func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.
 	}
 
 	// Check if we got a result
-	if result.BlockNumber == 0 {
+	if result.BlockNumber == nil {
 		// No blocks in limiter table, return genesis
 		s.log.WithFields(logrus.Fields{
 			"network": network,
@@ -411,7 +433,7 @@ func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor 
 	}
 
 	// Handle case where no blocks are stored
-	if result.Min == 0 && result.Max == 0 {
+	if result.Min == nil || result.Max == nil {
 		return nil, nil, nil
 	}
 

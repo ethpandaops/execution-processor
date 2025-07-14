@@ -12,6 +12,8 @@ type ClientInterface interface {
 	Execute(ctx context.Context, query string) error
 	// BulkInsert performs a bulk insert operation
 	BulkInsert(ctx context.Context, table string, data interface{}) error
+	// IsStorageEmpty checks if a table has any records matching the given conditions
+	IsStorageEmpty(ctx context.Context, table string, conditions map[string]interface{}) (bool, error)
 	// Start initializes the client
 	Start() error
 	// Stop closes the client
