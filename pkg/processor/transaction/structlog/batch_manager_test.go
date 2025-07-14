@@ -54,6 +54,10 @@ func (m *MockClickHouseClient) IsStorageEmpty(ctx context.Context, table string,
 	return args.Bool(0), args.Error(1)
 }
 
+func (m *MockClickHouseClient) SetNetwork(network string) {
+	m.Called(network)
+}
+
 // MockProcessor is a test wrapper around structlog.Processor for testing
 type MockProcessor struct {
 	log          logrus.FieldLogger

@@ -68,6 +68,14 @@ func New(cfg *Config) (ClientInterface, error) {
 }
 
 func (c *client) Start() error {
+	// Skip connectivity test if network is not set yet (e.g., during state manager initialization)
+	// The network will be set later when it's determined from the chain ID
+	if c.network == "" {
+		c.log.Debug("Skipping ClickHouse connectivity test - network not yet determined")
+
+		return nil
+	}
+
 	// Test connectivity
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -79,6 +87,13 @@ func (c *client) Start() error {
 	c.log.Info("Connected to ClickHouse HTTP interface")
 
 	return nil
+}
+
+func (c *client) SetNetwork(network string) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+
+	c.network = network
 }
 
 func (c *client) Stop() error {

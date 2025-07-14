@@ -75,6 +75,13 @@ func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*M
 // SetNetwork sets the network name for metrics labeling
 func (s *Manager) SetNetwork(network string) {
 	s.network = network
+
+	// Update network in ClickHouse clients
+	s.storageClient.SetNetwork(network)
+
+	if s.limiterEnabled && s.limiterClient != nil {
+		s.limiterClient.SetNetwork(network)
+	}
 }
 
 func (s *Manager) Start(ctx context.Context) error {

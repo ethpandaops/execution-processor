@@ -50,6 +50,10 @@ func (m *MockClickHouseClient) IsStorageEmpty(ctx context.Context, table string,
 	return args.Bool(0), args.Error(1)
 }
 
+func (m *MockClickHouseClient) SetNetwork(network string) {
+	m.Called(network)
+}
+
 func TestNextBlock_NoResultsVsBlock0(t *testing.T) {
 	ctx := context.Background()
 	log := logrus.New()

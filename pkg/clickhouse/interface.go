@@ -14,6 +14,8 @@ type ClientInterface interface {
 	BulkInsert(ctx context.Context, table string, data interface{}) error
 	// IsStorageEmpty checks if a table has any records matching the given conditions
 	IsStorageEmpty(ctx context.Context, table string, conditions map[string]interface{}) (bool, error)
+	// SetNetwork updates the network name for metrics labeling
+	SetNetwork(network string)
 	// Start initializes the client
 	Start() error
 	// Stop closes the client
