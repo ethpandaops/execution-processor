@@ -115,7 +115,7 @@ func (c *client) QueryOne(ctx context.Context, query string, dest interface{}) e
 	status := statusSuccess
 
 	defer func() {
-		c.recordMetrics(operation, status, time.Since(start))
+		c.recordMetrics(operation, status, time.Since(start), query)
 	}()
 
 	// Add FORMAT JSON to query
@@ -166,7 +166,7 @@ func (c *client) QueryMany(ctx context.Context, query string, dest interface{}) 
 	status := statusSuccess
 
 	defer func() {
-		c.recordMetrics(operation, status, time.Since(start))
+		c.recordMetrics(operation, status, time.Since(start), query)
 	}()
 
 	// Validate that dest is a pointer to a slice
@@ -233,7 +233,7 @@ func (c *client) Execute(ctx context.Context, query string) error {
 	status := statusSuccess
 
 	defer func() {
-		c.recordMetrics(operation, status, time.Since(start))
+		c.recordMetrics(operation, status, time.Since(start), query)
 	}()
 
 	_, err := c.executeHTTPRequest(ctx, query, c.getTimeout(ctx, "query"))
@@ -252,7 +252,7 @@ func (c *client) BulkInsert(ctx context.Context, table string, data interface{})
 	status := statusSuccess
 
 	defer func() {
-		c.recordMetrics(operation, status, time.Since(start))
+		c.recordMetrics(operation, status, time.Since(start), table)
 	}()
 
 	// Convert data to slice via reflection
@@ -381,7 +381,7 @@ func (c *client) IsStorageEmpty(ctx context.Context, table string, conditions ma
 	status := statusSuccess
 
 	defer func() {
-		c.recordMetrics(operation, status, time.Since(start))
+		c.recordMetrics(operation, status, time.Since(start), table)
 	}()
 
 	// Build the query
@@ -420,8 +420,70 @@ func (c *client) IsStorageEmpty(ctx context.Context, table string, conditions ma
 	return result.Count == 0, nil
 }
 
-func (c *client) recordMetrics(operation, status string, duration time.Duration) {
+// extractTableName attempts to extract the table name from various SQL query patterns
+func extractTableName(query string) string {
+	// Work with original query to preserve case
+	trimmedQuery := strings.TrimSpace(query)
+	upperQuery := strings.ToUpper(trimmedQuery)
+
+	// Handle INSERT INTO queries
+	if strings.HasPrefix(upperQuery, "INSERT INTO") {
+		parts := strings.Fields(trimmedQuery)
+		if len(parts) >= 3 {
+			// Return the third part which should be the table name
+			// Handle cases where table name might have backticks or quotes
+			return strings.Trim(parts[2], "`'\"")
+		}
+	}
+
+	// Handle SELECT ... FROM queries
+	if idx := strings.Index(upperQuery, "FROM"); idx != -1 {
+		// Get the substring after FROM from the original query
+		afterFrom := strings.TrimSpace(trimmedQuery[idx+4:])
+		parts := strings.Fields(afterFrom)
+
+		if len(parts) > 0 {
+			// Return the first part which should be the table name
+			// Remove any trailing keywords like WHERE, ORDER BY, etc.
+			tableName := parts[0]
+			// Handle FINAL keyword (e.g., "FROM table FINAL")
+			if !strings.EqualFold(tableName, "FINAL") {
+				return strings.Trim(tableName, "`'\"")
+			}
+		}
+	}
+
+	// Handle CREATE TABLE queries
+	if strings.HasPrefix(upperQuery, "CREATE TABLE") {
+		parts := strings.Fields(trimmedQuery)
+		if len(parts) >= 3 {
+			return strings.Trim(parts[2], "`'\"")
+		}
+	}
+
+	// Handle DROP TABLE queries
+	if strings.HasPrefix(upperQuery, "DROP TABLE") {
+		parts := strings.Fields(trimmedQuery)
+		if len(parts) >= 3 {
+			return strings.Trim(parts[2], "`'\"")
+		}
+	}
+
+	return ""
+}
+
+func (c *client) recordMetrics(operation, status string, duration time.Duration, tableOrQuery string) {
+	var table string
+
+	// If it's a bulk_insert operation, tableOrQuery is already the table name
+	if operation == "bulk_insert" {
+		table = tableOrQuery
+	} else {
+		// Otherwise, try to extract table name from the query
+		table = extractTableName(tableOrQuery)
+	}
+
 	// Use existing metrics from common package
-	common.ClickHouseOperationDuration.WithLabelValues(c.network, c.processor, operation, "", status, "").Observe(duration.Seconds())
-	common.ClickHouseOperationTotal.WithLabelValues(c.network, c.processor, operation, "", status, "").Inc()
+	common.ClickHouseOperationDuration.WithLabelValues(c.network, c.processor, operation, table, status, "").Observe(duration.Seconds())
+	common.ClickHouseOperationTotal.WithLabelValues(c.network, c.processor, operation, table, status, "").Inc()
 }
