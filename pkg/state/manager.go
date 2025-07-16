@@ -421,7 +421,7 @@ func (s *Manager) MarkBlockProcessed(ctx context.Context, blockNumber uint64, ne
 
 func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor string) (minBlock, maxBlock *big.Int, err error) {
 	query := fmt.Sprintf(`
-		SELECT min(block_number), max(block_number)
+		SELECT min(block_number) as min, max(block_number) as max
 		FROM %s FINAL
 		WHERE meta_network_name = '%s' AND processor = '%s'
 	`, s.storageTable, network, processor)
@@ -441,8 +441,22 @@ func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor 
 
 	// Handle case where no blocks are stored
 	if result.Min == nil || result.Max == nil {
+		s.log.WithFields(logrus.Fields{
+			"network":   network,
+			"processor": processor,
+			"table":     s.storageTable,
+		}).Debug("No blocks found in database (min or max is nil)")
+
 		return nil, nil, nil
 	}
+
+	s.log.WithFields(logrus.Fields{
+		"network":   network,
+		"processor": processor,
+		"table":     s.storageTable,
+		"min":       result.Min.Int64(),
+		"max":       result.Max.Int64(),
+	}).Debug("Found min/max blocks")
 
 	return big.NewInt(result.Min.Int64()), big.NewInt(result.Max.Int64()), nil
 }
