@@ -70,5 +70,13 @@ processors:
       maxProcessingTime: 5m         # Maximum time allowed for processing a large transaction (safety check - if a large tx takes longer than this, it's logged as an error but not forcefully stopped)
       enableSequentialMode: true    # If true, large transactions are processed one at a time; if false, multiple large transactions can process concurrently
 
+  # Simple transaction processor (lightweight - no debug traces)
+  transactionSimple:
+    enabled: false
+    dsn: "http://localhost:8123/default"  # ClickHouse DSN for the default database
+    table: "execution_transaction"
+    # maxOpenConns: 10
+    # maxIdleConns: 10
+
 # Application settings
 shutdownTimeout: 6m

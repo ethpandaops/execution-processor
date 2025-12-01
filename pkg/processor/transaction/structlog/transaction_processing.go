@@ -6,7 +6,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/0xsequence/ethkit/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
