@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/processor/common"
+	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 )
 
@@ -28,6 +29,7 @@ type Config struct {
 
 	// Processor configurations
 	TransactionStructlog structlog.Config `yaml:"transactionStructlog"`
+	TransactionSimple    simple.Config    `yaml:"transactionSimple"`
 }
 
 // LeaderElectionConfig holds configuration for leader election
@@ -104,6 +106,10 @@ func (c *Config) Validate() error {
 		if c.TransactionStructlog.Table == "" {
 			return fmt.Errorf("transaction structlog table is required when enabled")
 		}
+	}
+
+	if err := c.TransactionSimple.Validate(); err != nil {
+		return fmt.Errorf("transaction simple config validation failed: %w", err)
 	}
 
 	return nil

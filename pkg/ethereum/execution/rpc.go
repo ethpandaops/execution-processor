@@ -7,10 +7,11 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/0xsequence/ethkit/ethrpc"
-	"github.com/0xsequence/ethkit/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/rpc"
 
-	"github.com/ethpandaops/execution-processor/pkg/common"
+	pcommon "github.com/ethpandaops/execution-processor/pkg/common"
 )
 
 const (
@@ -19,10 +20,10 @@ const (
 )
 
 func (n *Node) BlockNumber(ctx context.Context) (*uint64, error) {
-	var blockNumber uint64
-
 	start := time.Now()
-	_, err := n.rpc.Do(ctx, ethrpc.BlockNumber().Into(&blockNumber))
+
+	blockNumber, err := n.client.BlockNumber(ctx)
+
 	duration := time.Since(start)
 
 	// Record RPC metrics
@@ -33,8 +34,8 @@ func (n *Node) BlockNumber(ctx context.Context) (*uint64, error) {
 
 	network := n.Metadata().ChainID()
 
-	common.RPCCallDuration.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "eth_blockNumber", status).Observe(duration.Seconds())
-	common.RPCCallsTotal.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "eth_blockNumber", status).Inc()
+	pcommon.RPCCallDuration.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "eth_blockNumber", status).Observe(duration.Seconds())
+	pcommon.RPCCallsTotal.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "eth_blockNumber", status).Inc()
 
 	if err != nil {
 		return nil, err
@@ -44,10 +45,10 @@ func (n *Node) BlockNumber(ctx context.Context) (*uint64, error) {
 }
 
 func (n *Node) BlockByNumber(ctx context.Context, blockNumber *big.Int) (*types.Block, error) {
-	var block *types.Block
-
 	start := time.Now()
-	_, err := n.rpc.Do(ctx, ethrpc.BlockByNumber(blockNumber).Into(&block))
+
+	block, err := n.client.BlockByNumber(ctx, blockNumber)
+
 	duration := time.Since(start)
 
 	// Record RPC metrics
@@ -58,8 +59,8 @@ func (n *Node) BlockByNumber(ctx context.Context, blockNumber *big.Int) (*types.
 
 	network := n.Metadata().ChainID()
 
-	common.RPCCallDuration.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "eth_getBlockByNumber", status).Observe(duration.Seconds())
-	common.RPCCallsTotal.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "eth_getBlockByNumber", status).Inc()
+	pcommon.RPCCallDuration.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "eth_getBlockByNumber", status).Observe(duration.Seconds())
+	pcommon.RPCCallsTotal.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "eth_getBlockByNumber", status).Inc()
 
 	if err != nil {
 		return nil, err
@@ -85,10 +86,10 @@ func getTraceParams(hash string, options TraceOptions) []any {
 func (n *Node) traceTransactionErigon(ctx context.Context, hash string, options TraceOptions) (*TraceTransaction, error) {
 	var rsp ErigonResult
 
-	call := ethrpc.NewCallBuilder[ErigonResult]("debug_traceTransaction", nil, getTraceParams(hash, options)...)
-
 	start := time.Now()
-	_, err := n.rpc.Do(ctx, call.Into(&rsp))
+
+	err := n.rpcClient.CallContext(ctx, &rsp, "debug_traceTransaction", getTraceParams(hash, options)...)
+
 	duration := time.Since(start)
 
 	// Record RPC metrics
@@ -99,8 +100,8 @@ func (n *Node) traceTransactionErigon(ctx context.Context, hash string, options 
 
 	network := n.Metadata().ChainID()
 
-	common.RPCCallDuration.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "debug_traceTransaction", status).Observe(duration.Seconds())
-	common.RPCCallsTotal.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "debug_traceTransaction", status).Inc()
+	pcommon.RPCCallDuration.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "debug_traceTransaction", status).Observe(duration.Seconds())
+	pcommon.RPCCallsTotal.WithLabelValues(fmt.Sprintf("%d", network), n.config.Name, "debug_traceTransaction", status).Inc()
 
 	if err != nil {
 		return nil, err
@@ -141,6 +142,84 @@ func (n *Node) traceTransactionErigon(ctx context.Context, hash string, options 
 	}
 
 	return result, nil
+}
+
+// BlockReceipts fetches all receipts for a block by number (much faster than per-tx)
+func (n *Node) BlockReceipts(ctx context.Context, blockNumber *big.Int) ([]*types.Receipt, error) {
+	start := time.Now()
+
+	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.BlockNumber(blockNumber.Int64()))
+
+	receipts, err := n.client.BlockReceipts(ctx, blockNrOrHash)
+
+	duration := time.Since(start)
+
+	// Record RPC metrics
+	status := STATUS_SUCCESS
+	if err != nil {
+		status = STATUS_ERROR
+	}
+
+	network := n.Metadata().ChainID()
+
+	pcommon.RPCCallDuration.WithLabelValues(
+		fmt.Sprintf("%d", network),
+		n.config.Name,
+		"eth_getBlockReceipts",
+		status,
+	).Observe(duration.Seconds())
+
+	pcommon.RPCCallsTotal.WithLabelValues(
+		fmt.Sprintf("%d", network),
+		n.config.Name,
+		"eth_getBlockReceipts",
+		status,
+	).Inc()
+
+	if err != nil {
+		return nil, err
+	}
+
+	return receipts, nil
+}
+
+// TransactionReceipt fetches the receipt for a transaction by hash
+func (n *Node) TransactionReceipt(ctx context.Context, hash string) (*types.Receipt, error) {
+	start := time.Now()
+
+	txHash := common.HexToHash(hash)
+
+	receipt, err := n.client.TransactionReceipt(ctx, txHash)
+
+	duration := time.Since(start)
+
+	// Record RPC metrics
+	status := STATUS_SUCCESS
+	if err != nil {
+		status = STATUS_ERROR
+	}
+
+	network := n.Metadata().ChainID()
+
+	pcommon.RPCCallDuration.WithLabelValues(
+		fmt.Sprintf("%d", network),
+		n.config.Name,
+		"eth_getTransactionReceipt",
+		status,
+	).Observe(duration.Seconds())
+
+	pcommon.RPCCallsTotal.WithLabelValues(
+		fmt.Sprintf("%d", network),
+		n.config.Name,
+		"eth_getTransactionReceipt",
+		status,
+	).Inc()
+
+	if err != nil {
+		return nil, err
+	}
+
+	return receipt, nil
 }
 
 // DebugTraceTransaction traces a transaction execution using the client's debug API

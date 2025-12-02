@@ -12,6 +12,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/leaderelection"
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
+	transaction_simple "github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 	s "github.com/ethpandaops/execution-processor/pkg/state"
 	"github.com/hibiken/asynq"
@@ -307,6 +308,37 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 		}
 	} else {
 		m.log.Debug("Transaction structlog processor is disabled")
+	}
+
+	// Initialize transaction simple processor if enabled
+	if m.config.TransactionSimple.Enabled {
+		m.log.Debug("Transaction simple processor is enabled, initializing...")
+
+		processor, err := transaction_simple.New(ctx, &transaction_simple.Dependencies{
+			Log:         m.log.WithField("processor", "transaction_simple"),
+			Pool:        m.pool,
+			State:       m.state,
+			AsynqClient: m.asynqClient,
+			Network:     m.network,
+			RedisPrefix: m.redisPrefix,
+		}, &m.config.TransactionSimple)
+
+		if err != nil {
+			return fmt.Errorf("failed to create transaction_simple processor: %w", err)
+		}
+
+		m.processors["transaction_simple"] = processor
+
+		// Set processing mode from config
+		processor.SetProcessingMode(m.config.Mode)
+
+		m.log.WithField("processor", "transaction_simple").Info("Initialized processor")
+
+		if err := processor.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start transaction_simple processor: %w", err)
+		}
+	} else {
+		m.log.Debug("Transaction simple processor is disabled")
 	}
 
 	m.log.WithField("total_processors", len(m.processors)).Info("Completed processor initialization")
@@ -900,12 +932,6 @@ func (m *Manager) QueueBlockManually(ctx context.Context, processorName string, 
 		return nil, fmt.Errorf("processor %s not found", processorName)
 	}
 
-	// Get the structlog processor (currently only one supported)
-	structlogProc, ok := processor.(*transaction_structlog.Processor)
-	if !ok {
-		return nil, fmt.Errorf("processor %s is not a transaction structlog processor", processorName)
-	}
-
 	// Get a healthy execution node
 	node, err := m.pool.WaitForHealthyExecutionNode(ctx)
 	if err != nil {
@@ -924,10 +950,26 @@ func (m *Manager) QueueBlockManually(ctx context.Context, processorName string, 
 		return nil, fmt.Errorf("failed to fetch block %d: %w", blockNumber, err)
 	}
 
-	// Enqueue transaction tasks using the processor's method
-	tasksCreated, err := structlogProc.EnqueueTransactionTasks(ctx, block)
-	if err != nil {
-		return nil, fmt.Errorf("failed to enqueue tasks for block %d: %w", blockNumber, err)
+	var tasksCreated int
+
+	// Handle different processor types
+	switch p := processor.(type) {
+	case *transaction_structlog.Processor:
+		// Enqueue transaction tasks using the processor's method
+		tasksCreated, err = p.EnqueueTransactionTasks(ctx, block)
+		if err != nil {
+			return nil, fmt.Errorf("failed to enqueue tasks for block %d: %w", blockNumber, err)
+		}
+
+	case *transaction_simple.Processor:
+		// For simple processor, enqueue a single block processing task
+		tasksCreated, err = m.enqueueSimpleBlockTask(ctx, p, blockNumber)
+		if err != nil {
+			return nil, fmt.Errorf("failed to enqueue block task for block %d: %w", blockNumber, err)
+		}
+
+	default:
+		return nil, fmt.Errorf("processor %s has unsupported type", processorName)
 	}
 
 	// Update execution_block table to mark block as processed
@@ -939,6 +981,39 @@ func (m *Manager) QueueBlockManually(ctx context.Context, processorName string, 
 		TransactionCount: len(block.Transactions()),
 		TasksCreated:     tasksCreated,
 	}, nil
+}
+
+// enqueueSimpleBlockTask enqueues a block processing task for the simple processor
+func (m *Manager) enqueueSimpleBlockTask(ctx context.Context, p *transaction_simple.Processor, blockNumber uint64) (int, error) {
+	payload := &transaction_simple.ProcessPayload{
+		BlockNumber: *big.NewInt(int64(blockNumber)), //nolint:gosec // validated above
+		NetworkID:   m.network.ID,
+		NetworkName: m.network.Name,
+	}
+
+	var task *asynq.Task
+
+	var queue string
+
+	var err error
+
+	if m.config.Mode == c.BACKWARDS_MODE {
+		task, err = transaction_simple.NewProcessBackwardsTask(payload)
+		queue = c.PrefixedProcessBackwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
+	} else {
+		task, err = transaction_simple.NewProcessForwardsTask(payload)
+		queue = c.PrefixedProcessForwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to create task: %w", err)
+	}
+
+	if err := p.EnqueueTask(ctx, task, asynq.Queue(queue)); err != nil {
+		return 0, fmt.Errorf("failed to enqueue task: %w", err)
+	}
+
+	return 1, nil
 }
 
 // QueueResult contains the result of queuing a block
