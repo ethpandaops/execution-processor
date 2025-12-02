@@ -10,7 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// LargeTxLockManager manages sequential processing of large transactions
+// LargeTxLockManager manages sequential processing of large transactions.
 type LargeTxLockManager struct {
 	mu                    sync.Mutex
 	active                atomic.Bool
@@ -27,7 +27,7 @@ type LargeTxLockManager struct {
 	totalLargeTxProcessed atomic.Int64
 }
 
-// NewLargeTxLockManager creates a new large transaction lock manager
+// NewLargeTxLockManager creates a new large transaction lock manager.
 func NewLargeTxLockManager(log logrus.FieldLogger, config *LargeTransactionConfig) *LargeTxLockManager {
 	return &LargeTxLockManager{
 		log:    log.WithField("component", "large_tx_lock"),
@@ -35,12 +35,12 @@ func NewLargeTxLockManager(log logrus.FieldLogger, config *LargeTransactionConfi
 	}
 }
 
-// IsLargeTransaction checks if a transaction qualifies as large
+// IsLargeTransaction checks if a transaction qualifies as large.
 func (m *LargeTxLockManager) IsLargeTransaction(structlogCount int) bool {
 	return m.config.Enabled && structlogCount >= m.config.StructlogThreshold
 }
 
-// AcquireLock attempts to acquire the lock for processing a large transaction
+// AcquireLock attempts to acquire the lock for processing a large transaction.
 func (m *LargeTxLockManager) AcquireLock(ctx context.Context, txHash string, size int, operation string) error {
 	// Increment waiting counter
 	m.waitingLargeTx.Add(1)
@@ -61,6 +61,7 @@ func (m *LargeTxLockManager) AcquireLock(ctx context.Context, txHash string, siz
 
 	// Try to acquire lock with timeout
 	lockChan := make(chan struct{})
+
 	go func() {
 		m.mu.Lock()
 		close(lockChan)
@@ -130,7 +131,7 @@ func (m *LargeTxLockManager) AcquireLock(ctx context.Context, txHash string, siz
 	}
 }
 
-// ReleaseLock releases the lock after processing a large transaction
+// ReleaseLock releases the lock after processing a large transaction.
 func (m *LargeTxLockManager) ReleaseLock(txHash string) {
 	processingDuration := time.Since(m.startTime)
 	operation := m.currentOperation
@@ -159,7 +160,7 @@ func (m *LargeTxLockManager) ReleaseLock(txHash string) {
 	}).Info("Large transaction released lock")
 }
 
-// WaitForLargeTransaction waits for any active large transaction to complete
+// WaitForLargeTransaction waits for any active large transaction to complete.
 func (m *LargeTxLockManager) WaitForLargeTransaction(ctx context.Context, workerTask string) error {
 	if !m.active.Load() {
 		return nil // No large transaction active
@@ -221,7 +222,7 @@ func (m *LargeTxLockManager) WaitForLargeTransaction(ctx context.Context, worker
 	}
 }
 
-// GetStatus returns current status of the lock manager
+// GetStatus returns current status of the lock manager.
 func (m *LargeTxLockManager) GetStatus() map[string]interface{} {
 	status := map[string]interface{}{
 		"enabled":           m.config.Enabled,

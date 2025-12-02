@@ -16,7 +16,7 @@ import (
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
 )
 
-// Transaction represents a row in the transaction table
+// Transaction represents a row in the transaction table.
 type Transaction struct {
 	UpdatedDateTime      time.Time
 	BlockNumber          uint64
@@ -43,7 +43,7 @@ type Transaction struct {
 	MetaNetworkName      string
 }
 
-// GetHandlers returns the task handlers for this processor
+// GetHandlers returns the task handlers for this processor.
 func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	return map[string]asynq.HandlerFunc{
 		ProcessForwardsTaskType:  p.handleProcessTask,
@@ -53,7 +53,7 @@ func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	}
 }
 
-// handleProcessTask handles block processing tasks
+// handleProcessTask handles block processing tasks.
 func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) error {
 	start := time.Now()
 
@@ -117,16 +117,18 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 
 		if !ok {
 			// Fallback: fetch individual receipt
-			receipt, err = node.TransactionReceipt(ctx, tx.Hash().String())
-			if err != nil {
-				return fmt.Errorf("failed to get receipt for tx %s: %w", txHash, err)
+			var receiptErr error
+
+			receipt, receiptErr = node.TransactionReceipt(ctx, tx.Hash().String())
+			if receiptErr != nil {
+				return fmt.Errorf("failed to get receipt for tx %s: %w", txHash, receiptErr)
 			}
 		}
 
 		// Build transaction row
-		txRow, err := p.buildTransactionRow(block, tx, receipt, uint64(index)) //nolint:gosec // index is bounded
-		if err != nil {
-			return fmt.Errorf("failed to build transaction row: %w", err)
+		txRow, buildErr := p.buildTransactionRow(block, tx, receipt, uint64(index)) //nolint:gosec // index is bounded
+		if buildErr != nil {
+			return fmt.Errorf("failed to build transaction row: %w", buildErr)
 		}
 
 		transactions = append(transactions, txRow)
@@ -134,7 +136,7 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 
 	// Insert all transactions
 	if len(transactions) > 0 {
-		if err := p.insertTransactions(ctx, transactions); err != nil {
+		if insertErr := p.insertTransactions(ctx, transactions); insertErr != nil {
 			common.TasksErrored.WithLabelValues(
 				p.network.Name,
 				ProcessorName,
@@ -196,7 +198,7 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 	return nil
 }
 
-// buildTransactionRow builds a transaction row from block, tx, and receipt data
+// buildTransactionRow builds a transaction row from block, tx, and receipt data.
 func (p *Processor) buildTransactionRow(
 	block *types.Block,
 	tx *types.Transaction,
@@ -293,7 +295,7 @@ func (p *Processor) buildTransactionRow(
 	}, nil
 }
 
-// insertTransactions inserts transactions into ClickHouse
+// insertTransactions inserts transactions into ClickHouse.
 func (p *Processor) insertTransactions(ctx context.Context, transactions []Transaction) error {
 	if len(transactions) == 0 {
 		return nil

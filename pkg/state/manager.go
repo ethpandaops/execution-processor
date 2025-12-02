@@ -13,7 +13,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Sentinel errors
+// Sentinel errors.
 var (
 	ErrNoMoreBlocks = errors.New("no more blocks to process")
 )
@@ -64,7 +64,7 @@ func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*M
 	return manager, nil
 }
 
-// SetNetwork sets the network name for metrics labeling
+// SetNetwork sets the network name for metrics labeling.
 func (s *Manager) SetNetwork(network string) {
 	s.network = network
 	// Update ClickHouse clients with network label
@@ -447,7 +447,7 @@ func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor 
 	return big.NewInt(minVal.Int64), big.NewInt(maxVal.Int64), nil
 }
 
-// IsBlockRecentlyProcessed checks if a block was processed within the specified number of seconds
+// IsBlockRecentlyProcessed checks if a block was processed within the specified number of seconds.
 func (s *Manager) IsBlockRecentlyProcessed(ctx context.Context, blockNumber uint64, network, processor string, withinSeconds int) (bool, error) {
 	query := fmt.Sprintf(`
 		SELECT COUNT(*) as count
@@ -481,7 +481,7 @@ func (s *Manager) IsBlockRecentlyProcessed(ctx context.Context, blockNumber uint
 	return count > 0, nil
 }
 
-// GetHeadDistance calculates the distance between current processing block and the relevant head
+// GetHeadDistance calculates the distance between current processing block and the relevant head.
 func (s *Manager) GetHeadDistance(ctx context.Context, processor, network, mode string, executionHead *big.Int) (distance int64, headType string, err error) {
 	// Get the current processing block (what would be next to process)
 	currentBlock, err := s.NextBlock(ctx, processor, network, mode, executionHead)

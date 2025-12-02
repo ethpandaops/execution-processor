@@ -445,7 +445,7 @@ func TestPool_NodeSelection(t *testing.T) {
 	assert.Nil(t, node)
 }
 
-// Helper function to create string pointer
+// Helper function to create string pointer.
 func stringPtr(s string) *string {
 	return &s
 }

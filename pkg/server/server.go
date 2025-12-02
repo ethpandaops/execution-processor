@@ -91,6 +91,7 @@ func (s *Server) Start(ctx context.Context) error {
 				s.log.WithField("panic", recovered).Error("Panic in metrics server goroutine")
 			}
 		}()
+
 		observability.StartMetricsServer(ctx, s.config.MetricsAddr)
 		<-ctx.Done()
 

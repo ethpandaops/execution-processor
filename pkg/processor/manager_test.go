@@ -141,10 +141,10 @@ func TestManager_StartStop(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		err := manager.Start(ctx)
+		startErr := manager.Start(ctx)
 		// Should return when context is cancelled or due to connection failures
 		// We expect it to either succeed or fail gracefully due to external service unavailability
-		_ = err // Ignore connection errors to external services
+		_ = startErr // Ignore connection errors to external services
 	}()
 
 	time.Sleep(100 * time.Millisecond)

@@ -11,7 +11,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
-// processTransactionWithLargeTxHandling processes a transaction with large transaction lock management
+// processTransactionWithLargeTxHandling processes a transaction with large transaction lock management.
 func (p *Processor) processTransactionWithLargeTxHandling(ctx context.Context, block *types.Block, index int, tx *types.Transaction, txHash string) (int, error) {
 	if p.largeTxLock == nil || !p.largeTxLock.config.Enabled {
 		// Large transaction handling not enabled, process normally
@@ -78,7 +78,7 @@ func (p *Processor) processTransactionWithLargeTxHandling(ctx context.Context, b
 	return p.ProcessSingleTransaction(ctx, block, index, tx)
 }
 
-// verifyTransactionWithLargeTxHandling verifies a transaction with large transaction lock management
+// verifyTransactionWithLargeTxHandling verifies a transaction with large transaction lock management.
 func (p *Processor) verifyTransactionWithLargeTxHandling(ctx context.Context, blockNumber *big.Int, transactionHash string, transactionIndex uint32, networkName string, insertedCount int) error {
 	if p.largeTxLock == nil || !p.largeTxLock.config.Enabled {
 		// Large transaction handling not enabled, verify normally

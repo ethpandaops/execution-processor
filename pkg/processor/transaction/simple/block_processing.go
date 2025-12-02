@@ -15,7 +15,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
-// ProcessNextBlock processes the next available block
+// ProcessNextBlock processes the next available block.
 func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	p.log.WithField("network", p.network.Name).Debug("Querying for next block to process")
 
@@ -135,7 +135,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	return p.stateManager.MarkBlockProcessed(ctx, nextBlock.Uint64(), p.network.Name, p.Name())
 }
 
-// isBlockNotFoundError checks if an error indicates a block was not found
+// isBlockNotFoundError checks if an error indicates a block was not found.
 func isBlockNotFoundError(err error) bool {
 	if err == nil {
 		return false

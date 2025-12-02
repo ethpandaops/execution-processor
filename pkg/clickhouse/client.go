@@ -19,7 +19,7 @@ const (
 	statusFailed  = "failed"
 )
 
-// Client represents a ClickHouse client for data storage
+// Client represents a ClickHouse client for data storage.
 type Client struct {
 	log       logrus.FieldLogger
 	config    *Config
@@ -31,7 +31,7 @@ type Client struct {
 	lock sync.Mutex
 }
 
-// NewClient creates a new ClickHouse client
+// NewClient creates a new ClickHouse client.
 func NewClient(ctx context.Context, log logrus.FieldLogger, config *Config) (*Client, error) {
 	return &Client{
 		log:       log.WithField("component", "clickhouse"),
@@ -82,7 +82,7 @@ func (c *Client) Start(ctx context.Context) error {
 	return nil
 }
 
-// WithLabels sets the network and processor labels for metrics
+// WithLabels sets the network and processor labels for metrics.
 func (c *Client) WithLabels(network, processor string) *Client {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -104,7 +104,7 @@ func (c *Client) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Reconnect closes the existing connection and creates a new one
+// Reconnect closes the existing connection and creates a new one.
 func (c *Client) Reconnect(ctx context.Context) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -159,7 +159,7 @@ func (c *Client) Reconnect(ctx context.Context) error {
 	return nil
 }
 
-// QueryRow executes a query and returns a single row
+// QueryRow executes a query and returns a single row.
 func (c *Client) QueryRow(ctx context.Context, table, query string) *sql.Row {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -191,7 +191,7 @@ func (c *Client) QueryRow(ctx context.Context, table, query string) *sql.Row {
 	return row
 }
 
-// GetDB returns the underlying database connection
+// GetDB returns the underlying database connection.
 func (c *Client) GetDB() *sql.DB {
 	c.lock.Lock()
 	defer c.lock.Unlock()

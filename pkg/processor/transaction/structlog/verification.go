@@ -12,7 +12,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
-// CountMismatchError represents a structlog count mismatch between expected and actual counts
+// CountMismatchError represents a structlog count mismatch between expected and actual counts.
 type CountMismatchError struct {
 	Expected int
 	Actual   int
@@ -23,7 +23,7 @@ func (e *CountMismatchError) Error() string {
 	return e.Message
 }
 
-// VerifyTransaction verifies that a transaction has been processed correctly
+// VerifyTransaction verifies that a transaction has been processed correctly.
 func (p *Processor) VerifyTransaction(ctx context.Context, blockNumber *big.Int, transactionHash string, transactionIndex uint32, networkName string, insertedCount int) error {
 	p.log.WithFields(logrus.Fields{
 		"block_number":      blockNumber.String(),

@@ -10,17 +10,19 @@ import (
 )
 
 const (
-	// ProcessForwardsTaskType is the task type for forwards processing
+	// ProcessForwardsTaskType is the task type for forwards processing.
 	ProcessForwardsTaskType = "transaction_simple_process_forwards"
-	// ProcessBackwardsTaskType is the task type for backwards processing
+	// ProcessBackwardsTaskType is the task type for backwards processing.
 	ProcessBackwardsTaskType = "transaction_simple_process_backwards"
-	// VerifyForwardsTaskType is the task type for forwards verification
+	// VerifyForwardsTaskType is the task type for forwards verification.
 	VerifyForwardsTaskType = "transaction_simple_verify_forwards"
-	// VerifyBackwardsTaskType is the task type for backwards verification
+	// VerifyBackwardsTaskType is the task type for backwards verification.
 	VerifyBackwardsTaskType = "transaction_simple_verify_backwards"
 )
 
-// ProcessPayload represents the payload for processing a block
+// ProcessPayload represents the payload for processing a block.
+//
+//nolint:tagliatelle // snake_case required for backwards compatibility with queued tasks
 type ProcessPayload struct {
 	BlockNumber    big.Int `json:"block_number"`
 	NetworkID      int32   `json:"network_id"`
@@ -28,17 +30,19 @@ type ProcessPayload struct {
 	ProcessingMode string  `json:"processing_mode"`
 }
 
-// MarshalBinary implements encoding.BinaryMarshaler
+// MarshalBinary implements encoding.BinaryMarshaler.
 func (p *ProcessPayload) MarshalBinary() ([]byte, error) {
 	return json.Marshal(p)
 }
 
-// UnmarshalBinary implements encoding.BinaryUnmarshaler
+// UnmarshalBinary implements encoding.BinaryUnmarshaler.
 func (p *ProcessPayload) UnmarshalBinary(data []byte) error {
 	return json.Unmarshal(data, p)
 }
 
-// VerifyPayload represents the payload for verifying a block
+// VerifyPayload represents the payload for verifying a block.
+//
+//nolint:tagliatelle // snake_case required for backwards compatibility with queued tasks
 type VerifyPayload struct {
 	BlockNumber   big.Int `json:"block_number"`
 	NetworkID     int32   `json:"network_id"`
@@ -46,17 +50,17 @@ type VerifyPayload struct {
 	InsertedCount int     `json:"inserted_count"`
 }
 
-// MarshalBinary implements encoding.BinaryMarshaler
+// MarshalBinary implements encoding.BinaryMarshaler.
 func (v *VerifyPayload) MarshalBinary() ([]byte, error) {
 	return json.Marshal(v)
 }
 
-// UnmarshalBinary implements encoding.BinaryUnmarshaler
+// UnmarshalBinary implements encoding.BinaryUnmarshaler.
 func (v *VerifyPayload) UnmarshalBinary(data []byte) error {
 	return json.Unmarshal(data, v)
 }
 
-// NewProcessForwardsTask creates a new forwards process task
+// NewProcessForwardsTask creates a new forwards process task.
 func NewProcessForwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
 	payload.ProcessingMode = c.FORWARDS_MODE
 
@@ -68,7 +72,7 @@ func NewProcessForwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
 	return asynq.NewTask(ProcessForwardsTaskType, data), nil
 }
 
-// NewProcessBackwardsTask creates a new backwards process task
+// NewProcessBackwardsTask creates a new backwards process task.
 func NewProcessBackwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
 	payload.ProcessingMode = c.BACKWARDS_MODE
 
@@ -80,7 +84,7 @@ func NewProcessBackwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
 	return asynq.NewTask(ProcessBackwardsTaskType, data), nil
 }
 
-// NewVerifyForwardsTask creates a new forwards verify task
+// NewVerifyForwardsTask creates a new forwards verify task.
 func NewVerifyForwardsTask(payload *VerifyPayload) (*asynq.Task, error) {
 	data, err := payload.MarshalBinary()
 	if err != nil {
@@ -90,7 +94,7 @@ func NewVerifyForwardsTask(payload *VerifyPayload) (*asynq.Task, error) {
 	return asynq.NewTask(VerifyForwardsTaskType, data), nil
 }
 
-// NewVerifyBackwardsTask creates a new backwards verify task
+// NewVerifyBackwardsTask creates a new backwards verify task.
 func NewVerifyBackwardsTask(payload *VerifyPayload) (*asynq.Task, error) {
 	data, err := payload.MarshalBinary()
 	if err != nil {

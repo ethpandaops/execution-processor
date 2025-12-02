@@ -1,0 +1,5 @@
+[files]
+extend-exclude = [
+  "go.mod",
+  "cmd/tools/generate-implementation/*",
+]

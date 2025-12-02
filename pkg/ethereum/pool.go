@@ -118,6 +118,7 @@ func (p *Pool) WaitForHealthyExecutionNode(ctx context.Context) (*execution.Node
 
 	// Start a goroutine to log status periodically
 	done := make(chan struct{})
+
 	go func() {
 		defer close(done)
 
@@ -141,6 +142,7 @@ func (p *Pool) WaitForHealthyExecutionNode(ctx context.Context) (*execution.Node
 						healthyCount++
 					}
 				}
+
 				p.mu.RUnlock()
 
 				p.log.WithFields(logrus.Fields{
@@ -261,7 +263,7 @@ func (p *Pool) UpdateNodeMetrics() {
 	p.metrics.SetNodesTotal(float64(unhealthyExec), []string{"execution", "unhealthy"})
 }
 
-// Stop gracefully shuts down the pool
+// Stop gracefully shuts down the pool.
 func (p *Pool) Stop(ctx context.Context) error {
 	p.log.Info("Stopping pool")
 
@@ -272,6 +274,7 @@ func (p *Pool) Stop(ctx context.Context) error {
 
 	// Wait for all goroutines to finish with timeout
 	done := make(chan struct{})
+
 	go func() {
 		p.wg.Wait()
 		close(done)
@@ -294,8 +297,8 @@ func (p *Pool) Stop(ctx context.Context) error {
 	return nil
 }
 
-// GetNetworkByChainID returns the network information for the given chain ID
-// If overrideNetworkName is set in config, it returns that name instead of using networkMap
+// GetNetworkByChainID returns the network information for the given chain ID.
+// If overrideNetworkName is set in config, it returns that name instead of using networkMap.
 func (p *Pool) GetNetworkByChainID(chainID int32) (*Network, error) {
 	// If override is set, use it instead of the networkMap
 	if p.config.OverrideNetworkName != nil && *p.config.OverrideNetworkName != "" {

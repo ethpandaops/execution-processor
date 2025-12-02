@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// skipIfRedisUnavailable checks if Redis is available and skips the test if not
+// skipIfRedisUnavailable checks if Redis is available and skips the test if not.
 func skipIfRedisUnavailable(t *testing.T) *redis.Client {
 	t.Helper()
 
@@ -559,6 +559,7 @@ func TestRedisElector_ConcurrentElectors(t *testing.T) {
 	client.Del(ctx, "test:leader:concurrent")
 
 	const numElectors = 5
+
 	electors := make([]*leaderelection.RedisElector, numElectors)
 
 	config := &leaderelection.Config{
@@ -589,7 +590,6 @@ func TestRedisElector_ConcurrentElectors(t *testing.T) {
 			defer wg.Done()
 
 			err := e.Start(startCtx)
-
 			if err != nil {
 				t.Errorf("Failed to start elector %d: %v", idx, err)
 			}

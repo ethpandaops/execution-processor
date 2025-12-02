@@ -16,7 +16,7 @@ var networkMap = map[int32]Network{
 	560048:   {ID: 560048, Name: "hoodi"},
 }
 
-// GetNetworkByChainID returns the network information for the given chain ID
+// GetNetworkByChainID returns the network information for the given chain ID.
 func GetNetworkByChainID(chainID int32) (*Network, error) {
 	network, exists := networkMap[chainID]
 	if !exists {
