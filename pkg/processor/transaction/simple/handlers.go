@@ -20,6 +20,8 @@ import (
 type Transaction struct {
 	UpdatedDateTime      time.Time
 	BlockNumber          uint64
+	BlockHash            string
+	ParentHash           string
 	TransactionIndex     uint64
 	TransactionHash      string
 	Nonce                uint64
@@ -267,6 +269,8 @@ func (p *Processor) buildTransactionRow(
 	return Transaction{
 		UpdatedDateTime:      time.Now(),
 		BlockNumber:          block.Number().Uint64(),
+		BlockHash:            block.Hash().String(),
+		ParentHash:           block.ParentHash().String(),
 		TransactionIndex:     index,
 		TransactionHash:      tx.Hash().String(),
 		Nonce:                tx.Nonce(),
@@ -320,6 +324,8 @@ func (p *Processor) insertTransactions(ctx context.Context, transactions []Trans
 	query := fmt.Sprintf(`INSERT INTO %s (
 		updated_date_time,
 		block_number,
+		block_hash,
+		parent_hash,
 		transaction_index,
 		transaction_hash,
 		nonce,
@@ -339,7 +345,7 @@ func (p *Processor) insertTransactions(ctx context.Context, transactions []Trans
 		n_input_nonzero_bytes,
 		meta_network_id,
 		meta_network_name
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, p.config.Table)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, p.config.Table)
 
 	stmt, err := sqlTx.PrepareContext(ctx, query)
 	if err != nil {
@@ -358,6 +364,8 @@ func (p *Processor) insertTransactions(ctx context.Context, transactions []Trans
 		_, err := stmt.ExecContext(ctx,
 			tx.UpdatedDateTime,
 			tx.BlockNumber,
+			tx.BlockHash,
+			tx.ParentHash,
 			tx.TransactionIndex,
 			tx.TransactionHash,
 			tx.Nonce,
