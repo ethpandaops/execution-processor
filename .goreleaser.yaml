@@ -17,8 +17,8 @@ builds:
     - amd64
     ldflags:
       - -s -w
-      - -X github.com/ethpandaops/execution-processor/internal/version.Release={{.Tag}}-{{.ShortCommit}}
-      - -X github.com/ethpandaops/execution-processor/internal/version.GitCommit={{.ShortCommit}}
+      - -X github.com/ethpandaops/execution-processor/cmd.Release={{.Tag}}-{{.ShortCommit}}
+      - -X github.com/ethpandaops/execution-processor/cmd.GitCommit={{.ShortCommit}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
   - id: linux-arm64
