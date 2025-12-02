@@ -2,7 +2,7 @@ package clickhouse
 
 import "context"
 
-// ClientInterface defines the methods for interacting with ClickHouse
+// ClientInterface defines the methods for interacting with ClickHouse.
 type ClientInterface interface {
 	// QueryOne executes a query and returns a single result
 	QueryOne(ctx context.Context, query string, dest interface{}) error

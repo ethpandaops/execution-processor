@@ -7,7 +7,7 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/0xsequence/ethkit/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/hibiken/asynq"
 	"github.com/sirupsen/logrus"
 
@@ -16,7 +16,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
-// ProcessNextBlock processes the next available block
+// ProcessNextBlock processes the next available block.
 func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	p.log.WithField("network", p.network.Name).Debug("Querying for next block to process")
 
@@ -61,7 +61,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	}).Debug("Found next block to process")
 
 	// Check if this block was recently processed to avoid rapid reprocessing
-	if recentlyProcessed, err := p.stateManager.IsBlockRecentlyProcessed(ctx, nextBlock.Uint64(), p.network.Name, p.Name(), 30); err == nil && recentlyProcessed {
+	if recentlyProcessed, checkErr := p.stateManager.IsBlockRecentlyProcessed(ctx, nextBlock.Uint64(), p.network.Name, p.Name(), 30); checkErr == nil && recentlyProcessed {
 		p.log.WithFields(logrus.Fields{
 			"block_number": nextBlock.String(),
 			"network":      p.network.Name,
@@ -159,7 +159,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	return nil
 }
 
-// isBlockNotFoundError checks if an error indicates a block was not found
+// isBlockNotFoundError checks if an error indicates a block was not found.
 func isBlockNotFoundError(err error) bool {
 	if err == nil {
 		return false
@@ -173,8 +173,8 @@ func isBlockNotFoundError(err error) bool {
 		strings.Contains(errStr, "header not found")
 }
 
-// enqueueTransactionTasks enqueues tasks for all transactions in a block
-// EnqueueTransactionTasks enqueues transaction processing tasks for a given block
+// enqueueTransactionTasks enqueues tasks for all transactions in a block.
+// EnqueueTransactionTasks enqueues transaction processing tasks for a given block.
 func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block *types.Block) (int, error) {
 	var enqueuedCount int
 
@@ -242,7 +242,7 @@ func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block *types.Bl
 	return enqueuedCount, nil
 }
 
-// updateBlockMetrics updates block-related metrics
+// updateBlockMetrics updates block-related metrics.
 func (p *Processor) updateBlockMetrics(ctx context.Context, blockNumber *big.Int) {
 	// Update block height
 	common.BlockHeight.WithLabelValues(p.network.Name, ProcessorName).Set(float64(blockNumber.Int64()))

@@ -15,7 +15,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Dependencies contains the dependencies needed for the processor
+// Dependencies contains the dependencies needed for the processor.
 type Dependencies struct {
 	Log         logrus.FieldLogger
 	Pool        *ethereum.Pool
@@ -25,7 +25,7 @@ type Dependencies struct {
 	RedisPrefix string
 }
 
-// Processor handles transaction structlog processing
+// Processor handles transaction structlog processing.
 type Processor struct {
 	log            logrus.FieldLogger
 	pool           *ethereum.Pool
@@ -40,7 +40,7 @@ type Processor struct {
 	batchManager   *BatchManager
 }
 
-// New creates a new transaction structlog processor
+// New creates a new transaction structlog processor.
 func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, error) {
 	// Create a copy of the embedded config and set processor-specific values
 	clickhouseConfig := config.Config
@@ -48,7 +48,6 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 	clickhouseConfig.Processor = ProcessorName
 
 	clickhouseClient, err := clickhouse.New(&clickhouseConfig)
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clickhouse client for transaction_structlog: %w", err)
 	}
@@ -74,7 +73,7 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 	return processor, nil
 }
 
-// Start starts the processor
+// Start starts the processor.
 func (p *Processor) Start(ctx context.Context) error {
 	// Use configured value or default
 	threshold := p.config.BigTransactionThreshold
@@ -104,7 +103,7 @@ func (p *Processor) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the processor
+// Stop stops the processor.
 func (p *Processor) Stop(ctx context.Context) error {
 	p.log.Info("Stopping transaction structlog processor")
 
@@ -117,12 +116,12 @@ func (p *Processor) Stop(ctx context.Context) error {
 	return p.clickhouse.Stop()
 }
 
-// Name returns the processor name
+// Name returns the processor name.
 func (p *Processor) Name() string {
 	return ProcessorName
 }
 
-// GetQueues returns the queues used by this processor
+// GetQueues returns the queues used by this processor.
 func (p *Processor) GetQueues() []c.QueueInfo {
 	return []c.QueueInfo{
 		{
@@ -144,7 +143,7 @@ func (p *Processor) GetQueues() []c.QueueInfo {
 	}
 }
 
-// GetHandlers returns the task handlers for this processor
+// GetHandlers returns the task handlers for this processor.
 func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	return map[string]asynq.HandlerFunc{
 		ProcessForwardsTaskType:  p.handleProcessForwardsTask,
@@ -154,40 +153,40 @@ func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	}
 }
 
-// EnqueueTask enqueues a task to the specified queue
+// EnqueueTask enqueues a task to the specified queue.
 func (p *Processor) EnqueueTask(ctx context.Context, task *asynq.Task, opts ...asynq.Option) error {
 	_, err := p.asynqClient.EnqueueContext(ctx, task, opts...)
 
 	return err
 }
 
-// SetProcessingMode sets the processing mode for the processor
+// SetProcessingMode sets the processing mode for the processor.
 func (p *Processor) SetProcessingMode(mode string) {
 	p.processingMode = mode
 	p.log.WithField("mode", mode).Info("Processing mode updated")
 }
 
-// getProcessForwardsQueue returns the prefixed process forwards queue name
+// getProcessForwardsQueue returns the prefixed process forwards queue name.
 func (p *Processor) getProcessForwardsQueue() string {
 	return c.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// getProcessBackwardsQueue returns the prefixed process backwards queue name
+// getProcessBackwardsQueue returns the prefixed process backwards queue name.
 func (p *Processor) getProcessBackwardsQueue() string {
 	return c.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// getVerifyForwardsQueue returns the prefixed verify forwards queue name
+// getVerifyForwardsQueue returns the prefixed verify forwards queue name.
 func (p *Processor) getVerifyForwardsQueue() string {
 	return c.PrefixedVerifyForwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// getVerifyBackwardsQueue returns the prefixed verify backwards queue name
+// getVerifyBackwardsQueue returns the prefixed verify backwards queue name.
 func (p *Processor) getVerifyBackwardsQueue() string {
 	return c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// insertStructlogs inserts structlog rows directly into ClickHouse
+// insertStructlogs inserts structlog rows directly into ClickHouse.
 func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog) error {
 	// Short-circuit for empty structlog arrays
 	if len(structlogs) == 0 {
@@ -227,7 +226,7 @@ func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog
 	return nil
 }
 
-// waitForBigTransactions waits for big transactions to complete before proceeding
+// waitForBigTransactions waits for big transactions to complete before proceeding.
 func (p *Processor) waitForBigTransactions(taskType string) {
 	if p.bigTxManager.ShouldPauseNewWork() {
 		p.log.WithFields(logrus.Fields{
@@ -249,7 +248,7 @@ func (p *Processor) waitForBigTransactions(taskType string) {
 	}
 }
 
-// parseErrorCode extracts error code from error message
+// parseErrorCode extracts error code from error message.
 func parseErrorCode(err error) string {
 	if err == nil {
 		return ""
@@ -269,7 +268,7 @@ func parseErrorCode(err error) string {
 	return "UNKNOWN"
 }
 
-// ShouldBatch determines if a transaction should be batched based on structlog count
+// ShouldBatch determines if a transaction should be batched based on structlog count.
 func (p *Processor) ShouldBatch(structlogCount int64) bool {
 	return structlogCount > 0 && structlogCount < p.config.BatchInsertThreshold
 }

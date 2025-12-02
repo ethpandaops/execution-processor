@@ -64,5 +64,13 @@ processors:
     # batchFlushInterval: 5s           # Maximum time to wait before flushing a batch (default: 5s)
     # batchMaxSize: 100000             # Maximum number of structlogs to accumulate in a batch (default: 100000)
 
+  # Simple transaction processor (lightweight - no debug traces)
+  transactionSimple:
+    enabled: false
+    dsn: "http://localhost:8123/default"  # ClickHouse DSN for the default database
+    table: "execution_transaction"
+    # maxOpenConns: 10
+    # maxIdleConns: 10
+
 # Application settings
 shutdownTimeout: 6m

@@ -7,7 +7,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
 )
 
-// TransactionStructlogConfig holds configuration for transaction structlog processor
+// Config holds configuration for transaction structlog processor.
 type Config struct {
 	clickhouse.Config `yaml:",inline"`
 	Enabled           bool   `yaml:"enabled"`

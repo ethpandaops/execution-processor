@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+//nolint:tagliatelle // YAML config uses snake_case by convention
 type Config struct {
 	URL           string        `yaml:"url"`
 	QueryTimeout  time.Duration `yaml:"query_timeout"`

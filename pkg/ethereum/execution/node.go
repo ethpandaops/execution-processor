@@ -9,12 +9,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0xsequence/ethkit/ethrpc"
+	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution/services"
 	"github.com/sirupsen/logrus"
 )
 
-// headerTransport adds custom headers to requests and respects context cancellation
+// headerTransport adds custom headers to requests and respects context cancellation.
 type headerTransport struct {
 	headers map[string]string
 	base    http.RoundTripper
@@ -36,10 +37,11 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 type Node struct {
-	config *Config
-	log    logrus.FieldLogger
-	rpc    *ethrpc.Provider
-	name   string
+	config    *Config
+	log       logrus.FieldLogger
+	client    *ethclient.Client
+	rpcClient *rpc.Client
+	name      string
 
 	services []services.Service
 
@@ -100,20 +102,25 @@ func (n *Node) Start(ctx context.Context) error {
 		base:    httpClient.Transport,
 	}
 
-	rpc, err := ethrpc.NewProvider(n.config.NodeAddress, ethrpc.WithHTTPClient(&httpClient))
+	// Create raw RPC client with custom HTTP client
+	rpcClient, err := rpc.DialOptions(nodeCtx, n.config.NodeAddress, rpc.WithHTTPClient(&httpClient))
 	if err != nil {
-		n.log.WithError(err).Error("Failed to create RPC provider")
+		n.log.WithError(err).Error("Failed to create RPC client")
 
-		return fmt.Errorf("failed to create RPC provider for %s: %w", n.config.NodeAddress, err)
+		return fmt.Errorf("failed to create RPC client for %s: %w", n.config.NodeAddress, err)
 	}
 
-	metadata := services.NewMetadataService(n.log, rpc)
+	// Create ethclient wrapper
+	client := ethclient.NewClient(rpcClient)
+
+	metadata := services.NewMetadataService(n.log, rpcClient)
 
 	svcs := []services.Service{
 		&metadata,
 	}
 
-	n.rpc = rpc
+	n.client = client
+	n.rpcClient = rpcClient
 	n.services = svcs
 
 	errs := make(chan error, 1)
@@ -191,13 +198,16 @@ func (n *Node) Stop(ctx context.Context) error {
 
 	// Cancel the node context to signal all goroutines to stop
 	n.mu.Lock()
+
 	if n.cancel != nil {
 		n.cancel()
 	}
+
 	n.mu.Unlock()
 
 	// Wait for all goroutines to finish with timeout
 	done := make(chan struct{})
+
 	go func() {
 		n.wg.Wait()
 		close(done)

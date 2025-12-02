@@ -5,10 +5,11 @@ import (
 	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/processor/common"
+	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 )
 
-// Config holds the unified processor configuration
+// Config holds the unified processor configuration.
 type Config struct {
 	// Processing interval
 	Interval time.Duration `yaml:"interval"`
@@ -28,9 +29,10 @@ type Config struct {
 
 	// Processor configurations
 	TransactionStructlog structlog.Config `yaml:"transactionStructlog"`
+	TransactionSimple    simple.Config    `yaml:"transactionSimple"`
 }
 
-// LeaderElectionConfig holds configuration for leader election
+// LeaderElectionConfig holds configuration for leader election.
 type LeaderElectionConfig struct {
 	// Enable leader election (default: true)
 	Enabled bool `yaml:"enabled"`
@@ -45,7 +47,7 @@ type LeaderElectionConfig struct {
 	NodeID string `yaml:"nodeId"`
 }
 
-// WorkerConfig holds worker configuration
+// WorkerConfig holds worker configuration.
 type WorkerConfig struct {
 	Enabled     bool `yaml:"enabled"`
 	Concurrency int  `yaml:"concurrency"`
@@ -104,6 +106,10 @@ func (c *Config) Validate() error {
 		if c.TransactionStructlog.Table == "" {
 			return fmt.Errorf("transaction structlog table is required when enabled")
 		}
+	}
+
+	if err := c.TransactionSimple.Validate(); err != nil {
+		return fmt.Errorf("transaction simple config validation failed: %w", err)
 	}
 
 	return nil

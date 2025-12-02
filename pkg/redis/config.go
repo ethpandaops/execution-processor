@@ -21,7 +21,7 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// PrefixKey adds the configured prefix to a Redis key
+// PrefixKey adds the configured prefix to a Redis key.
 func (c *Config) PrefixKey(key string) string {
 	if c.Prefix == "" {
 		return key
@@ -30,7 +30,7 @@ func (c *Config) PrefixKey(key string) string {
 	return fmt.Sprintf("%s:%s", c.Prefix, key)
 }
 
-// PrefixQueue adds the configured prefix to an Asynq queue name
+// PrefixQueue adds the configured prefix to an Asynq queue name.
 func (c *Config) PrefixQueue(queue string) string {
 	if c.Prefix == "" {
 		return queue

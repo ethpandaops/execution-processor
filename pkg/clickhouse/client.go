@@ -22,7 +22,7 @@ const (
 	statusFailed  = "failed"
 )
 
-// client implements the ClientInterface using HTTP
+// client implements the ClientInterface using HTTP.
 type client struct {
 	log        logrus.FieldLogger
 	httpClient *http.Client
@@ -33,7 +33,7 @@ type client struct {
 	lock       sync.RWMutex
 }
 
-// New creates a new HTTP-based ClickHouse client
+// New creates a new HTTP-based ClickHouse client.
 func New(cfg *Config) (ClientInterface, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -128,7 +128,8 @@ func (c *client) QueryOne(ctx context.Context, query string, dest interface{}) e
 		return fmt.Errorf("query execution failed: %w", err)
 	}
 
-	// Parse response
+	// Parse response - ClickHouse returns snake_case fields
+	//nolint:tagliatelle // ClickHouse JSON response format uses snake_case
 	var result struct {
 		Data []json.RawMessage `json:"data"`
 		Meta []struct {
@@ -187,7 +188,8 @@ func (c *client) QueryMany(ctx context.Context, query string, dest interface{}) 
 		return fmt.Errorf("query execution failed: %w", err)
 	}
 
-	// Parse response
+	// Parse response - ClickHouse returns snake_case fields
+	//nolint:tagliatelle // ClickHouse JSON response format uses snake_case
 	var result struct {
 		Data []json.RawMessage `json:"data"`
 		Meta []struct {
@@ -338,7 +340,12 @@ func (c *client) executeHTTPRequest(ctx context.Context, query string, timeout t
 
 	// Check status code
 	if resp.StatusCode != http.StatusOK {
-		// Try to parse error message
+		bodyStr := string(body)
+		if bodyStr == "" {
+			bodyStr = "(empty response)"
+		}
+
+		// Try to parse error message from JSON
 		var errorResp struct {
 			Exception string `json:"exception"`
 		}
@@ -347,7 +354,7 @@ func (c *client) executeHTTPRequest(ctx context.Context, query string, timeout t
 			return nil, fmt.Errorf("ClickHouse error (status %d): %s", resp.StatusCode, errorResp.Exception)
 		}
 
-		return nil, fmt.Errorf("ClickHouse error (status %d): %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("ClickHouse error (status %d): %s", resp.StatusCode, bodyStr)
 	}
 
 	// Debug logging
@@ -408,7 +415,7 @@ func (c *client) IsStorageEmpty(ctx context.Context, table string, conditions ma
 	}
 
 	var result struct {
-		Count uint64 `json:"count"`
+		Count json.Number `json:"count"`
 	}
 
 	if err := c.QueryOne(ctx, query, &result); err != nil {
@@ -417,10 +424,17 @@ func (c *client) IsStorageEmpty(ctx context.Context, table string, conditions ma
 		return false, fmt.Errorf("failed to check if table is empty: %w", err)
 	}
 
-	return result.Count == 0, nil
+	count, err := result.Count.Int64()
+	if err != nil {
+		status = statusFailed
+
+		return false, fmt.Errorf("failed to parse count: %w", err)
+	}
+
+	return count == 0, nil
 }
 
-// extractTableName attempts to extract the table name from various SQL query patterns
+// extractTableName attempts to extract the table name from various SQL query patterns.
 func extractTableName(query string) string {
 	// Work with original query to preserve case
 	trimmedQuery := strings.TrimSpace(query)

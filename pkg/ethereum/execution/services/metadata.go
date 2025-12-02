@@ -9,15 +9,17 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0xsequence/ethkit/ethrpc"
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/rpc"
+
 	backoff "github.com/cenkalti/backoff/v4"
 	"github.com/go-co-op/gocron"
 	"github.com/sirupsen/logrus"
 )
 
 type MetadataService struct {
-	rpc *ethrpc.Provider
-	log logrus.FieldLogger
+	rpcClient *rpc.Client
+	log       logrus.FieldLogger
 
 	onReadyCallbacks []func(context.Context) error
 
@@ -29,9 +31,9 @@ type MetadataService struct {
 	mu sync.Mutex
 }
 
-func NewMetadataService(log logrus.FieldLogger, rpc *ethrpc.Provider) MetadataService {
+func NewMetadataService(log logrus.FieldLogger, rpcClient *rpc.Client) MetadataService {
 	return MetadataService{
-		rpc:              rpc,
+		rpcClient:        rpcClient,
 		log:              log.WithField("module", "ethereum/execution/metadata"),
 		onReadyCallbacks: []func(context.Context) error{},
 		mu:               sync.Mutex{},
@@ -149,9 +151,7 @@ func (m *MetadataService) Ready(ctx context.Context) error {
 func (m *MetadataService) web3ClientVersion(ctx context.Context) (string, error) {
 	var version string
 
-	call := ethrpc.NewCallBuilder[string]("web3_clientVersion", nil)
-
-	_, err := m.rpc.Do(ctx, call.Into(&version))
+	err := m.rpcClient.CallContext(ctx, &version, "web3_clientVersion")
 	if err != nil {
 		return "", err
 	}
@@ -162,9 +162,7 @@ func (m *MetadataService) web3ClientVersion(ctx context.Context) (string, error)
 func (m *MetadataService) GetChainID(ctx context.Context) (*int32, error) {
 	var chainID string
 
-	call := ethrpc.NewCallBuilder[string]("eth_chainID", nil)
-
-	_, err := m.rpc.Do(ctx, call.Into(&chainID))
+	err := m.rpcClient.CallContext(ctx, &chainID, "eth_chainId")
 	if err != nil {
 		return nil, err
 	}
@@ -224,18 +222,23 @@ func (m *MetadataService) ClientVersion() string {
 }
 
 func (m *MetadataService) updateSyncStatus(ctx context.Context) error {
-	status, err := m.rpc.SyncProgress(ctx)
+	var raw interface{}
+
+	err := m.rpcClient.CallContext(ctx, &raw, "eth_syncing")
 	if err != nil {
 		return err
 	}
 
-	if status == nil {
-		m.synced = true
-
-		return nil
+	// eth_syncing returns false when not syncing, or an object when syncing
+	switch v := raw.(type) {
+	case bool:
+		m.synced = !v
+	case map[string]interface{}:
+		// Still syncing - has sync progress info
+		m.synced = false
+	default:
+		return ethereum.NotFound
 	}
-
-	m.synced = false
 
 	return nil
 }

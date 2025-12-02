@@ -10,43 +10,50 @@ import (
 	"github.com/stretchr/testify/mock"
 )
 
-// MockClickHouseClient is a mock implementation of clickhouse.ClientInterface
+// MockClickHouseClient is a mock implementation of clickhouse.ClientInterface.
 type MockClickHouseClient struct {
 	mock.Mock
 }
 
 func (m *MockClickHouseClient) QueryOne(ctx context.Context, query string, dest interface{}) error {
 	args := m.Called(ctx, query, dest)
+
 	return args.Error(0)
 }
 
 func (m *MockClickHouseClient) QueryMany(ctx context.Context, query string, dest interface{}) error {
 	args := m.Called(ctx, query, dest)
+
 	return args.Error(0)
 }
 
 func (m *MockClickHouseClient) Execute(ctx context.Context, query string) error {
 	args := m.Called(ctx, query)
+
 	return args.Error(0)
 }
 
 func (m *MockClickHouseClient) BulkInsert(ctx context.Context, table string, data interface{}) error {
 	args := m.Called(ctx, table, data)
+
 	return args.Error(0)
 }
 
 func (m *MockClickHouseClient) Start() error {
 	args := m.Called()
+
 	return args.Error(0)
 }
 
 func (m *MockClickHouseClient) Stop() error {
 	args := m.Called()
+
 	return args.Error(0)
 }
 
 func (m *MockClickHouseClient) IsStorageEmpty(ctx context.Context, table string, conditions map[string]interface{}) (bool, error) {
 	args := m.Called(ctx, table, conditions)
+
 	return args.Bool(0), args.Error(1)
 }
 
@@ -87,7 +94,7 @@ func TestNextBlock_NoResultsVsBlock0(t *testing.T) {
 			setupMock: func(m *MockClickHouseClient) {
 				m.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 					// Simulate finding block 0
-					result := args.Get(2).(*blockNumberResult)
+					result := args.Get(2).(*blockNumberResult) //nolint:errcheck // type assertion in test
 					blockNum := JSONInt64(0)
 					result.BlockNumber = &blockNum
 				})
@@ -100,7 +107,7 @@ func TestNextBlock_NoResultsVsBlock0(t *testing.T) {
 			setupMock: func(m *MockClickHouseClient) {
 				m.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 					// Simulate finding block 100
-					result := args.Get(2).(*blockNumberResult)
+					result := args.Get(2).(*blockNumberResult) //nolint:errcheck // type assertion in test
 					blockNum := JSONInt64(100)
 					result.BlockNumber = &blockNum
 				})
@@ -196,7 +203,8 @@ func TestNextBlock_EmptyStorageWithLimiter(t *testing.T) {
 				mockLimiter = new(MockClickHouseClient)
 				mockLimiter.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
 					// Set the limiter max block
-					result := args.Get(2).(*blockNumberResult)
+					result := args.Get(2).(*blockNumberResult) //nolint:errcheck // type assertion in test
+
 					if tt.limiterMax != nil {
 						blockNum := JSONInt64(tt.limiterMax.Int64())
 						result.BlockNumber = &blockNum
@@ -221,6 +229,7 @@ func TestNextBlock_EmptyStorageWithLimiter(t *testing.T) {
 			assert.Equal(t, tt.expectedNext, next)
 
 			mockStorage.AssertExpectations(t)
+
 			if mockLimiter != nil {
 				mockLimiter.AssertExpectations(t)
 			}
@@ -291,7 +300,7 @@ func TestGetProgressiveNextBlock_EmptyStorage(t *testing.T) {
 			} else {
 				// Non-empty storage case
 				mockStorage.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-					result := args.Get(2).(*blockNumberResult)
+					result := args.Get(2).(*blockNumberResult) //nolint:errcheck // type assertion in test
 					blockNum := JSONInt64(tt.storedBlock)
 					result.BlockNumber = &blockNum
 				})
@@ -362,7 +371,7 @@ func TestGetProgressiveNextBlock_NoResultsVsBlock0(t *testing.T) {
 			name: "Block 0 found - should return 1",
 			setupMock: func(m *MockClickHouseClient) {
 				m.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-					result := args.Get(2).(*blockNumberResult)
+					result := args.Get(2).(*blockNumberResult) //nolint:errcheck // type assertion in test
 					blockNum := JSONInt64(0)
 					result.BlockNumber = &blockNum
 				})

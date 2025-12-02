@@ -10,14 +10,14 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// BatchItem represents a single transaction's data within a batch
+// BatchItem represents a single transaction's data within a batch.
 type BatchItem struct {
 	structlogs []Structlog
 	task       *asynq.Task
 	payload    *ProcessPayload
 }
 
-// BatchManager accumulates small transactions and flushes them in batches
+// BatchManager accumulates small transactions and flushes them in batches.
 type BatchManager struct {
 	mu             sync.Mutex
 	items          []BatchItem
@@ -33,7 +33,7 @@ type BatchManager struct {
 	stopCh         chan struct{}
 }
 
-// NewBatchManager creates a new batch manager
+// NewBatchManager creates a new batch manager.
 func NewBatchManager(processor *Processor, config *Config) *BatchManager {
 	_, cancel := context.WithCancel(context.Background())
 
@@ -49,9 +49,10 @@ func NewBatchManager(processor *Processor, config *Config) *BatchManager {
 	}
 }
 
-// Start begins the batch manager's flush goroutine
+// Start begins the batch manager's flush goroutine.
 func (bm *BatchManager) Start() error {
 	bm.wg.Add(1)
+
 	go bm.flushLoop()
 
 	bm.processor.log.WithFields(logrus.Fields{
@@ -63,7 +64,7 @@ func (bm *BatchManager) Start() error {
 	return nil
 }
 
-// Stop gracefully shuts down the batch manager
+// Stop gracefully shuts down the batch manager.
 func (bm *BatchManager) Stop() {
 	bm.cancel()
 	close(bm.stopCh)
@@ -77,7 +78,7 @@ func (bm *BatchManager) Stop() {
 	bm.processor.log.Info("batch manager stopped")
 }
 
-// Add adds a transaction's structlogs to the batch
+// Add adds a transaction's structlogs to the batch.
 func (bm *BatchManager) Add(structlogs []Structlog, task *asynq.Task, payload *ProcessPayload) error {
 	bm.mu.Lock()
 	defer bm.mu.Unlock()
@@ -115,21 +116,22 @@ func (bm *BatchManager) Add(structlogs []Structlog, task *asynq.Task, payload *P
 	return nil
 }
 
-// FlushIfNeeded checks if the batch should be flushed based on size threshold
+// FlushIfNeeded checks if the batch should be flushed based on size threshold.
 func (bm *BatchManager) FlushIfNeeded() {
 	if bm.currentSize >= bm.flushThreshold {
 		bm.flushLocked()
 	}
 }
 
-// Flush performs a batch flush (thread-safe)
+// Flush performs a batch flush (thread-safe).
 func (bm *BatchManager) Flush() {
 	bm.mu.Lock()
 	defer bm.mu.Unlock()
+
 	bm.flushLocked()
 }
 
-// flushLocked performs the actual flush (must be called with lock held)
+// flushLocked performs the actual flush (must be called with lock held).
 func (bm *BatchManager) flushLocked() {
 	if len(bm.items) == 0 {
 		return
@@ -155,8 +157,8 @@ func (bm *BatchManager) flushLocked() {
 
 	// Perform bulk insert
 	startTime := time.Now()
-	err := bm.processor.insertStructlogs(context.Background(), allStructlogs)
 
+	err := bm.processor.insertStructlogs(context.Background(), allStructlogs)
 	if err != nil {
 		// Failed - fail all tasks in batch
 		bm.processor.log.WithError(err).Error("batch insert failed")
@@ -240,7 +242,7 @@ func (bm *BatchManager) flushLocked() {
 	bm.currentSize = 0
 }
 
-// flushLoop runs the time-based flush goroutine
+// flushLoop runs the time-based flush goroutine.
 func (bm *BatchManager) flushLoop() {
 	defer bm.wg.Done()
 

@@ -16,7 +16,9 @@ const (
 	VerifyBackwardsTaskType  = "transaction_structlog_verify_backwards"
 )
 
-// ProcessPayload represents the payload for processing a transaction
+// ProcessPayload represents the payload for processing a transaction.
+//
+//nolint:tagliatelle // Using snake_case for backwards compatibility
 type ProcessPayload struct {
 	BlockNumber      big.Int `json:"block_number"`
 	TransactionHash  string  `json:"transaction_hash"`
@@ -27,17 +29,19 @@ type ProcessPayload struct {
 	ProcessingMode   string  `json:"processing_mode"` // "forwards" or "backwards"
 }
 
-// MarshalBinary implements encoding.BinaryMarshaler
+// MarshalBinary implements encoding.BinaryMarshaler.
 func (p *ProcessPayload) MarshalBinary() ([]byte, error) {
 	return json.Marshal(p)
 }
 
-// UnmarshalBinary implements encoding.BinaryUnmarshaler
+// UnmarshalBinary implements encoding.BinaryUnmarshaler.
 func (p *ProcessPayload) UnmarshalBinary(data []byte) error {
 	return json.Unmarshal(data, p)
 }
 
-// VerifyPayload represents the payload for verifying a transaction
+// VerifyPayload represents the payload for verifying a transaction.
+//
+//nolint:tagliatelle // Using snake_case for backwards compatibility
 type VerifyPayload struct {
 	BlockNumber      big.Int `json:"block_number"`
 	TransactionHash  string  `json:"transaction_hash"`
@@ -49,17 +53,17 @@ type VerifyPayload struct {
 	InsertedCount    int     `json:"inserted_count"`
 }
 
-// MarshalBinary implements encoding.BinaryMarshaler
+// MarshalBinary implements encoding.BinaryMarshaler.
 func (v *VerifyPayload) MarshalBinary() ([]byte, error) {
 	return json.Marshal(v)
 }
 
-// UnmarshalBinary implements encoding.BinaryUnmarshaler
+// UnmarshalBinary implements encoding.BinaryUnmarshaler.
 func (v *VerifyPayload) UnmarshalBinary(data []byte) error {
 	return json.Unmarshal(data, v)
 }
 
-// NewProcessForwardsTask creates a new forwards process task
+// NewProcessForwardsTask creates a new forwards process task.
 func NewProcessForwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
 	payload.ProcessingMode = c.FORWARDS_MODE
 
@@ -71,7 +75,7 @@ func NewProcessForwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
 	return asynq.NewTask(ProcessForwardsTaskType, data), nil
 }
 
-// NewProcessBackwardsTask creates a new backwards process task
+// NewProcessBackwardsTask creates a new backwards process task.
 func NewProcessBackwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
 	payload.ProcessingMode = c.BACKWARDS_MODE
 
@@ -83,7 +87,7 @@ func NewProcessBackwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
 	return asynq.NewTask(ProcessBackwardsTaskType, data), nil
 }
 
-// NewVerifyForwardsTask creates a new forwards verify task
+// NewVerifyForwardsTask creates a new forwards verify task.
 func NewVerifyForwardsTask(payload *VerifyPayload) (*asynq.Task, error) {
 	payload.ProcessingMode = c.FORWARDS_MODE
 
@@ -95,7 +99,7 @@ func NewVerifyForwardsTask(payload *VerifyPayload) (*asynq.Task, error) {
 	return asynq.NewTask(VerifyForwardsTaskType, data), nil
 }
 
-// NewVerifyBackwardsTask creates a new backwards verify task
+// NewVerifyBackwardsTask creates a new backwards verify task.
 func NewVerifyBackwardsTask(payload *VerifyPayload) (*asynq.Task, error) {
 	payload.ProcessingMode = c.BACKWARDS_MODE
 

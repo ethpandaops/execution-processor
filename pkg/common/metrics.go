@@ -132,7 +132,7 @@ var (
 		Help: "Total number of errors during leader election",
 	}, []string{"network", "node_id", "operation"})
 
-	// Queue control metrics
+	// Queue control metrics.
 	QueueBackpressureActive = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "execution_processor_queue_backpressure_active",
 		Help: "Whether backpressure is active (1) or not (0) for a processor",

@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Elector defines the interface for leader election implementations
+// Elector defines the interface for leader election implementations.
 type Elector interface {
 	// Start begins the leader election process
 	Start(ctx context.Context) error
@@ -24,7 +24,7 @@ type Elector interface {
 	GetLeaderID() (string, error)
 }
 
-// Config holds configuration for leader election
+// Config holds configuration for leader election.
 type Config struct {
 	// TTL is the time-to-live for the leader lock
 	TTL time.Duration
@@ -37,7 +37,7 @@ type Config struct {
 	NodeID string
 }
 
-// DefaultConfig returns a default configuration
+// DefaultConfig returns a default configuration.
 func DefaultConfig() *Config {
 	return &Config{
 		TTL:             10 * time.Second,

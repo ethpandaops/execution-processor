@@ -4,14 +4,8 @@ import (
 	"fmt"
 	"runtime"
 
+	"github.com/ethpandaops/execution-processor/internal/version"
 	"github.com/spf13/cobra"
-)
-
-var (
-	Release   = "dev"
-	GitCommit = "none"
-	GOOS      = runtime.GOOS
-	GOARCH    = runtime.GOARCH
 )
 
 var versionCmd = &cobra.Command{
@@ -22,7 +16,7 @@ var versionCmd = &cobra.Command{
 		initCommon()
 
 		fmt.Printf("Version: %s\nCommit: %s\nOS/Arch: %s/%s\n",
-			Release, GitCommit, GOOS, GOARCH)
+			version.Release, version.GitCommit, runtime.GOOS, runtime.GOARCH)
 	},
 }
 

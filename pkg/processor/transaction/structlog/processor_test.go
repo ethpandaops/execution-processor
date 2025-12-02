@@ -103,6 +103,7 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 func TestProcessor_ConcurrentConfigValidation(t *testing.T) {
 	// Test concurrent validation calls
 	const numGoroutines = 10
+
 	results := make(chan error, numGoroutines)
 
 	for i := 0; i < numGoroutines; i++ {
@@ -167,7 +168,7 @@ func TestStructlogCountReturn(t *testing.T) {
 			TransactionGas:         mockTrace.Gas,
 			TransactionFailed:      mockTrace.Failed,
 			TransactionReturnValue: mockTrace.ReturnValue,
-			Index:                  uint32(i), //nolint:gosec // safe to use user input in query
+			Index:                  uint32(i),
 			ProgramCounter:         structLog.PC,
 			Operation:              structLog.Op,
 			Gas:                    structLog.Gas,
@@ -205,7 +206,7 @@ func TestStructlogCountReturn(t *testing.T) {
 	}
 }
 
-// Mock structures for testing
+// MockTrace represents mock trace data for testing.
 type MockTrace struct {
 	Gas         uint64          `json:"gas"`
 	Failed      bool            `json:"failed"`
@@ -242,16 +243,16 @@ func TestMemoryManagement(t *testing.T) {
 	for i := range largeStructlogs {
 		largeStructlogs[i] = transaction_structlog.Structlog{
 			UpdatedDateTime:        transaction_structlog.NewClickHouseTime(now),
-			BlockNumber:            uint64(i), //nolint:gosec // safe to use user input in query
+			BlockNumber:            uint64(i),
 			TransactionHash:        "0x1234567890abcdef1234567890abcdef12345678",
-			TransactionIndex:       uint32(i % 100), //nolint:gosec // safe to use user input in query
+			TransactionIndex:       uint32(i % 100),
 			TransactionGas:         21000,
 			TransactionFailed:      false,
 			TransactionReturnValue: nil,
-			Index:                  uint32(i), //nolint:gosec // safe to use user input in query
+			Index:                  uint32(i),
 			ProgramCounter:         uint32(i * 2),
 			Operation:              "SSTORE",
-			Gas:                    uint64(21000 - i), //nolint:gosec // safe to use user input in query
+			Gas:                    uint64(21000 - i),
 			GasCost:                5000,
 			Depth:                  1,
 			ReturnData:             nil,
@@ -264,6 +265,7 @@ func TestMemoryManagement(t *testing.T) {
 
 	// Test that chunking calculations work properly
 	const chunkSize = 100
+
 	expectedChunks := (len(largeStructlogs) + chunkSize - 1) / chunkSize
 
 	// Verify chunking logic
@@ -463,7 +465,7 @@ func TestVerificationErrorPattern(t *testing.T) {
 	}
 }
 
-// Helper function to check if pattern contains element
+// Helper function to check if pattern contains element.
 func containsElement(pattern, element string) bool {
 	patternBytes := []byte(pattern)
 	elementBytes := []byte(element)
@@ -854,7 +856,6 @@ func TestLimiterBoundaryCondition(t *testing.T) {
 func TestRecentBlockProcessingCheck(t *testing.T) {
 	// Test the logic for checking recently processed blocks
 	// This tests the concept without requiring a real ClickHouse connection
-
 	testCases := []struct {
 		name           string
 		blockNumber    uint64
@@ -964,6 +965,7 @@ func TestHeadDistanceCalculation(t *testing.T) {
 			beaconHead := big.NewInt(tc.beaconHead)
 
 			var actualDistance int64
+
 			var actualHeadType string
 
 			// Simulate the logic from GetHeadDistance method

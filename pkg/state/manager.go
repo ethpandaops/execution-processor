@@ -12,17 +12,19 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Sentinel errors
+// Sentinel errors.
 var (
 	ErrNoMoreBlocks = errors.New("no more blocks to process")
 )
 
-// blockNumberResult is used for queries that return a single block number
+// blockNumberResult is used for queries that return a single block number.
+//
+//nolint:tagliatelle // ClickHouse uses snake_case column names
 type blockNumberResult struct {
 	BlockNumber *JSONInt64 `json:"block_number"`
 }
 
-// minMaxResult is used for queries that return min and max values
+// minMaxResult is used for queries that return min and max values.
 type minMaxResult struct {
 	Min *JSONInt64 `json:"min"`
 	Max *JSONInt64 `json:"max"`
@@ -72,7 +74,7 @@ func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*M
 	return manager, nil
 }
 
-// SetNetwork sets the network name for metrics labeling
+// SetNetwork sets the network name for metrics labeling.
 func (s *Manager) SetNetwork(network string) {
 	s.network = network
 
@@ -236,8 +238,8 @@ func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, networ
 	}).Debug("Querying for last processed block")
 
 	var result blockNumberResult
-	err := s.storageClient.QueryOne(ctx, query, &result)
 
+	err := s.storageClient.QueryOne(ctx, query, &result)
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to get next block from %s: %w", s.storageTable, err)
 	}
@@ -312,8 +314,8 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 	}).Debug("Querying for earliest processed block (backwards mode)")
 
 	var result blockNumberResult
-	err := s.storageClient.QueryOne(ctx, query, &result)
 
+	err := s.storageClient.QueryOne(ctx, query, &result)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get earliest block from %s: %w", s.storageTable, err)
 	}
@@ -375,8 +377,8 @@ func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.
 	}).Debug("Querying for maximum execution payload block number")
 
 	var result blockNumberResult
-	err := s.limiterClient.QueryOne(ctx, query, &result)
 
+	err := s.limiterClient.QueryOne(ctx, query, &result)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get max execution payload block from %s: %w", s.limiterTable, err)
 	}
@@ -433,8 +435,8 @@ func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor 
 	}).Debug("Querying for min/max stored blocks")
 
 	var result minMaxResult
-	err = s.storageClient.QueryOne(ctx, query, &result)
 
+	err = s.storageClient.QueryOne(ctx, query, &result)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get min/max blocks: %w", err)
 	}
@@ -461,7 +463,7 @@ func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor 
 	return big.NewInt(result.Min.Int64()), big.NewInt(result.Max.Int64()), nil
 }
 
-// IsBlockRecentlyProcessed checks if a block was processed within the specified number of seconds
+// IsBlockRecentlyProcessed checks if a block was processed within the specified number of seconds.
 func (s *Manager) IsBlockRecentlyProcessed(ctx context.Context, blockNumber uint64, network, processor string, withinSeconds int) (bool, error) {
 	query := fmt.Sprintf(`
 		SELECT COUNT(*) as count
@@ -480,21 +482,19 @@ func (s *Manager) IsBlockRecentlyProcessed(ctx context.Context, blockNumber uint
 		"table":          s.storageTable,
 	}).Debug("Checking if block was recently processed")
 
-	type countResult struct {
-		Count int64 `json:"count"`
+	var result struct {
+		Count JSONInt64 `json:"count"`
 	}
 
-	var result countResult
 	err := s.storageClient.QueryOne(ctx, query, &result)
-
 	if err != nil {
 		return false, fmt.Errorf("failed to check recent block processing: %w", err)
 	}
 
-	return result.Count > 0, nil
+	return result.Count.Int64() > 0, nil
 }
 
-// GetHeadDistance calculates the distance between current processing block and the relevant head
+// GetHeadDistance calculates the distance between current processing block and the relevant head.
 func (s *Manager) GetHeadDistance(ctx context.Context, processor, network, mode string, executionHead *big.Int) (distance int64, headType string, err error) {
 	// Get the current processing block (what would be next to process)
 	currentBlock, err := s.NextBlock(ctx, processor, network, mode, executionHead)

@@ -12,6 +12,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/leaderelection"
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
+	transaction_simple "github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 	s "github.com/ethpandaops/execution-processor/pkg/state"
 	"github.com/hibiken/asynq"
@@ -19,7 +20,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Manager coordinates multiple processors with distributed task processing
+// Manager coordinates multiple processors with distributed task processing.
 type Manager struct {
 	log        logrus.FieldLogger
 	config     *Config
@@ -124,13 +125,13 @@ func (m *Manager) Start(ctx context.Context) error {
 	m.state.SetNetwork(m.network.Name)
 
 	// Initialize processors
-	if err := m.initializeProcessors(ctx); err != nil {
-		return fmt.Errorf("failed to initialize processors: %w", err)
+	if initErr := m.initializeProcessors(ctx); initErr != nil {
+		return fmt.Errorf("failed to initialize processors: %w", initErr)
 	}
 
 	// Update asynq server with processor queues
-	if err := m.updateAsynqQueues(); err != nil {
-		return fmt.Errorf("failed to update asynq queues: %w", err)
+	if updateErr := m.updateAsynqQueues(); updateErr != nil {
+		return fmt.Errorf("failed to update asynq queues: %w", updateErr)
 	}
 
 	// Initialize leader election if enabled
@@ -198,6 +199,7 @@ func (m *Manager) Start(ctx context.Context) error {
 				m.log.WithError(err).Error("Asynq server failed")
 			}
 		}()
+
 		m.log.Info("Worker started for distributed task processing")
 	}
 
@@ -223,6 +225,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 	}
 	go metricsUpdater()
+
 	m.log.Info("Started periodic blocks stored metrics updater")
 
 	// Wait for stop signal
@@ -235,6 +238,7 @@ func (m *Manager) Start(ctx context.Context) error {
 
 func (m *Manager) Stop(ctx context.Context) error {
 	m.stopMutex.Lock()
+
 	if m.stopped {
 		m.stopMutex.Unlock()
 
@@ -252,6 +256,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 
 	// Stop block processing if running
 	m.blockProcessMutex.Lock()
+
 	if m.isLeader && m.blockProcessStop != nil {
 		select {
 		case <-m.blockProcessStop:
@@ -262,6 +267,7 @@ func (m *Manager) Stop(ctx context.Context) error {
 
 		m.blockProcessStop = nil
 	}
+
 	m.blockProcessMutex.Unlock()
 
 	// Stop Asynq server first (before stopping Redis-dependent services)
@@ -314,7 +320,6 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 			Network:     m.network,
 			RedisPrefix: m.redisPrefix,
 		}, &m.config.TransactionStructlog)
-
 		if err != nil {
 			return fmt.Errorf("failed to create transaction_structlog processor: %w", err)
 		}
@@ -331,6 +336,36 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 		}
 	} else {
 		m.log.Debug("Transaction structlog processor is disabled")
+	}
+
+	// Initialize transaction simple processor if enabled
+	if m.config.TransactionSimple.Enabled {
+		m.log.Debug("Transaction simple processor is enabled, initializing...")
+
+		processor, err := transaction_simple.New(ctx, &transaction_simple.Dependencies{
+			Log:         m.log.WithField("processor", "transaction_simple"),
+			Pool:        m.pool,
+			State:       m.state,
+			AsynqClient: m.asynqClient,
+			Network:     m.network,
+			RedisPrefix: m.redisPrefix,
+		}, &m.config.TransactionSimple)
+		if err != nil {
+			return fmt.Errorf("failed to create transaction_simple processor: %w", err)
+		}
+
+		m.processors["transaction_simple"] = processor
+
+		// Set processing mode from config
+		processor.SetProcessingMode(m.config.Mode)
+
+		m.log.WithField("processor", "transaction_simple").Info("Initialized processor")
+
+		if err := processor.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start transaction_simple processor: %w", err)
+		}
+	} else {
+		m.log.Debug("Transaction simple processor is disabled")
 	}
 
 	m.log.WithField("total_processors", len(m.processors)).Info("Completed processor initialization")
@@ -393,7 +428,7 @@ func (m *Manager) processBlocks(ctx context.Context) {
 	}
 }
 
-// updateHeadDistanceMetric calculates and updates the head distance metric for a processor
+// updateHeadDistanceMetric calculates and updates the head distance metric for a processor.
 func (m *Manager) updateHeadDistanceMetric(ctx context.Context, processorName string, executionHead *big.Int) {
 	distance, headType, err := m.state.GetHeadDistance(ctx, processorName, m.network.Name, m.config.Mode, executionHead)
 	if err != nil {
@@ -596,7 +631,7 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 	}
 }
 
-// monitorQueues monitors queue health and archived items
+// monitorQueues monitors queue health and archived items.
 func (m *Manager) monitorQueues(ctx context.Context) {
 	// Get Redis options for Asynq Inspector
 	redisOpt := m.redisClient.Options()
@@ -608,6 +643,7 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 
 	// Get queue info from Asynq Inspector
 	inspector := asynq.NewInspector(asynqRedisOpt)
+
 	defer func() {
 		if err := inspector.Close(); err != nil {
 			m.log.WithError(err).Error("Failed to close asynq inspector")
@@ -674,12 +710,14 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 
 			// Track high water marks
 			m.queueMetricsMutex.Lock()
+
 			if info.Size > m.queueHighWaterMarks[queue.Name] {
 				m.queueHighWaterMarks[queue.Name] = info.Size
 				common.QueueHighWaterMark.WithLabelValues(
 					m.network.Name, name, queue.Name,
 				).Set(float64(info.Size))
 			}
+
 			m.queueMetricsMutex.Unlock()
 
 			// Log warning if archived items exceed threshold
@@ -697,7 +735,7 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 	}
 }
 
-// startQueueMonitoring starts queue monitoring with proper goroutine lifecycle management
+// startQueueMonitoring starts queue monitoring with proper goroutine lifecycle management.
 func (m *Manager) startQueueMonitoring(ctx context.Context) {
 	m.monitorMutex.Lock()
 	defer m.monitorMutex.Unlock()
@@ -733,7 +771,7 @@ func (m *Manager) startQueueMonitoring(ctx context.Context) {
 	}()
 }
 
-// stopQueueMonitoring stops the queue monitoring goroutine
+// stopQueueMonitoring stops the queue monitoring goroutine.
 func (m *Manager) stopQueueMonitoring() {
 	m.monitorMutex.Lock()
 	defer m.monitorMutex.Unlock()
@@ -746,7 +784,7 @@ func (m *Manager) stopQueueMonitoring() {
 	m.isMonitoring = false
 }
 
-// updateAsynqQueues updates the asynq server with processor queues
+// updateAsynqQueues updates the asynq server with processor queues.
 func (m *Manager) updateAsynqQueues() error {
 	// Collect all queues from processors
 	queues := make(map[string]int)
@@ -803,7 +841,7 @@ func (m *Manager) updateAsynqQueues() error {
 	return nil
 }
 
-// isWaitingForBlockError checks if an error indicates we're waiting for a new block
+// isWaitingForBlockError checks if an error indicates we're waiting for a new block.
 func isWaitingForBlockError(err error) bool {
 	if err == nil {
 		return false
@@ -816,7 +854,7 @@ func isWaitingForBlockError(err error) bool {
 		strings.Contains(errStr, "chain tip")
 }
 
-// shouldSkipBlockProcessing checks if block processing should be skipped due to queue backpressure
+// shouldSkipBlockProcessing checks if block processing should be skipped due to queue backpressure.
 func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) {
 	// Get Redis options for Asynq Inspector
 	redisOpt := m.redisClient.Options()
@@ -827,6 +865,7 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 	}
 
 	inspector := asynq.NewInspector(asynqRedisOpt)
+
 	defer func() {
 		if err := inspector.Close(); err != nil {
 			m.log.WithError(err).Error("Failed to close asynq inspector")
@@ -905,7 +944,7 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 	return shouldSkip, reason
 }
 
-// GetQueueName returns the current queue name based on processing mode
+// GetQueueName returns the current queue name based on processing mode.
 func (m *Manager) GetQueueName() string {
 	// For now we only have one processor
 	processorName := "transaction-structlog"
@@ -916,18 +955,12 @@ func (m *Manager) GetQueueName() string {
 	return c.PrefixedProcessForwardsQueue(processorName, m.redisPrefix)
 }
 
-// QueueBlockManually allows manual queuing of a specific block for processing
+// QueueBlockManually allows manual queuing of a specific block for processing.
 func (m *Manager) QueueBlockManually(ctx context.Context, processorName string, blockNumber uint64) (*QueueResult, error) {
 	// Validate processor exists
 	processor, exists := m.processors[processorName]
 	if !exists {
 		return nil, fmt.Errorf("processor %s not found", processorName)
-	}
-
-	// Get the structlog processor (currently only one supported)
-	structlogProc, ok := processor.(*transaction_structlog.Processor)
-	if !ok {
-		return nil, fmt.Errorf("processor %s is not a transaction structlog processor", processorName)
 	}
 
 	// Get a healthy execution node
@@ -948,10 +981,26 @@ func (m *Manager) QueueBlockManually(ctx context.Context, processorName string, 
 		return nil, fmt.Errorf("failed to fetch block %d: %w", blockNumber, err)
 	}
 
-	// Enqueue transaction tasks using the processor's method
-	tasksCreated, err := structlogProc.EnqueueTransactionTasks(ctx, block)
-	if err != nil {
-		return nil, fmt.Errorf("failed to enqueue tasks for block %d: %w", blockNumber, err)
+	var tasksCreated int
+
+	// Handle different processor types
+	switch p := processor.(type) {
+	case *transaction_structlog.Processor:
+		// Enqueue transaction tasks using the processor's method
+		tasksCreated, err = p.EnqueueTransactionTasks(ctx, block)
+		if err != nil {
+			return nil, fmt.Errorf("failed to enqueue tasks for block %d: %w", blockNumber, err)
+		}
+
+	case *transaction_simple.Processor:
+		// For simple processor, enqueue a single block processing task
+		tasksCreated, err = m.enqueueSimpleBlockTask(ctx, p, blockNumber)
+		if err != nil {
+			return nil, fmt.Errorf("failed to enqueue block task for block %d: %w", blockNumber, err)
+		}
+
+	default:
+		return nil, fmt.Errorf("processor %s has unsupported type", processorName)
 	}
 
 	// Update execution_block table to mark block as processed
@@ -965,13 +1014,46 @@ func (m *Manager) QueueBlockManually(ctx context.Context, processorName string, 
 	}, nil
 }
 
-// QueueResult contains the result of queuing a block
+// enqueueSimpleBlockTask enqueues a block processing task for the simple processor.
+func (m *Manager) enqueueSimpleBlockTask(ctx context.Context, p *transaction_simple.Processor, blockNumber uint64) (int, error) {
+	payload := &transaction_simple.ProcessPayload{
+		BlockNumber: *big.NewInt(int64(blockNumber)), //nolint:gosec // validated above
+		NetworkID:   m.network.ID,
+		NetworkName: m.network.Name,
+	}
+
+	var task *asynq.Task
+
+	var queue string
+
+	var err error
+
+	if m.config.Mode == c.BACKWARDS_MODE {
+		task, err = transaction_simple.NewProcessBackwardsTask(payload)
+		queue = c.PrefixedProcessBackwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
+	} else {
+		task, err = transaction_simple.NewProcessForwardsTask(payload)
+		queue = c.PrefixedProcessForwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("failed to create task: %w", err)
+	}
+
+	if err := p.EnqueueTask(ctx, task, asynq.Queue(queue)); err != nil {
+		return 0, fmt.Errorf("failed to enqueue task: %w", err)
+	}
+
+	return 1, nil
+}
+
+// QueueResult contains the result of queuing a block.
 type QueueResult struct {
 	TransactionCount int
 	TasksCreated     int
 }
 
-// initializeBlocksStoredMetrics sets initial values for blocks stored metrics to ensure visibility
+// initializeBlocksStoredMetrics sets initial values for blocks stored metrics to ensure visibility.
 func (m *Manager) initializeBlocksStoredMetrics(ctx context.Context) {
 	// Initialize metrics with 0 values for each processor to ensure they're visible in Prometheus
 	for processorName := range m.processors {
@@ -1006,7 +1088,7 @@ func (m *Manager) initializeBlocksStoredMetrics(ctx context.Context) {
 	}
 }
 
-// updateBlocksStoredMetrics periodically updates the blocks stored metrics for all processors
+// updateBlocksStoredMetrics periodically updates the blocks stored metrics for all processors.
 func (m *Manager) updateBlocksStoredMetrics(ctx context.Context) {
 	// Iterate through all registered processors
 	for processorName := range m.processors {

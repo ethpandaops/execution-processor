@@ -6,7 +6,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// BigTransactionManager coordinates processing of large transactions to prevent OOM
+// BigTransactionManager coordinates processing of large transactions to prevent OOM.
 type BigTransactionManager struct {
 	// Active big transaction count
 	currentBigCount atomic.Int32
@@ -17,7 +17,7 @@ type BigTransactionManager struct {
 	log       logrus.FieldLogger
 }
 
-// NewBigTransactionManager creates a new manager for big transaction coordination
+// NewBigTransactionManager creates a new manager for big transaction coordination.
 func NewBigTransactionManager(threshold int, log logrus.FieldLogger) *BigTransactionManager {
 	return &BigTransactionManager{
 		threshold: threshold,
@@ -25,7 +25,7 @@ func NewBigTransactionManager(threshold int, log logrus.FieldLogger) *BigTransac
 	}
 }
 
-// RegisterBigTransaction marks a big transaction as actively processing
+// RegisterBigTransaction marks a big transaction as actively processing.
 func (btm *BigTransactionManager) RegisterBigTransaction(txHash string, processor *Processor) {
 	// Flush any pending batches before blocking
 	if processor.batchManager != nil {
@@ -42,7 +42,7 @@ func (btm *BigTransactionManager) RegisterBigTransaction(txHash string, processo
 	}).Debug("Registered big transaction")
 }
 
-// UnregisterBigTransaction marks a big transaction as complete
+// UnregisterBigTransaction marks a big transaction as complete.
 func (btm *BigTransactionManager) UnregisterBigTransaction(txHash string) {
 	newCount := btm.currentBigCount.Add(-1)
 
@@ -58,12 +58,12 @@ func (btm *BigTransactionManager) UnregisterBigTransaction(txHash string) {
 	}
 }
 
-// ShouldPauseNewWork returns true if new work should be paused
+// ShouldPauseNewWork returns true if new work should be paused.
 func (btm *BigTransactionManager) ShouldPauseNewWork() bool {
 	return btm.pauseNewWork.Load()
 }
 
-// GetThreshold returns the threshold for big transactions
+// GetThreshold returns the threshold for big transactions.
 func (btm *BigTransactionManager) GetThreshold() int {
 	return btm.threshold
 }

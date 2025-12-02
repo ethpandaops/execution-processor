@@ -68,7 +68,7 @@ func TestHTTPClient_QueryOne(t *testing.T) {
 				assert.Contains(t, r.Header.Get("Content-Type"), "text/plain")
 
 				w.WriteHeader(tt.serverStatus)
-				w.Write([]byte(tt.serverResponse))
+				_, _ = w.Write([]byte(tt.serverResponse))
 			}))
 			defer server.Close()
 
@@ -80,12 +80,14 @@ func TestHTTPClient_QueryOne(t *testing.T) {
 
 			// Execute query
 			var result testResult
+
 			err = client.QueryOne(context.Background(), tt.query, &result)
 
 			if tt.expectedError {
 				assert.Error(t, err)
 			} else {
 				assert.NoError(t, err)
+
 				if tt.expectedResult != nil {
 					assert.Equal(t, *tt.expectedResult, result)
 				}
@@ -110,8 +112,9 @@ func TestHTTPClient_QueryMany(t *testing.T) {
 			"rows": 3,
 			"rows_read": 3
 		}`
+
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(response))
+		_, _ = w.Write([]byte(response))
 	}))
 	defer server.Close()
 
@@ -126,7 +129,9 @@ func TestHTTPClient_QueryMany(t *testing.T) {
 		ID   int    `json:"id"`
 		Name string `json:"name"`
 	}
+
 	var results []testRow
+
 	err = client.QueryMany(context.Background(), "SELECT id, name FROM test_table", &results)
 	require.NoError(t, err)
 
@@ -147,11 +152,11 @@ func TestHTTPClient_BulkInsert(t *testing.T) {
 
 		// Read body
 		body := make([]byte, r.ContentLength)
-		r.Body.Read(body)
+		_, _ = r.Body.Read(body)
 		receivedBody = string(body)
 
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Ok."))
+		_, _ = w.Write([]byte("Ok."))
 	}))
 	defer server.Close()
 
@@ -189,7 +194,7 @@ func TestHTTPClient_Execute(t *testing.T) {
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Ok."))
+		_, _ = w.Write([]byte("Ok."))
 	}))
 	defer server.Close()
 
@@ -221,7 +226,9 @@ func TestHTTPClient_Timeouts(t *testing.T) {
 
 	// Execute query - should timeout
 	ctx := context.Background()
+
 	var result struct{}
+
 	err = client.QueryOne(ctx, "SELECT 1", &result)
 	assert.Error(t, err)
 	// The timeout causes the request to fail - we just need to ensure an error occurred
@@ -231,7 +238,7 @@ func TestHTTPClient_StartStop(t *testing.T) {
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("Ok."))
+		_, _ = w.Write([]byte("Ok."))
 	}))
 	defer server.Close()
 
@@ -298,8 +305,9 @@ func TestHTTPClient_DebugLogging(t *testing.T) {
 	// Create test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		response := `{"data": [{"value": 1}], "meta": [], "rows": 1}`
+
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(response))
+		_, _ = w.Write([]byte(response))
 	}))
 	defer server.Close()
 
@@ -314,6 +322,7 @@ func TestHTTPClient_DebugLogging(t *testing.T) {
 	var result struct {
 		Value int `json:"value"`
 	}
+
 	err = client.QueryOne(context.Background(), "SELECT 1 as value", &result)
 	assert.NoError(t, err)
 	assert.Equal(t, 1, result.Value)

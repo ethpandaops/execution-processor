@@ -139,10 +139,10 @@ func TestManager_StartStop(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		err := manager.Start(ctx)
+		startErr := manager.Start(ctx)
 		// Should return when context is cancelled or due to connection failures
 		// We expect it to either succeed or fail gracefully due to external service unavailability
-		_ = err // Ignore connection errors to external services
+		_ = startErr // Ignore connection errors to external services
 	}()
 
 	time.Sleep(100 * time.Millisecond)
@@ -452,7 +452,7 @@ func TestManager_LeaderElectionDisabled(t *testing.T) {
 
 // Race condition tests
 
-// TestManager_RaceConditions specifically tests for race conditions in manager
+// TestManager_RaceConditions specifically tests for race conditions in manager.
 func TestManager_RaceConditions(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -538,7 +538,7 @@ func TestManager_RaceConditions(t *testing.T) {
 	wg.Wait()
 }
 
-// TestManager_ConcurrentConfiguration tests concurrent access to manager configuration
+// TestManager_ConcurrentConfiguration tests concurrent access to manager configuration.
 func TestManager_ConcurrentConfiguration(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)

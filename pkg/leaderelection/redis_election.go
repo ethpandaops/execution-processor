@@ -14,7 +14,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// RedisElector implements leader election using Redis
+// RedisElector implements leader election using Redis.
 type RedisElector struct {
 	client  *redis.Client
 	log     logrus.FieldLogger
@@ -33,7 +33,7 @@ type RedisElector struct {
 	wg             sync.WaitGroup
 }
 
-// NewRedisElector creates a new Redis-based leader elector
+// NewRedisElector creates a new Redis-based leader elector.
 func NewRedisElector(client *redis.Client, log logrus.FieldLogger, keyName string, config *Config) (*RedisElector, error) {
 	if config == nil {
 		config = DefaultConfig()
@@ -71,7 +71,7 @@ func NewRedisElector(client *redis.Client, log logrus.FieldLogger, keyName strin
 	}, nil
 }
 
-// Start begins the leader election process
+// Start begins the leader election process.
 func (e *RedisElector) Start(ctx context.Context) error {
 	e.log.Info("Starting leader election")
 
@@ -85,9 +85,10 @@ func (e *RedisElector) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop gracefully stops the leader election
+// Stop gracefully stops the leader election.
 func (e *RedisElector) Stop(ctx context.Context) error {
 	e.mu.Lock()
+
 	if e.stopped {
 		e.mu.Unlock()
 
@@ -123,7 +124,7 @@ func (e *RedisElector) Stop(ctx context.Context) error {
 	return nil
 }
 
-// IsLeader returns true if this node is currently the leader
+// IsLeader returns true if this node is currently the leader.
 func (e *RedisElector) IsLeader() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -131,12 +132,12 @@ func (e *RedisElector) IsLeader() bool {
 	return e.isLeader
 }
 
-// LeadershipChannel returns a channel that receives leadership changes
+// LeadershipChannel returns a channel that receives leadership changes.
 func (e *RedisElector) LeadershipChannel() <-chan bool {
 	return e.leadershipChan
 }
 
-// GetLeaderID returns the current leader's ID
+// GetLeaderID returns the current leader's ID.
 func (e *RedisElector) GetLeaderID() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -153,7 +154,7 @@ func (e *RedisElector) GetLeaderID() (string, error) {
 	return val, nil
 }
 
-// run is the main election loop
+// run is the main election loop.
 func (e *RedisElector) run(ctx context.Context) {
 	defer e.wg.Done()
 
@@ -187,7 +188,7 @@ func (e *RedisElector) run(ctx context.Context) {
 	}
 }
 
-// tryAcquireLeadership attempts to become the leader
+// tryAcquireLeadership attempts to become the leader.
 func (e *RedisElector) tryAcquireLeadership(ctx context.Context) bool {
 	e.log.WithFields(logrus.Fields{
 		"key": e.keyName,
@@ -228,7 +229,7 @@ func (e *RedisElector) tryAcquireLeadership(ctx context.Context) bool {
 	return false
 }
 
-// renewLeadership attempts to extend the leadership lock
+// renewLeadership attempts to extend the leadership lock.
 func (e *RedisElector) renewLeadership(ctx context.Context) bool {
 	// Lua script to atomically check ownership and extend TTL
 	script := `
@@ -268,7 +269,7 @@ func (e *RedisElector) renewLeadership(ctx context.Context) bool {
 	return success
 }
 
-// releaseLeadership voluntarily gives up leadership
+// releaseLeadership voluntarily gives up leadership.
 func (e *RedisElector) releaseLeadership(ctx context.Context) error {
 	// Lua script to atomically check ownership and delete
 	script := `
@@ -302,7 +303,7 @@ func (e *RedisElector) releaseLeadership(ctx context.Context) error {
 	return nil
 }
 
-// handleLeadershipGain is called when leadership is acquired
+// handleLeadershipGain is called when leadership is acquired.
 func (e *RedisElector) handleLeadershipGain() {
 	e.log.Info("Gained leadership")
 
@@ -313,7 +314,7 @@ func (e *RedisElector) handleLeadershipGain() {
 	}
 }
 
-// handleLeadershipLoss is called when leadership is lost
+// handleLeadershipLoss is called when leadership is lost.
 func (e *RedisElector) handleLeadershipLoss() {
 	e.mu.Lock()
 	wasLeader := e.isLeader

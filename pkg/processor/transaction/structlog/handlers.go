@@ -13,9 +13,10 @@ import (
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
 )
 
-// handleProcessForwardsTask handles the forwards processing of a single transaction
+// handleProcessForwardsTask handles the forwards processing of a single transaction.
 func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.Task) error {
 	start := time.Now()
+
 	defer func() {
 		duration := time.Since(start)
 		common.TaskProcessingDuration.WithLabelValues(p.network.Name, ProcessorName, c.ProcessForwardsQueue(ProcessorName), ProcessForwardsTaskType).Observe(duration.Seconds())
@@ -68,10 +69,10 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 	// Check if transaction should be batched
 	if p.ShouldBatch(structlogCount) {
 		// Route to batch manager
-		if err := p.batchManager.Add(structlogs, task, &payload); err != nil {
+		if addErr := p.batchManager.Add(structlogs, task, &payload); addErr != nil {
 			common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessForwardsQueue(ProcessorName), ProcessForwardsTaskType, "batch_add_error").Inc()
 
-			return fmt.Errorf("failed to add to batch: %w", err)
+			return fmt.Errorf("failed to add to batch: %w", addErr)
 		}
 		// Note: Task completion handled by batch manager
 		return nil
@@ -140,9 +141,10 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 	return nil
 }
 
-// handleProcessBackwardsTask handles the backwards processing of a single transaction
+// handleProcessBackwardsTask handles the backwards processing of a single transaction.
 func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.Task) error {
 	start := time.Now()
+
 	defer func() {
 		duration := time.Since(start)
 		common.TaskProcessingDuration.WithLabelValues(p.network.Name, ProcessorName, c.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType).Observe(duration.Seconds())
@@ -195,21 +197,21 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 	// Check if transaction should be batched
 	if p.ShouldBatch(structlogCount) {
 		// Route to batch manager
-		if err := p.batchManager.Add(structlogs, task, &payload); err != nil {
+		if addErr := p.batchManager.Add(structlogs, task, &payload); addErr != nil {
 			common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType, "batch_add_error").Inc()
 
-			return fmt.Errorf("failed to add to batch: %w", err)
+			return fmt.Errorf("failed to add to batch: %w", addErr)
 		}
 		// Note: Task completion handled by batch manager
 		return nil
 	}
 
 	// Process large transaction using existing logic
-	_, err = p.ProcessTransaction(ctx, block, int(payload.TransactionIndex), tx)
-	if err != nil {
+	_, processErr := p.ProcessTransaction(ctx, block, int(payload.TransactionIndex), tx)
+	if processErr != nil {
 		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType, "processing_error").Inc()
 
-		return fmt.Errorf("failed to process transaction: %w", err)
+		return fmt.Errorf("failed to process transaction: %w", processErr)
 	}
 
 	// Record successful processing
@@ -267,9 +269,10 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 	return nil
 }
 
-// handleVerifyForwardsTask handles the verification of a forwards processed transaction
+// handleVerifyForwardsTask handles the verification of a forwards processed transaction.
 func (p *Processor) handleVerifyForwardsTask(ctx context.Context, task *asynq.Task) error {
 	start := time.Now()
+
 	defer func() {
 		duration := time.Since(start)
 		common.TaskProcessingDuration.WithLabelValues(p.network.Name, ProcessorName, c.VerifyForwardsQueue(ProcessorName), VerifyForwardsTaskType).Observe(duration.Seconds())
@@ -311,23 +314,23 @@ func (p *Processor) handleVerifyForwardsTask(ctx context.Context, task *asynq.Ta
 			}
 
 			// Create the process task
-			processTask, err := NewProcessForwardsTask(processPayload)
-			if err != nil {
-				p.log.WithError(err).Error("Failed to create reprocess task for count mismatch")
+			processTask, createErr := NewProcessForwardsTask(processPayload)
+			if createErr != nil {
+				p.log.WithError(createErr).Error("Failed to create reprocess task for count mismatch")
 				common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.VerifyForwardsQueue(ProcessorName), VerifyForwardsTaskType, "create_reprocess_error").Inc()
 
-				return fmt.Errorf("failed to create reprocess task: %w", err)
+				return fmt.Errorf("failed to create reprocess task: %w", createErr)
 			}
 
 			// Enqueue with 5-minute delay to allow ClickHouse to settle
 			queue := p.getProcessForwardsQueue()
-			if err := p.EnqueueTask(ctx, processTask,
+			if enqueueErr := p.EnqueueTask(ctx, processTask,
 				asynq.Queue(queue),
-				asynq.ProcessIn(5*time.Minute)); err != nil {
-				p.log.WithError(err).WithField("queue", queue).Error("Failed to enqueue reprocess task")
+				asynq.ProcessIn(5*time.Minute)); enqueueErr != nil {
+				p.log.WithError(enqueueErr).WithField("queue", queue).Error("Failed to enqueue reprocess task")
 				common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.VerifyForwardsQueue(ProcessorName), VerifyForwardsTaskType, "enqueue_reprocess_error").Inc()
 
-				return fmt.Errorf("failed to enqueue reprocess task: %w", err)
+				return fmt.Errorf("failed to enqueue reprocess task: %w", enqueueErr)
 			}
 
 			// Log the re-enqueue with delay info
@@ -373,9 +376,10 @@ func (p *Processor) handleVerifyForwardsTask(ctx context.Context, task *asynq.Ta
 	return nil
 }
 
-// handleVerifyBackwardsTask handles the verification of a backwards processed transaction
+// handleVerifyBackwardsTask handles the verification of a backwards processed transaction.
 func (p *Processor) handleVerifyBackwardsTask(ctx context.Context, task *asynq.Task) error {
 	start := time.Now()
+
 	defer func() {
 		duration := time.Since(start)
 		common.TaskProcessingDuration.WithLabelValues(p.network.Name, ProcessorName, c.VerifyBackwardsQueue(ProcessorName), VerifyBackwardsTaskType).Observe(duration.Seconds())
@@ -417,23 +421,23 @@ func (p *Processor) handleVerifyBackwardsTask(ctx context.Context, task *asynq.T
 			}
 
 			// Create the process task
-			processTask, err := NewProcessBackwardsTask(processPayload)
-			if err != nil {
-				p.log.WithError(err).Error("Failed to create reprocess task for count mismatch")
+			processTask, createErr := NewProcessBackwardsTask(processPayload)
+			if createErr != nil {
+				p.log.WithError(createErr).Error("Failed to create reprocess task for count mismatch")
 				common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.VerifyBackwardsQueue(ProcessorName), VerifyBackwardsTaskType, "create_reprocess_error").Inc()
 
-				return fmt.Errorf("failed to create reprocess task: %w", err)
+				return fmt.Errorf("failed to create reprocess task: %w", createErr)
 			}
 
 			// Enqueue with 5-minute delay to allow ClickHouse to settle
 			queue := p.getProcessBackwardsQueue()
-			if err := p.EnqueueTask(ctx, processTask,
+			if enqueueErr := p.EnqueueTask(ctx, processTask,
 				asynq.Queue(queue),
-				asynq.ProcessIn(5*time.Minute)); err != nil {
-				p.log.WithError(err).WithField("queue", queue).Error("Failed to enqueue reprocess task")
+				asynq.ProcessIn(5*time.Minute)); enqueueErr != nil {
+				p.log.WithError(enqueueErr).WithField("queue", queue).Error("Failed to enqueue reprocess task")
 				common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.VerifyBackwardsQueue(ProcessorName), VerifyBackwardsTaskType, "enqueue_reprocess_error").Inc()
 
-				return fmt.Errorf("failed to enqueue reprocess task: %w", err)
+				return fmt.Errorf("failed to enqueue reprocess task: %w", enqueueErr)
 			}
 
 			// Log the re-enqueue with delay info

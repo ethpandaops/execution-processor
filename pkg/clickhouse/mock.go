@@ -24,13 +24,13 @@ type MockClient struct {
 	Calls []MockCall
 }
 
-// MockCall represents a method call made to the mock
+// MockCall represents a method call made to the mock.
 type MockCall struct {
 	Method string
 	Args   []interface{}
 }
 
-// NewMockClient creates a new mock client with default implementations
+// NewMockClient creates a new mock client with default implementations.
 func NewMockClient() *MockClient {
 	return &MockClient{
 		QueryOneFunc: func(ctx context.Context, query string, dest interface{}) error {
@@ -55,7 +55,7 @@ func NewMockClient() *MockClient {
 	}
 }
 
-// QueryOne implements ClientInterface
+// QueryOne implements ClientInterface.
 func (m *MockClient) QueryOne(ctx context.Context, query string, dest interface{}) error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "QueryOne",
@@ -69,7 +69,7 @@ func (m *MockClient) QueryOne(ctx context.Context, query string, dest interface{
 	return nil
 }
 
-// QueryMany implements ClientInterface
+// QueryMany implements ClientInterface.
 func (m *MockClient) QueryMany(ctx context.Context, query string, dest interface{}) error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "QueryMany",
@@ -83,7 +83,7 @@ func (m *MockClient) QueryMany(ctx context.Context, query string, dest interface
 	return nil
 }
 
-// Execute implements ClientInterface
+// Execute implements ClientInterface.
 func (m *MockClient) Execute(ctx context.Context, query string) error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "Execute",
@@ -97,7 +97,7 @@ func (m *MockClient) Execute(ctx context.Context, query string) error {
 	return nil
 }
 
-// BulkInsert implements ClientInterface
+// BulkInsert implements ClientInterface.
 func (m *MockClient) BulkInsert(ctx context.Context, table string, data interface{}) error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "BulkInsert",
@@ -111,7 +111,7 @@ func (m *MockClient) BulkInsert(ctx context.Context, table string, data interfac
 	return nil
 }
 
-// Start implements ClientInterface
+// Start implements ClientInterface.
 func (m *MockClient) Start() error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "Start",
@@ -125,7 +125,7 @@ func (m *MockClient) Start() error {
 	return nil
 }
 
-// Stop implements ClientInterface
+// Stop implements ClientInterface.
 func (m *MockClient) Stop() error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "Stop",
@@ -139,7 +139,7 @@ func (m *MockClient) Stop() error {
 	return nil
 }
 
-// GetCallCount returns the number of times a method was called
+// GetCallCount returns the number of times a method was called.
 func (m *MockClient) GetCallCount(method string) int {
 	count := 0
 
@@ -152,19 +152,19 @@ func (m *MockClient) GetCallCount(method string) int {
 	return count
 }
 
-// WasCalled returns true if the specified method was called
+// WasCalled returns true if the specified method was called.
 func (m *MockClient) WasCalled(method string) bool {
 	return m.GetCallCount(method) > 0
 }
 
-// Reset clears all recorded calls
+// Reset clears all recorded calls.
 func (m *MockClient) Reset() {
 	m.Calls = make([]MockCall, 0)
 }
 
 // Helper functions for common test scenarios
 
-// SetQueryOneResponse sets up the mock to return specific data for QueryOne
+// SetQueryOneResponse sets up the mock to return specific data for QueryOne.
 func (m *MockClient) SetQueryOneResponse(data interface{}) {
 	m.QueryOneFunc = func(ctx context.Context, query string, dest interface{}) error {
 		// Marshal the data to JSON and then unmarshal into dest
@@ -177,7 +177,7 @@ func (m *MockClient) SetQueryOneResponse(data interface{}) {
 	}
 }
 
-// SetQueryManyResponse sets up the mock to return specific data for QueryMany
+// SetQueryManyResponse sets up the mock to return specific data for QueryMany.
 func (m *MockClient) SetQueryManyResponse(data interface{}) {
 	m.QueryManyFunc = func(ctx context.Context, query string, dest interface{}) error {
 		// Use reflection to set the slice
@@ -194,7 +194,7 @@ func (m *MockClient) SetQueryManyResponse(data interface{}) {
 	}
 }
 
-// SetError sets all functions to return the specified error
+// SetError sets all functions to return the specified error.
 func (m *MockClient) SetError(err error) {
 	m.QueryOneFunc = func(ctx context.Context, query string, dest interface{}) error {
 		return err

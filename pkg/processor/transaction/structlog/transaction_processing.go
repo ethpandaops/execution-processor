@@ -5,13 +5,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/0xsequence/ethkit/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
+//nolint:tagliatelle // ClickHouse uses snake_case column names
 type Structlog struct {
 	UpdatedDateTime        ClickHouseTime `json:"updated_date_time"`
 	BlockNumber            uint64         `json:"block_number"`
@@ -34,7 +35,7 @@ type Structlog struct {
 	MetaNetworkName        string         `json:"meta_network_name"`
 }
 
-// ProcessSingleTransaction processes a single transaction and inserts its structlogs directly to ClickHouse
+// ProcessSingleTransaction processes a single transaction and inserts its structlogs directly to ClickHouse.
 func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
 	// Extract structlog data
 	structlogs, err := p.ExtractStructlogs(ctx, block, index, tx)
@@ -64,7 +65,7 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.B
 	return structlogCount, nil
 }
 
-// ProcessTransaction processes a transaction using memory-efficient channel-based batching
+// ProcessTransaction processes a transaction using memory-efficient channel-based batching.
 func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
 	// Get trace from execution node
 	trace, err := p.getTransactionTrace(ctx, tx, block)
@@ -126,6 +127,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 				}).Debug("Processing large transaction")
 			}
 		}
+
 		errChan <- nil
 	}()
 
@@ -199,7 +201,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 	return totalCount, nil
 }
 
-// getTransactionTrace gets the trace for a transaction
+// getTransactionTrace gets the trace for a transaction.
 func (p *Processor) getTransactionTrace(ctx context.Context, tx *types.Transaction, block *types.Block) (*execution.TraceTransaction, error) {
 	// Get execution node
 	node := p.pool.GetHealthyExecutionNode()
@@ -220,7 +222,7 @@ func (p *Processor) getTransactionTrace(ctx context.Context, tx *types.Transacti
 	return trace, nil
 }
 
-// extractCallAddress extracts the call address from a structlog if it's a CALL operation
+// extractCallAddress extracts the call address from a structlog if it's a CALL operation.
 func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
 	if structLog.Op == "CALL" && structLog.Stack != nil && len(*structLog.Stack) > 1 {
 		stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
@@ -231,9 +233,10 @@ func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
 	return nil
 }
 
-// ExtractStructlogs extracts structlog data from a transaction without inserting to database
+// ExtractStructlogs extracts structlog data from a transaction without inserting to database.
 func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, index int, tx *types.Transaction) ([]Structlog, error) {
 	start := time.Now()
+
 	defer func() {
 		duration := time.Since(start)
 		common.TransactionProcessingDuration.WithLabelValues(p.network.Name, "structlog").Observe(duration.Seconds())
