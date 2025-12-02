@@ -84,8 +84,6 @@ linters:
       - third_party$
       - builtin$
       - examples$
-      - internal/handlers/generated\.go$
-      - internal/server/implementation\.go$
 formatters:
   enable:
     - gofmt
