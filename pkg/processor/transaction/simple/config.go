@@ -19,8 +19,9 @@ func (c *Config) Validate() error {
 		return nil
 	}
 
-	if c.DSN == "" {
-		return fmt.Errorf("transaction simple DSN is required when enabled")
+	// Validate the embedded clickhouse config
+	if err := c.Config.Validate(); err != nil {
+		return fmt.Errorf("clickhouse config validation failed: %w", err)
 	}
 
 	if c.Table == "" {

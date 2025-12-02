@@ -31,7 +31,7 @@ type Processor struct {
 	log            logrus.FieldLogger
 	pool           *ethereum.Pool
 	stateManager   *state.Manager
-	clickhouse     *clickhouse.Client
+	clickhouse     clickhouse.ClientInterface
 	config         *Config
 	network        *ethereum.Network
 	asynqClient    *asynq.Client
@@ -45,17 +45,12 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	clickhouseClient, err := clickhouse.NewClient(
-		ctx,
-		deps.Log.WithField("processor", ProcessorName),
-		&clickhouse.Config{
-			DSN:          config.DSN,
-			MaxOpenConns: config.MaxOpenConns,
-			MaxIdleConns: config.MaxIdleConns,
-			Network:      deps.Network.Name,
-			Processor:    ProcessorName,
-		},
-	)
+	// Create a copy of the embedded config and set processor-specific values
+	clickhouseConfig := config.Config
+	clickhouseConfig.Network = deps.Network.Name
+	clickhouseConfig.Processor = ProcessorName
+
+	clickhouseClient, err := clickhouse.New(&clickhouseConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clickhouse client: %w", err)
 	}
@@ -82,7 +77,7 @@ func (p *Processor) Name() string {
 func (p *Processor) Start(ctx context.Context) error {
 	p.log.Info("Starting transaction simple processor")
 
-	if err := p.clickhouse.Start(ctx); err != nil {
+	if err := p.clickhouse.Start(); err != nil {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
 	}
 
@@ -98,7 +93,7 @@ func (p *Processor) Start(ctx context.Context) error {
 func (p *Processor) Stop(ctx context.Context) error {
 	p.log.Info("Stopping transaction simple processor")
 
-	return p.clickhouse.Stop(ctx)
+	return p.clickhouse.Stop()
 }
 
 // SetProcessingMode sets the processing mode for the processor.

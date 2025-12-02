@@ -2,7 +2,6 @@ package structlog
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"math/big"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
+	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
 // CountMismatchError represents a structlog count mismatch between expected and actual counts.
@@ -51,22 +51,6 @@ func (p *Processor) VerifyTransaction(ctx context.Context, blockNumber *big.Int,
 
 	expectedCount := len(trace.Structlogs)
 
-	// Path 2: Late detection - check if this is actually a large transaction
-	if p.largeTxLock != nil && p.largeTxLock.config.Enabled {
-		actuallyLarge := expectedCount >= p.largeTxLock.config.StructlogThreshold
-		potentiallyLarge := insertedCount >= p.largeTxLock.config.StructlogThreshold
-
-		if actuallyLarge && !potentiallyLarge {
-			// We discovered it's large after tracing, but insertedCount didn't indicate it
-			p.log.WithFields(logrus.Fields{
-				"transaction_hash": transactionHash,
-				"inserted_count":   insertedCount,
-				"actual_count":     expectedCount,
-				"threshold":        p.largeTxLock.config.StructlogThreshold,
-			}).Warn("Large transaction detected late during verification - insertedCount was incorrect")
-		}
-	}
-
 	// Query ClickHouse to count the structlog entries for this transaction
 	query := fmt.Sprintf(`
 		SELECT COUNT(*) as count
@@ -79,32 +63,25 @@ func (p *Processor) VerifyTransaction(ctx context.Context, blockNumber *big.Int,
 
 	p.log.WithField("query", query).Debug("Executing verification query")
 
-	var actualCount int
-
-	if err := p.clickhouse.QueryRow(ctx, p.config.Table, query).Scan(&actualCount); err != nil {
-		if err == sql.ErrNoRows {
-			// No rows found means the transaction hasn't been processed yet (count = 0)
-			actualCount = 0
-
-			p.log.WithFields(logrus.Fields{
-				"table":             p.config.Table,
-				"block_number":      blockNumber.Uint64(),
-				"transaction_hash":  transactionHash,
-				"transaction_index": transactionIndex,
-				"network":           networkName,
-			}).Debug("No structlog entries found for transaction (count = 0)")
-		} else {
-			p.log.WithError(err).WithFields(logrus.Fields{
-				"table":             p.config.Table,
-				"block_number":      blockNumber.Uint64(),
-				"transaction_hash":  transactionHash,
-				"transaction_index": transactionIndex,
-				"network":           networkName,
-			}).Error("Failed to query structlog count")
-
-			return fmt.Errorf("failed to query structlog count: %w", err)
-		}
+	// Define result struct for count query
+	type countResult struct {
+		Count state.JSONInt `json:"count"`
 	}
+
+	var result countResult
+	if err := p.clickhouse.QueryOne(ctx, query, &result); err != nil {
+		p.log.WithError(err).WithFields(logrus.Fields{
+			"table":             p.config.Table,
+			"block_number":      blockNumber.Uint64(),
+			"transaction_hash":  transactionHash,
+			"transaction_index": transactionIndex,
+			"network":           networkName,
+		}).Error("Failed to query structlog count")
+
+		return fmt.Errorf("failed to query structlog count: %w", err)
+	}
+
+	actualCount := result.Count.Int()
 
 	p.log.WithFields(logrus.Fields{
 		"actual_count":   actualCount,

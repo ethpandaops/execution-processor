@@ -2,8 +2,6 @@ package simple
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 	"time"
 
@@ -12,6 +10,7 @@ import (
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
+	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
 // CountMismatchError represents a transaction count mismatch.
@@ -73,12 +72,6 @@ func (p *Processor) handleVerifyTask(ctx context.Context, task *asynq.Task) erro
 	expectedCount := len(block.Transactions())
 
 	// Query ClickHouse for actual count
-	db := p.clickhouse.GetDB()
-	if db == nil {
-		return fmt.Errorf("clickhouse connection not available")
-	}
-
-	//nolint:gosec // table name is from config, not user input
 	query := fmt.Sprintf(`
 		SELECT COUNT(*) as count
 		FROM %s FINAL
@@ -86,16 +79,15 @@ func (p *Processor) handleVerifyTask(ctx context.Context, task *asynq.Task) erro
 		  AND meta_network_name = '%s'
 	`, p.config.Table, blockNumber, payload.NetworkName)
 
-	var actualCount int
-
-	row := db.QueryRowContext(ctx, query)
-	if scanErr := row.Scan(&actualCount); scanErr != nil {
-		if errors.Is(scanErr, sql.ErrNoRows) {
-			actualCount = 0
-		} else {
-			return fmt.Errorf("failed to query count: %w", scanErr)
-		}
+	var result struct {
+		Count state.JSONInt `json:"count"`
 	}
+
+	if queryErr := p.clickhouse.QueryOne(ctx, query, &result); queryErr != nil {
+		return fmt.Errorf("failed to query count: %w", queryErr)
+	}
+
+	actualCount := result.Count.Int()
 
 	// Check if counts match
 	if actualCount != expectedCount {

@@ -29,6 +29,9 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 		return fmt.Errorf("failed to unmarshal process payload: %w", err)
 	}
 
+	// Wait for any active big transactions before starting
+	p.waitForBigTransactions("process_forwards")
+
 	// Get healthy execution node
 	node := p.pool.GetHealthyExecutionNode()
 	if node == nil {
@@ -53,8 +56,30 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 		return fmt.Errorf("transaction hash mismatch: expected %s, got %s", payload.TransactionHash, tx.Hash().String())
 	}
 
-	// Process the transaction with large transaction handling
-	structlogCount, err := p.processTransactionWithLargeTxHandling(ctx, block, int(payload.TransactionIndex), tx, payload.TransactionHash)
+	// Extract structlogs from the transaction
+	structlogs, err := p.ExtractStructlogs(ctx, block, int(payload.TransactionIndex), tx)
+	if err != nil {
+		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessForwardsQueue(ProcessorName), ProcessForwardsTaskType, "extraction_error").Inc()
+
+		return fmt.Errorf("failed to extract structlogs: %w", err)
+	}
+
+	structlogCount := int64(len(structlogs))
+
+	// Check if transaction should be batched
+	if p.ShouldBatch(structlogCount) {
+		// Route to batch manager
+		if addErr := p.batchManager.Add(structlogs, task, &payload); addErr != nil {
+			common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessForwardsQueue(ProcessorName), ProcessForwardsTaskType, "batch_add_error").Inc()
+
+			return fmt.Errorf("failed to add to batch: %w", addErr)
+		}
+		// Note: Task completion handled by batch manager
+		return nil
+	}
+
+	// Process large transaction using existing logic
+	_, err = p.ProcessTransaction(ctx, block, int(payload.TransactionIndex), tx)
 	if err != nil {
 		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessForwardsQueue(ProcessorName), ProcessForwardsTaskType, "processing_error").Inc()
 
@@ -77,7 +102,7 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 		NetworkID:        payload.NetworkID,
 		NetworkName:      payload.NetworkName,
 		Network:          payload.Network,
-		InsertedCount:    structlogCount,
+		InsertedCount:    int(structlogCount),
 	}
 
 	p.log.WithFields(logrus.Fields{
@@ -132,6 +157,9 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 		return fmt.Errorf("failed to unmarshal process payload: %w", err)
 	}
 
+	// Wait for any active big transactions before starting
+	p.waitForBigTransactions("process_backwards")
+
 	// Get healthy execution node
 	node := p.pool.GetHealthyExecutionNode()
 	if node == nil {
@@ -156,12 +184,34 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 		return fmt.Errorf("transaction hash mismatch: expected %s, got %s", payload.TransactionHash, tx.Hash().String())
 	}
 
-	// Process the transaction with large transaction handling
-	structlogCount, err := p.processTransactionWithLargeTxHandling(ctx, block, int(payload.TransactionIndex), tx, payload.TransactionHash)
+	// Extract structlogs from the transaction
+	structlogs, err := p.ExtractStructlogs(ctx, block, int(payload.TransactionIndex), tx)
 	if err != nil {
+		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType, "extraction_error").Inc()
+
+		return fmt.Errorf("failed to extract structlogs: %w", err)
+	}
+
+	structlogCount := int64(len(structlogs))
+
+	// Check if transaction should be batched
+	if p.ShouldBatch(structlogCount) {
+		// Route to batch manager
+		if addErr := p.batchManager.Add(structlogs, task, &payload); addErr != nil {
+			common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType, "batch_add_error").Inc()
+
+			return fmt.Errorf("failed to add to batch: %w", addErr)
+		}
+		// Note: Task completion handled by batch manager
+		return nil
+	}
+
+	// Process large transaction using existing logic
+	_, processErr := p.ProcessTransaction(ctx, block, int(payload.TransactionIndex), tx)
+	if processErr != nil {
 		common.TasksErrored.WithLabelValues(p.network.Name, ProcessorName, c.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType, "processing_error").Inc()
 
-		return fmt.Errorf("failed to process transaction: %w", err)
+		return fmt.Errorf("failed to process transaction: %w", processErr)
 	}
 
 	// Record successful processing
@@ -180,7 +230,7 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 		NetworkID:        payload.NetworkID,
 		NetworkName:      payload.NetworkName,
 		Network:          payload.Network,
-		InsertedCount:    structlogCount,
+		InsertedCount:    int(structlogCount),
 	}
 
 	p.log.WithFields(logrus.Fields{
@@ -228,6 +278,9 @@ func (p *Processor) handleVerifyForwardsTask(ctx context.Context, task *asynq.Ta
 		common.TaskProcessingDuration.WithLabelValues(p.network.Name, ProcessorName, c.VerifyForwardsQueue(ProcessorName), VerifyForwardsTaskType).Observe(duration.Seconds())
 	}()
 
+	// Wait for any active big transactions before starting verify
+	p.waitForBigTransactions("verify_forwards")
+
 	p.log.Debug("Received verify task")
 
 	var payload VerifyPayload
@@ -245,8 +298,8 @@ func (p *Processor) handleVerifyForwardsTask(ctx context.Context, task *asynq.Ta
 		"network":           payload.NetworkName,
 	}).Debug("Processing verify task")
 
-	// Verify the transaction with large transaction handling
-	if err := p.verifyTransactionWithLargeTxHandling(ctx, &payload.BlockNumber, payload.TransactionHash, payload.TransactionIndex, payload.NetworkName, payload.InsertedCount); err != nil {
+	// Verify the transaction
+	if err := p.VerifyTransaction(ctx, &payload.BlockNumber, payload.TransactionHash, payload.TransactionIndex, payload.NetworkName, payload.InsertedCount); err != nil {
 		// Check if it's a count mismatch error
 		var countMismatchErr *CountMismatchError
 		if errors.As(err, &countMismatchErr) {
@@ -332,6 +385,9 @@ func (p *Processor) handleVerifyBackwardsTask(ctx context.Context, task *asynq.T
 		common.TaskProcessingDuration.WithLabelValues(p.network.Name, ProcessorName, c.VerifyBackwardsQueue(ProcessorName), VerifyBackwardsTaskType).Observe(duration.Seconds())
 	}()
 
+	// Wait for any active big transactions before starting verify
+	p.waitForBigTransactions("verify_backwards")
+
 	p.log.Debug("Received verify task")
 
 	var payload VerifyPayload
@@ -349,8 +405,8 @@ func (p *Processor) handleVerifyBackwardsTask(ctx context.Context, task *asynq.T
 		"network":           payload.NetworkName,
 	}).Debug("Processing verify task")
 
-	// Verify the transaction with large transaction handling
-	if err := p.verifyTransactionWithLargeTxHandling(ctx, &payload.BlockNumber, payload.TransactionHash, payload.TransactionIndex, payload.NetworkName, payload.InsertedCount); err != nil {
+	// Verify the transaction
+	if err := p.VerifyTransaction(ctx, &payload.BlockNumber, payload.TransactionHash, payload.TransactionIndex, payload.NetworkName, payload.InsertedCount); err != nil {
 		// Check if it's a count mismatch error
 		var countMismatchErr *CountMismatchError
 		if errors.As(err, &countMismatchErr) {

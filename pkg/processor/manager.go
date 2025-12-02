@@ -203,6 +203,31 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.log.Info("Worker started for distributed task processing")
 	}
 
+	// Initialize blocks stored metrics immediately for visibility
+	m.initializeBlocksStoredMetrics(ctx)
+
+	// Start periodic blocks stored metrics updater
+	m.wg.Add(1)
+
+	metricsUpdater := func() {
+		defer m.wg.Done()
+
+		ticker := time.NewTicker(15 * time.Second)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				m.updateBlocksStoredMetrics(ctx)
+			}
+		}
+	}
+	go metricsUpdater()
+
+	m.log.Info("Started periodic blocks stored metrics updater")
+
 	// Wait for stop signal
 	<-m.stopChan
 
@@ -1026,4 +1051,62 @@ func (m *Manager) enqueueSimpleBlockTask(ctx context.Context, p *transaction_sim
 type QueueResult struct {
 	TransactionCount int
 	TasksCreated     int
+}
+
+// initializeBlocksStoredMetrics sets initial values for blocks stored metrics to ensure visibility.
+func (m *Manager) initializeBlocksStoredMetrics(ctx context.Context) {
+	// Initialize metrics with 0 values for each processor to ensure they're visible in Prometheus
+	for processorName := range m.processors {
+		// Try to get actual values first
+		minBlock, maxBlock, err := m.state.GetMinMaxStoredBlocks(ctx, m.network.Name, processorName)
+		if err != nil {
+			m.log.WithError(err).WithFields(logrus.Fields{
+				"network":   m.network.Name,
+				"processor": processorName,
+			}).Debug("failed to get min/max stored blocks during initialization")
+
+			continue
+		}
+
+		// Update metrics only if we have actual values
+		if minBlock != nil && maxBlock != nil {
+			m.log.WithFields(logrus.Fields{
+				"network":   m.network.Name,
+				"processor": processorName,
+				"min_block": minBlock.Int64(),
+				"max_block": maxBlock.Int64(),
+			}).Info("Setting blocks stored metrics with actual values")
+			common.BlocksStored.WithLabelValues(m.network.Name, processorName, "min").Set(float64(minBlock.Int64()))
+			common.BlocksStored.WithLabelValues(m.network.Name, processorName, "max").Set(float64(maxBlock.Int64()))
+		} else {
+			// No blocks stored yet, skip setting metrics
+			m.log.WithFields(logrus.Fields{
+				"network":   m.network.Name,
+				"processor": processorName,
+			}).Debug("No blocks found, skipping metric initialization")
+		}
+	}
+}
+
+// updateBlocksStoredMetrics periodically updates the blocks stored metrics for all processors.
+func (m *Manager) updateBlocksStoredMetrics(ctx context.Context) {
+	// Iterate through all registered processors
+	for processorName := range m.processors {
+		// Query min/max blocks for each processor
+		minBlock, maxBlock, err := m.state.GetMinMaxStoredBlocks(ctx, m.network.Name, processorName)
+		if err != nil {
+			m.log.WithError(err).WithFields(logrus.Fields{
+				"network":   m.network.Name,
+				"processor": processorName,
+			}).Debug("failed to get min/max stored blocks")
+
+			continue
+		}
+
+		// Update metrics only if values exist
+		if minBlock != nil && maxBlock != nil {
+			common.BlocksStored.WithLabelValues(m.network.Name, processorName, "min").Set(float64(minBlock.Int64()))
+			common.BlocksStored.WithLabelValues(m.network.Name, processorName, "max").Set(float64(maxBlock.Int64()))
+		}
+	}
 }

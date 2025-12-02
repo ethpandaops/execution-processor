@@ -2,7 +2,6 @@ package simple
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"math/big"
@@ -14,33 +13,36 @@ import (
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
+	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 )
 
 // Transaction represents a row in the transaction table.
+//
+//nolint:tagliatelle // ClickHouse uses snake_case column names
 type Transaction struct {
-	UpdatedDateTime      time.Time
-	BlockNumber          uint64
-	BlockHash            string
-	ParentHash           string
-	TransactionIndex     uint64
-	TransactionHash      string
-	Nonce                uint64
-	FromAddress          string
-	ToAddress            *string
-	Value                *big.Int // Wei as UInt256
-	Input                *string  // Hex-encoded input data
-	GasLimit             uint64
-	GasUsed              uint64
-	GasPrice             uint64
-	TransactionType      uint32
-	MaxPriorityFeePerGas uint64
-	MaxFeePerGas         uint64
-	Success              bool
-	NInputBytes          uint32
-	NInputZeroBytes      uint32
-	NInputNonzeroBytes   uint32
-	MetaNetworkID        int32
-	MetaNetworkName      string
+	UpdatedDateTime      structlog.ClickHouseTime `json:"updated_date_time"`
+	BlockNumber          uint64                   `json:"block_number"`
+	BlockHash            string                   `json:"block_hash"`
+	ParentHash           string                   `json:"parent_hash"`
+	TransactionIndex     uint64                   `json:"transaction_index"`
+	TransactionHash      string                   `json:"transaction_hash"`
+	Nonce                uint64                   `json:"nonce"`
+	FromAddress          string                   `json:"from_address"`
+	ToAddress            *string                  `json:"to_address"`
+	Value                *big.Int                 `json:"value"` // Wei as UInt256
+	Input                *string                  `json:"input"` // Hex-encoded input data
+	GasLimit             uint64                   `json:"gas_limit"`
+	GasUsed              uint64                   `json:"gas_used"`
+	GasPrice             uint64                   `json:"gas_price"`
+	TransactionType      uint32                   `json:"transaction_type"`
+	MaxPriorityFeePerGas uint64                   `json:"max_priority_fee_per_gas"`
+	MaxFeePerGas         uint64                   `json:"max_fee_per_gas"`
+	Success              bool                     `json:"success"`
+	NInputBytes          uint32                   `json:"n_input_bytes"`
+	NInputZeroBytes      uint32                   `json:"n_input_zero_bytes"`
+	NInputNonzeroBytes   uint32                   `json:"n_input_nonzero_bytes"`
+	MetaNetworkID        int32                    `json:"meta_network_id"`
+	MetaNetworkName      string                   `json:"meta_network_name"`
 }
 
 // GetHandlers returns the task handlers for this processor.
@@ -145,7 +147,7 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 				"insert_error",
 			).Inc()
 
-			return fmt.Errorf("failed to insert transactions: %w", err)
+			return fmt.Errorf("failed to insert transactions: %w", insertErr)
 		}
 	}
 
@@ -269,7 +271,7 @@ func (p *Processor) buildTransactionRow(
 	}
 
 	return Transaction{
-		UpdatedDateTime:      time.Now(),
+		UpdatedDateTime:      structlog.NewClickHouseTime(time.Now()),
 		BlockNumber:          block.Number().Uint64(),
 		BlockHash:            block.Hash().String(),
 		ParentHash:           block.ParentHash().String(),
@@ -301,103 +303,17 @@ func (p *Processor) insertTransactions(ctx context.Context, transactions []Trans
 		return nil
 	}
 
-	db := p.clickhouse.GetDB()
-	if db == nil {
-		return fmt.Errorf("clickhouse connection not available")
+	if err := p.clickhouse.BulkInsert(ctx, p.config.Table, transactions); err != nil {
+		common.ClickHouseInsertsRows.WithLabelValues(
+			p.network.Name,
+			ProcessorName,
+			p.config.Table,
+			"failed",
+			"",
+		).Add(float64(len(transactions)))
+
+		return fmt.Errorf("failed to insert transactions: %w", err)
 	}
-
-	// Begin transaction
-	sqlTx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %w", err)
-	}
-
-	committed := false
-
-	defer func() {
-		if !committed {
-			if rollbackErr := sqlTx.Rollback(); rollbackErr != nil && rollbackErr != sql.ErrTxDone {
-				p.log.WithError(rollbackErr).Warn("Failed to rollback transaction")
-			}
-		}
-	}()
-
-	//nolint:gosec // table name is from config, not user input
-	query := fmt.Sprintf(`INSERT INTO %s (
-		updated_date_time,
-		block_number,
-		block_hash,
-		parent_hash,
-		transaction_index,
-		transaction_hash,
-		nonce,
-		from_address,
-		to_address,
-		value,
-		input,
-		gas_limit,
-		gas_used,
-		gas_price,
-		transaction_type,
-		max_priority_fee_per_gas,
-		max_fee_per_gas,
-		success,
-		n_input_bytes,
-		n_input_zero_bytes,
-		n_input_nonzero_bytes,
-		meta_network_id,
-		meta_network_name
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, p.config.Table)
-
-	stmt, err := sqlTx.PrepareContext(ctx, query)
-	if err != nil {
-		return fmt.Errorf("failed to prepare statement: %w", err)
-	}
-
-	defer func() {
-		if closeErr := stmt.Close(); closeErr != nil {
-			p.log.WithError(closeErr).Warn("Failed to close prepared statement")
-		}
-	}()
-
-	for i := range transactions {
-		tx := &transactions[i]
-
-		_, err := stmt.ExecContext(ctx,
-			tx.UpdatedDateTime,
-			tx.BlockNumber,
-			tx.BlockHash,
-			tx.ParentHash,
-			tx.TransactionIndex,
-			tx.TransactionHash,
-			tx.Nonce,
-			tx.FromAddress,
-			tx.ToAddress,
-			tx.Value,
-			tx.Input,
-			tx.GasLimit,
-			tx.GasUsed,
-			tx.GasPrice,
-			tx.TransactionType,
-			tx.MaxPriorityFeePerGas,
-			tx.MaxFeePerGas,
-			tx.Success,
-			tx.NInputBytes,
-			tx.NInputZeroBytes,
-			tx.NInputNonzeroBytes,
-			tx.MetaNetworkID,
-			tx.MetaNetworkName,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to insert transaction %d: %w", i, err)
-		}
-	}
-
-	if err := sqlTx.Commit(); err != nil {
-		return fmt.Errorf("failed to commit transaction: %w", err)
-	}
-
-	committed = true
 
 	common.ClickHouseInsertsRows.WithLabelValues(
 		p.network.Name,
