@@ -15,7 +15,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Dependencies contains the dependencies needed for the processor
+// Dependencies contains the dependencies needed for the processor.
 type Dependencies struct {
 	Log         logrus.FieldLogger
 	Pool        *ethereum.Pool
@@ -25,7 +25,7 @@ type Dependencies struct {
 	RedisPrefix string
 }
 
-// Processor handles transaction structlog processing
+// Processor handles transaction structlog processing.
 type Processor struct {
 	log            logrus.FieldLogger
 	pool           *ethereum.Pool
@@ -40,7 +40,7 @@ type Processor struct {
 	largeTxLock    *LargeTxLockManager
 }
 
-// New creates a new transaction structlog processor
+// New creates a new transaction structlog processor.
 func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, error) {
 	clickhouseClient, err := clickhouse.NewClient(ctx, deps.Log.WithField("processor", "transaction_structlog"), &clickhouse.Config{
 		DSN:          config.DSN,
@@ -49,7 +49,6 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 		Network:      deps.Network.Name,
 		Processor:    ProcessorName,
 	})
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clickhouse client for transaction_structlog: %w", err)
 	}
@@ -96,7 +95,7 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 	return processor, nil
 }
 
-// Start starts the processor
+// Start starts the processor.
 func (p *Processor) Start(ctx context.Context) error {
 	// Start the ClickHouse client
 	if err := p.clickhouse.Start(ctx); err != nil {
@@ -115,7 +114,7 @@ func (p *Processor) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the processor
+// Stop stops the processor.
 func (p *Processor) Stop(ctx context.Context) error {
 	p.log.Info("Stopping transaction structlog processor")
 
@@ -130,12 +129,12 @@ func (p *Processor) Stop(ctx context.Context) error {
 	return p.clickhouse.Stop(ctx)
 }
 
-// Name returns the processor name
+// Name returns the processor name.
 func (p *Processor) Name() string {
 	return ProcessorName
 }
 
-// GetQueues returns the queues used by this processor
+// GetQueues returns the queues used by this processor.
 func (p *Processor) GetQueues() []c.QueueInfo {
 	return []c.QueueInfo{
 		{
@@ -157,7 +156,7 @@ func (p *Processor) GetQueues() []c.QueueInfo {
 	}
 }
 
-// GetHandlers returns the task handlers for this processor
+// GetHandlers returns the task handlers for this processor.
 func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	return map[string]asynq.HandlerFunc{
 		ProcessForwardsTaskType:  p.handleProcessForwardsTask,
@@ -167,40 +166,40 @@ func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	}
 }
 
-// EnqueueTask enqueues a task to the specified queue
+// EnqueueTask enqueues a task to the specified queue.
 func (p *Processor) EnqueueTask(ctx context.Context, task *asynq.Task, opts ...asynq.Option) error {
 	_, err := p.asynqClient.EnqueueContext(ctx, task, opts...)
 
 	return err
 }
 
-// SetProcessingMode sets the processing mode for the processor
+// SetProcessingMode sets the processing mode for the processor.
 func (p *Processor) SetProcessingMode(mode string) {
 	p.processingMode = mode
 	p.log.WithField("mode", mode).Info("Processing mode updated")
 }
 
-// getProcessForwardsQueue returns the prefixed process forwards queue name
+// getProcessForwardsQueue returns the prefixed process forwards queue name.
 func (p *Processor) getProcessForwardsQueue() string {
 	return c.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// getProcessBackwardsQueue returns the prefixed process backwards queue name
+// getProcessBackwardsQueue returns the prefixed process backwards queue name.
 func (p *Processor) getProcessBackwardsQueue() string {
 	return c.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// getVerifyForwardsQueue returns the prefixed verify forwards queue name
+// getVerifyForwardsQueue returns the prefixed verify forwards queue name.
 func (p *Processor) getVerifyForwardsQueue() string {
 	return c.PrefixedVerifyForwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// getVerifyBackwardsQueue returns the prefixed verify backwards queue name
+// getVerifyBackwardsQueue returns the prefixed verify backwards queue name.
 func (p *Processor) getVerifyBackwardsQueue() string {
 	return c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// GetLargeTxStatus returns the current status of large transaction processing
+// GetLargeTxStatus returns the current status of large transaction processing.
 func (p *Processor) GetLargeTxStatus() map[string]interface{} {
 	if p.largeTxLock == nil {
 		return map[string]interface{}{
@@ -211,7 +210,7 @@ func (p *Processor) GetLargeTxStatus() map[string]interface{} {
 	return p.largeTxLock.GetStatus()
 }
 
-// sendToBatchCollector sends structlog rows to the batch collector for aggregated insertion
+// sendToBatchCollector sends structlog rows to the batch collector for aggregated insertion.
 func (p *Processor) sendToBatchCollector(ctx context.Context, structlogs []Structlog) error {
 	// Short-circuit for empty structlog arrays - no need to process
 	if len(structlogs) == 0 {
@@ -246,6 +245,7 @@ func (p *Processor) sendToBatchCollector(ctx context.Context, structlogs []Struc
 		case <-taskBatch.ResponseChan:
 		default:
 		}
+
 		close(taskBatch.ResponseChan)
 	}()
 
@@ -270,7 +270,7 @@ func (p *Processor) sendToBatchCollector(ctx context.Context, structlogs []Struc
 	}
 }
 
-// insertStructlogBatch performs the actual batch insert to ClickHouse
+// insertStructlogBatch performs the actual batch insert to ClickHouse.
 func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Structlog) error {
 	if len(structlogs) == 0 {
 		return nil
@@ -369,7 +369,8 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 	// Insert all structlogs
 	for i := range structlogs {
 		row := &structlogs[i]
-		_, err := stmt.ExecContext(ctx,
+
+		_, execErr := stmt.ExecContext(ctx,
 			row.UpdatedDateTime,
 			row.BlockNumber,
 			row.TransactionHash,
@@ -390,17 +391,16 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 			row.MetaNetworkID,
 			row.MetaNetworkName,
 		)
-
-		if err != nil {
+		if execErr != nil {
 			p.log.WithFields(logrus.Fields{
 				"table":           p.config.Table,
 				"structlog_index": i,
 				"transaction":     row.TransactionHash,
 				"block":           row.BlockNumber,
-				"error":           err.Error(),
+				"error":           execErr.Error(),
 			}).Error("Failed to insert structlog row in batch")
 
-			return fmt.Errorf("failed to insert structlog row %d in batch: %w", i, err)
+			return fmt.Errorf("failed to insert structlog row %d in batch: %w", i, execErr)
 		}
 	}
 
@@ -442,7 +442,7 @@ func (p *Processor) insertStructlogBatch(ctx context.Context, structlogs []Struc
 	return nil
 }
 
-// isColumnMetadataError checks if the error is related to column metadata issues
+// isColumnMetadataError checks if the error is related to column metadata issues.
 func isColumnMetadataError(err error) bool {
 	if err == nil {
 		return false
@@ -453,7 +453,7 @@ func isColumnMetadataError(err error) bool {
 	return strings.Contains(errStr, "column") && strings.Contains(errStr, "is not present in the table")
 }
 
-// isConnectionError checks if the error indicates a connection problem
+// isConnectionError checks if the error indicates a connection problem.
 func isConnectionError(err error) bool {
 	if err == nil {
 		return false

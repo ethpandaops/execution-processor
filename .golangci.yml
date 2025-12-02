@@ -15,9 +15,10 @@ linters:
     - errcheck
     - errname
     - goconst
-    - gocritic
     - gocyclo
+    - godot
     - goheader
+    - goprintffuncname
     - gosec
     - govet
     - ineffassign
@@ -33,12 +34,13 @@ linters:
     - promlinter
     - reassign
     - staticcheck
+    - tagliatelle
     - thelper
     - tparallel
     - unconvert
     - unused
     - whitespace
-    - wsl
+    - wsl_v5
   settings:
     errcheck:
       check-type-assertions: true
@@ -52,16 +54,16 @@ linters:
         - opinionated
         - performance
         - style
-      disabled-checks:
-        - unnamedResult
-        - paramTypeCombine
     govet:
-      disable:
-        - fieldalignment
+      enable:
         - shadow
     nolintlint:
       require-explanation: true
       require-specific: true
+    wsl_v5:
+      allow-first-in-block: true
+      allow-whole-block: false
+      branch-max-lines: 2
   exclusions:
     generated: lax
     presets:
@@ -75,11 +77,13 @@ linters:
           - gosec
           - wsl
         path: _test\.go
+      - linters:
+          - goconst
+        path: cmd/tools/
     paths:
       - third_party$
       - builtin$
       - examples$
-      - .*test.*
 formatters:
   enable:
     - gofmt

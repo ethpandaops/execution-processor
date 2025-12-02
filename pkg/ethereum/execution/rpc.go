@@ -69,7 +69,7 @@ func (n *Node) BlockByNumber(ctx context.Context, blockNumber *big.Int) (*types.
 	return block, nil
 }
 
-// getTraceParams returns VM trace parameters with configurable options
+// getTraceParams returns VM trace parameters with configurable options.
 func getTraceParams(hash string, options TraceOptions) []any {
 	return []any{
 		hash,
@@ -82,7 +82,7 @@ func getTraceParams(hash string, options TraceOptions) []any {
 	}
 }
 
-// traceTransactionErigon handles tracing for Erigon clients
+// traceTransactionErigon handles tracing for Erigon clients.
 func (n *Node) traceTransactionErigon(ctx context.Context, hash string, options TraceOptions) (*TraceTransaction, error) {
 	var rsp ErigonResult
 
@@ -144,7 +144,7 @@ func (n *Node) traceTransactionErigon(ctx context.Context, hash string, options 
 	return result, nil
 }
 
-// BlockReceipts fetches all receipts for a block by number (much faster than per-tx)
+// BlockReceipts fetches all receipts for a block by number (much faster than per-tx).
 func (n *Node) BlockReceipts(ctx context.Context, blockNumber *big.Int) ([]*types.Receipt, error) {
 	start := time.Now()
 
@@ -183,7 +183,7 @@ func (n *Node) BlockReceipts(ctx context.Context, blockNumber *big.Int) ([]*type
 	return receipts, nil
 }
 
-// TransactionReceipt fetches the receipt for a transaction by hash
+// TransactionReceipt fetches the receipt for a transaction by hash.
 func (n *Node) TransactionReceipt(ctx context.Context, hash string) (*types.Receipt, error) {
 	start := time.Now()
 
@@ -222,7 +222,7 @@ func (n *Node) TransactionReceipt(ctx context.Context, hash string) (*types.Rece
 	return receipt, nil
 }
 
-// DebugTraceTransaction traces a transaction execution using the client's debug API
+// DebugTraceTransaction traces a transaction execution using the client's debug API.
 func (n *Node) DebugTraceTransaction(ctx context.Context, hash string, blockNumber *big.Int, options TraceOptions) (*TraceTransaction, error) {
 	// Add a timeout if the context doesn't already have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {

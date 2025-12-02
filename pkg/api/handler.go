@@ -36,6 +36,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/queue/blocks/{processor}", h.queueMultipleBlocks)
 }
 
+//nolint:tagliatelle // Using snake_case for API backwards compatibility
 type SingleBlockResponse struct {
 	Status           string `json:"status"`
 	BlockNumber      uint64 `json:"block_number"`
@@ -45,6 +46,7 @@ type SingleBlockResponse struct {
 	TasksCreated     int    `json:"tasks_created"`
 }
 
+//nolint:tagliatelle // Using snake_case for API backwards compatibility
 type BlockResult struct {
 	BlockNumber      uint64 `json:"block_number"`
 	Status           string `json:"status"`
@@ -70,6 +72,7 @@ type BulkBlocksResponse struct {
 	Results []BlockResult `json:"results"`
 }
 
+//nolint:tagliatelle // Using snake_case for API backwards compatibility
 type ErrorResponse struct {
 	Error       string      `json:"error"`
 	BlockNumber interface{} `json:"block_number,omitempty"`

@@ -17,7 +17,7 @@ var (
 	serverConfigFile string
 )
 
-// rootCmd represents the base command when called without any subcommands
+// rootCmd represents the base command when called without any subcommands.
 var rootCmd = &cobra.Command{
 	Use:   "execution-processor",
 	Short: "Runs Execution Processor.",

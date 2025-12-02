@@ -17,7 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestManager_RaceConditions specifically tests for race conditions in manager
+// TestManager_RaceConditions specifically tests for race conditions in manager.
 func TestManager_RaceConditions(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -105,7 +105,7 @@ func TestManager_RaceConditions(t *testing.T) {
 	wg.Wait()
 }
 
-// TestManager_ConcurrentConfiguration tests concurrent access to manager configuration
+// TestManager_ConcurrentConfiguration tests concurrent access to manager configuration.
 func TestManager_ConcurrentConfiguration(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)

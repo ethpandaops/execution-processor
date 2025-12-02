@@ -7,7 +7,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
 )
 
-// BatchConfig holds configuration for the batch aggregation system
+// BatchConfig holds configuration for the batch aggregation system.
 type BatchConfig struct {
 	Enabled           bool          `yaml:"enabled"`           // Enable batch aggregation
 	MaxRows           int           `yaml:"maxRows"`           // Max rows before forced flush
@@ -16,7 +16,7 @@ type BatchConfig struct {
 	FlushTimeout      time.Duration `yaml:"flushTimeout"`      // Timeout for ClickHouse flush operations
 }
 
-// LargeTransactionConfig holds configuration for handling large transactions
+// LargeTransactionConfig holds configuration for handling large transactions.
 type LargeTransactionConfig struct {
 	Enabled              bool          `yaml:"enabled"`              // Enable large transaction handling
 	StructlogThreshold   int           `yaml:"structlogThreshold"`   // Number of structlogs to consider a transaction "large"
@@ -25,7 +25,7 @@ type LargeTransactionConfig struct {
 	EnableSequentialMode bool          `yaml:"enableSequentialMode"` // If true, large transactions are processed one at a time
 }
 
-// TransactionStructlogConfig holds configuration for transaction structlog processor
+// TransactionStructlogConfig holds configuration for transaction structlog processor.
 type Config struct {
 	clickhouse.Config      `yaml:",inline"`
 	Enabled                bool                    `yaml:"enabled"`

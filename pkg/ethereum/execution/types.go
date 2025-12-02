@@ -1,6 +1,6 @@
 package execution
 
-// TraceOptions configures debug_traceTransaction parameters
+// TraceOptions configures debug_traceTransaction parameters.
 type TraceOptions struct {
 	DisableStorage   bool
 	DisableStack     bool
@@ -8,7 +8,7 @@ type TraceOptions struct {
 	EnableReturnData bool
 }
 
-// DefaultTraceOptions returns standard options
+// DefaultTraceOptions returns standard options.
 func DefaultTraceOptions() TraceOptions {
 	return TraceOptions{
 		DisableStorage:   true,
@@ -18,7 +18,7 @@ func DefaultTraceOptions() TraceOptions {
 	}
 }
 
-// StackTraceOptions returns options with stack enabled
+// StackTraceOptions returns options with stack enabled.
 func StackTraceOptions() TraceOptions {
 	return TraceOptions{
 		DisableStorage:   true,

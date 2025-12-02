@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// Since we're testing internal package, we can test the actual methods directly
+// Since we're testing internal package, we can test the actual methods directly.
 func TestBatchCollector_ProcessPendingTask_SmallTask(t *testing.T) {
 	// Test that processPendingTask handles small tasks correctly
 	config := BatchConfig{
@@ -264,7 +264,7 @@ func TestBatchCollector_ChunkCalculation(t *testing.T) {
 	}
 }
 
-// Helper function to create test structlogs
+// Helper function to create test structlogs.
 func createTestStructlogs(count int) []Structlog {
 	logs := make([]Structlog, count)
 	now := time.Now()
@@ -295,8 +295,8 @@ func createTestStructlogs(count int) []Structlog {
 	return logs
 }
 
-// TestBatchCollector_ProcessLargeTask_Integration tests the actual processLargeTask behavior
-// This is more of an integration test that requires a working processor
+// TestBatchCollector_ProcessLargeTask_Integration tests the actual processLargeTask behavior.
+// This is more of an integration test that requires a working processor.
 func TestBatchCollector_ProcessLargeTask_Integration(t *testing.T) {
 	t.Skip("Integration test - requires working ClickHouse connection")
 
@@ -322,7 +322,7 @@ func TestBatchCollector_ProcessLargeTask_Integration(t *testing.T) {
 	// 5. Verify response is sent after all chunks
 }
 
-// TestBatchCollector_ConcurrentAccess tests thread safety
+// TestBatchCollector_ConcurrentAccess tests thread safety.
 func TestBatchCollector_ConcurrentAccess(t *testing.T) {
 	config := BatchConfig{
 		Enabled:           true,
@@ -355,6 +355,7 @@ func TestBatchCollector_ConcurrentAccess(t *testing.T) {
 			if err := bc.SubmitBatch(task); err != nil && err != ErrChannelFull {
 				errors <- err
 			}
+
 			done <- true
 		}(i)
 	}
@@ -372,7 +373,7 @@ func TestBatchCollector_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-// Additional helper for testing error scenarios
+// Additional helper for testing error scenarios.
 func TestBatchCollector_ErrorScenarios(t *testing.T) {
 	t.Run("nil processor", func(t *testing.T) {
 		// This would panic in real usage, but we can't test it safely

@@ -14,18 +14,18 @@ import (
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
 )
 
-// CountMismatchError represents a transaction count mismatch
+// CountMismatchError represents a transaction count mismatch.
 type CountMismatchError struct {
 	Expected int
 	Actual   int
 }
 
-// Error implements the error interface
+// Error implements the error interface.
 func (e *CountMismatchError) Error() string {
 	return fmt.Sprintf("count mismatch: expected %d, got %d", e.Expected, e.Actual)
 }
 
-// handleVerifyTask handles verification tasks for both forwards and backwards modes
+// handleVerifyTask handles verification tasks for both forwards and backwards modes.
 func (p *Processor) handleVerifyTask(ctx context.Context, task *asynq.Task) error {
 	start := time.Now()
 
@@ -89,11 +89,11 @@ func (p *Processor) handleVerifyTask(ctx context.Context, task *asynq.Task) erro
 	var actualCount int
 
 	row := db.QueryRowContext(ctx, query)
-	if err := row.Scan(&actualCount); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+	if scanErr := row.Scan(&actualCount); scanErr != nil {
+		if errors.Is(scanErr, sql.ErrNoRows) {
 			actualCount = 0
 		} else {
-			return fmt.Errorf("failed to query count: %w", err)
+			return fmt.Errorf("failed to query count: %w", scanErr)
 		}
 	}
 

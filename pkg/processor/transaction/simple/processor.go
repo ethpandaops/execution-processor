@@ -13,10 +13,10 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
-// ProcessorName is the name of the simple transaction processor
+// ProcessorName is the name of the simple transaction processor.
 const ProcessorName = "transaction_simple"
 
-// Dependencies contains the dependencies needed for the processor
+// Dependencies contains the dependencies needed for the processor.
 type Dependencies struct {
 	Log         logrus.FieldLogger
 	Pool        *ethereum.Pool
@@ -26,7 +26,7 @@ type Dependencies struct {
 	RedisPrefix string
 }
 
-// Processor handles simple transaction processing
+// Processor handles simple transaction processing.
 type Processor struct {
 	log            logrus.FieldLogger
 	pool           *ethereum.Pool
@@ -39,7 +39,7 @@ type Processor struct {
 	redisPrefix    string
 }
 
-// New creates a new simple transaction processor
+// New creates a new simple transaction processor.
 func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, error) {
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
@@ -73,12 +73,12 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 	}, nil
 }
 
-// Name returns the processor name
+// Name returns the processor name.
 func (p *Processor) Name() string {
 	return ProcessorName
 }
 
-// Start starts the processor
+// Start starts the processor.
 func (p *Processor) Start(ctx context.Context) error {
 	p.log.Info("Starting transaction simple processor")
 
@@ -94,27 +94,27 @@ func (p *Processor) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the processor
+// Stop stops the processor.
 func (p *Processor) Stop(ctx context.Context) error {
 	p.log.Info("Stopping transaction simple processor")
 
 	return p.clickhouse.Stop(ctx)
 }
 
-// SetProcessingMode sets the processing mode for the processor
+// SetProcessingMode sets the processing mode for the processor.
 func (p *Processor) SetProcessingMode(mode string) {
 	p.processingMode = mode
 	p.log.WithField("mode", mode).Info("Processing mode updated")
 }
 
-// EnqueueTask enqueues a task to the specified queue
+// EnqueueTask enqueues a task to the specified queue.
 func (p *Processor) EnqueueTask(ctx context.Context, task *asynq.Task, opts ...asynq.Option) error {
 	_, err := p.asynqClient.EnqueueContext(ctx, task, opts...)
 
 	return err
 }
 
-// GetQueues returns the queues used by this processor
+// GetQueues returns the queues used by this processor.
 func (p *Processor) GetQueues() []c.QueueInfo {
 	return []c.QueueInfo{
 		{
@@ -136,22 +136,22 @@ func (p *Processor) GetQueues() []c.QueueInfo {
 	}
 }
 
-// getProcessForwardsQueue returns the prefixed process forwards queue name
+// getProcessForwardsQueue returns the prefixed process forwards queue name.
 func (p *Processor) getProcessForwardsQueue() string {
 	return c.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// getProcessBackwardsQueue returns the prefixed process backwards queue name
+// getProcessBackwardsQueue returns the prefixed process backwards queue name.
 func (p *Processor) getProcessBackwardsQueue() string {
 	return c.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// getVerifyForwardsQueue returns the prefixed verify forwards queue name
+// getVerifyForwardsQueue returns the prefixed verify forwards queue name.
 func (p *Processor) getVerifyForwardsQueue() string {
 	return c.PrefixedVerifyForwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// getVerifyBackwardsQueue returns the prefixed verify backwards queue name
+// getVerifyBackwardsQueue returns the prefixed verify backwards queue name.
 func (p *Processor) getVerifyBackwardsQueue() string {
 	return c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix)
 }

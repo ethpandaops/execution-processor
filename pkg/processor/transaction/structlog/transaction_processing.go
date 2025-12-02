@@ -13,6 +13,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
+//nolint:tagliatelle // Using snake_case for backwards compatibility
 type Structlog struct {
 	UpdatedDateTime        time.Time `json:"updated_date_time"`
 	BlockNumber            uint64    `json:"block_number"`
@@ -35,7 +36,7 @@ type Structlog struct {
 	MetaNetworkName        string    `json:"meta_network_name"`
 }
 
-// ProcessSingleTransaction processes a single transaction using batch collector (exposed for worker handlers)
+// ProcessSingleTransaction processes a single transaction using batch collector (exposed for worker handlers).
 func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
 	// Extract structlog data
 	structlogs, err := p.ExtractStructlogs(ctx, block, index, tx)
@@ -79,9 +80,10 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.B
 	return structlogCount, nil
 }
 
-// ExtractStructlogs extracts structlog data from a transaction without inserting to database
+// ExtractStructlogs extracts structlog data from a transaction without inserting to database.
 func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, index int, tx *types.Transaction) ([]Structlog, error) {
 	start := time.Now()
+
 	defer func() {
 		duration := time.Since(start)
 		common.TransactionProcessingDuration.WithLabelValues(p.network.Name, "structlog").Observe(duration.Seconds())

@@ -11,14 +11,14 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// TaskBatch represents a batch of structlog rows from a single task
+// TaskBatch represents a batch of structlog rows from a single task.
 type TaskBatch struct {
 	Rows         []Structlog // All rows from one task
 	ResponseChan chan error  // Channel to send result back to task
 	TaskID       string      // Unique identifier for this task
 }
 
-// BatchCollector aggregates structlog rows from multiple tasks and flushes them in batches
+// BatchCollector aggregates structlog rows from multiple tasks and flushes them in batches.
 type BatchCollector struct {
 	processor     *Processor
 	taskChannel   chan TaskBatch
@@ -35,7 +35,7 @@ type BatchCollector struct {
 	pendingTasks    []TaskBatch
 }
 
-// NewBatchCollector creates a new batch collector
+// NewBatchCollector creates a new batch collector.
 func NewBatchCollector(processor *Processor, config BatchConfig) *BatchCollector {
 	return &BatchCollector{
 		processor:     processor,
@@ -48,7 +48,7 @@ func NewBatchCollector(processor *Processor, config BatchConfig) *BatchCollector
 	}
 }
 
-// Start begins the batch collection process
+// Start begins the batch collection process.
 func (bc *BatchCollector) Start(ctx context.Context) error {
 	bc.log.WithFields(logrus.Fields{
 		"max_batch_size":      bc.maxBatchSize,
@@ -58,12 +58,13 @@ func (bc *BatchCollector) Start(ctx context.Context) error {
 	}).Info("Starting batch collector")
 
 	bc.wg.Add(1)
+
 	go bc.run(ctx)
 
 	return nil
 }
 
-// Stop gracefully shuts down the batch collector
+// Stop gracefully shuts down the batch collector.
 func (bc *BatchCollector) Stop(ctx context.Context) error {
 	bc.log.Info("Stopping batch collector")
 
@@ -75,7 +76,7 @@ func (bc *BatchCollector) Stop(ctx context.Context) error {
 	return nil
 }
 
-// SubmitBatch submits a task batch for processing
+// SubmitBatch submits a task batch for processing.
 func (bc *BatchCollector) SubmitBatch(taskBatch TaskBatch) error {
 	// Check shutdown first
 	select {
@@ -96,7 +97,7 @@ func (bc *BatchCollector) SubmitBatch(taskBatch TaskBatch) error {
 	}
 }
 
-// run is the main goroutine that processes batches
+// run is the main goroutine that processes batches.
 func (bc *BatchCollector) run(ctx context.Context) {
 	defer bc.wg.Done()
 	defer bc.flushRemaining()
@@ -121,16 +122,18 @@ func (bc *BatchCollector) run(ctx context.Context) {
 
 		case <-ticker.C:
 			bc.mu.Lock()
+
 			if len(bc.accumulatedRows) > 0 {
 				bc.log.WithField("trigger", "timer").Debug("Flushing batch due to timer")
 				bc.flushBatch(ctx)
 			}
+
 			bc.mu.Unlock()
 		}
 	}
 }
 
-// processPendingTask adds a task to the current batch and flushes if needed
+// processPendingTask adds a task to the current batch and flushes if needed.
 func (bc *BatchCollector) processPendingTask(taskBatch TaskBatch) {
 	// For large tasks (> maxRows), process in chunks immediately
 	if len(taskBatch.Rows) > bc.maxBatchSize {
@@ -157,7 +160,7 @@ func (bc *BatchCollector) processPendingTask(taskBatch TaskBatch) {
 	}
 }
 
-// processLargeTask handles tasks with more rows than maxBatchSize by chunking
+// processLargeTask handles tasks with more rows than maxBatchSize by chunking.
 func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
 	taskRows := len(taskBatch.Rows)
 
@@ -248,7 +251,7 @@ func (bc *BatchCollector) processLargeTask(taskBatch TaskBatch) {
 	}
 }
 
-// flushBatch performs the actual database insert and responds to all pending tasks
+// flushBatch performs the actual database insert and responds to all pending tasks.
 func (bc *BatchCollector) flushBatch(ctx context.Context) {
 	if len(bc.accumulatedRows) == 0 {
 		return
@@ -327,7 +330,7 @@ func (bc *BatchCollector) flushBatch(ctx context.Context) {
 	}
 }
 
-// flushRemaining flushes any remaining rows during shutdown
+// flushRemaining flushes any remaining rows during shutdown.
 func (bc *BatchCollector) flushRemaining() {
 	bc.mu.Lock()
 	defer bc.mu.Unlock()
@@ -345,5 +348,5 @@ func (bc *BatchCollector) flushRemaining() {
 	}
 }
 
-// Custom error for when channel is full
+// Custom error for when channel is full.
 var ErrChannelFull = fmt.Errorf("batch collector channel is full")

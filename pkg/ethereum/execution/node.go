@@ -15,7 +15,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// headerTransport adds custom headers to requests and respects context cancellation
+// headerTransport adds custom headers to requests and respects context cancellation.
 type headerTransport struct {
 	headers map[string]string
 	base    http.RoundTripper
@@ -198,13 +198,16 @@ func (n *Node) Stop(ctx context.Context) error {
 
 	// Cancel the node context to signal all goroutines to stop
 	n.mu.Lock()
+
 	if n.cancel != nil {
 		n.cancel()
 	}
+
 	n.mu.Unlock()
 
 	// Wait for all goroutines to finish with timeout
 	done := make(chan struct{})
+
 	go func() {
 		n.wg.Wait()
 		close(done)
