@@ -5,3 +5,7 @@ __debug_bin*
 .aider*
 
 **/.claude/settings.local.json
+
+# Build artifacts
+dist/
+bin/
