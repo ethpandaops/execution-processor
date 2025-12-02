@@ -1,6 +1,6 @@
 module github.com/ethpandaops/execution-processor
 
-go 1.25.0
+go 1.25.4
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.34.0
