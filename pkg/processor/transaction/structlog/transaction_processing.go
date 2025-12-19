@@ -26,6 +26,7 @@ type Structlog struct {
 	Operation              string         `json:"operation"`
 	Gas                    uint64         `json:"gas"`
 	GasCost                uint64         `json:"gas_cost"`
+	GasUsed                uint64         `json:"gas_used"`
 	Depth                  uint64         `json:"depth"`
 	ReturnData             *string        `json:"return_data"`
 	Refund                 *uint64        `json:"refund"`
@@ -74,6 +75,9 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 	}
 
 	totalCount := len(trace.Structlogs)
+
+	// Compute actual gas used for each structlog
+	gasUsed := ComputeGasUsed(trace.Structlogs)
 
 	// Check if this is a big transaction and register if needed
 	if totalCount >= p.bigTxManager.GetThreshold() {
@@ -148,6 +152,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 			Operation:              trace.Structlogs[i].Op,
 			Gas:                    trace.Structlogs[i].Gas,
 			GasCost:                trace.Structlogs[i].GasCost,
+			GasUsed:                gasUsed[i],
 			Depth:                  trace.Structlogs[i].Depth,
 			ReturnData:             trace.Structlogs[i].ReturnData,
 			Refund:                 trace.Structlogs[i].Refund,
@@ -264,6 +269,9 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 	uIndex := uint32(index) //nolint:gosec // index is bounded by block.Transactions() length
 
 	if trace != nil {
+		// Compute actual gas used for each structlog
+		gasUsed := ComputeGasUsed(trace.Structlogs)
+
 		// Pre-allocate slice for better memory efficiency
 		structlogs = make([]Structlog, 0, len(trace.Structlogs))
 
@@ -288,6 +296,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 				Operation:              structLog.Op,
 				Gas:                    structLog.Gas,
 				GasCost:                structLog.GasCost,
+				GasUsed:                gasUsed[i],
 				Depth:                  structLog.Depth,
 				ReturnData:             structLog.ReturnData,
 				Refund:                 structLog.Refund,

@@ -108,7 +108,7 @@ func (n *Node) traceTransactionErigon(ctx context.Context, hash string, options 
 	}
 
 	returnValue := rsp.ReturnValue
-	if returnValue != nil && *returnValue == "" {
+	if returnValue != nil && (*returnValue == "" || *returnValue == "0x") {
 		returnValue = nil
 	}
 
