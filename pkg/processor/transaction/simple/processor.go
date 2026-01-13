@@ -120,14 +120,6 @@ func (p *Processor) GetQueues() []c.QueueInfo {
 			Name:     c.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix),
 			Priority: 5,
 		},
-		{
-			Name:     c.PrefixedVerifyForwardsQueue(ProcessorName, p.redisPrefix),
-			Priority: 1,
-		},
-		{
-			Name:     c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix),
-			Priority: 1,
-		},
 	}
 }
 
@@ -139,14 +131,4 @@ func (p *Processor) getProcessForwardsQueue() string {
 // getProcessBackwardsQueue returns the prefixed process backwards queue name.
 func (p *Processor) getProcessBackwardsQueue() string {
 	return c.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
-}
-
-// getVerifyForwardsQueue returns the prefixed verify forwards queue name.
-func (p *Processor) getVerifyForwardsQueue() string {
-	return c.PrefixedVerifyForwardsQueue(ProcessorName, p.redisPrefix)
-}
-
-// getVerifyBackwardsQueue returns the prefixed verify backwards queue name.
-func (p *Processor) getVerifyBackwardsQueue() string {
-	return c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix)
 }

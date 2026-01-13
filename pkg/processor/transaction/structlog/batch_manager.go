@@ -174,40 +174,8 @@ func (bm *BatchManager) flushLocked() {
 			).Inc()
 		}
 	} else {
-		// Success - complete all tasks and update state
+		// Success - complete all tasks
 		for _, item := range bm.items {
-			// Queue verify task for each transaction
-			verifyPayload := &VerifyPayload{
-				BlockNumber:      item.payload.BlockNumber,
-				TransactionHash:  item.payload.TransactionHash,
-				TransactionIndex: item.payload.TransactionIndex,
-				NetworkID:        item.payload.NetworkID,
-				NetworkName:      item.payload.NetworkName,
-				Network:          item.payload.Network,
-				InsertedCount:    len(item.structlogs),
-			}
-
-			var (
-				verifyTask *asynq.Task
-				queue      string
-			)
-
-			if item.payload.ProcessingMode == "forwards" {
-				verifyTask, _ = NewVerifyForwardsTask(verifyPayload)
-				queue = bm.processor.getVerifyForwardsQueue()
-			} else {
-				verifyTask, _ = NewVerifyBackwardsTask(verifyPayload)
-				queue = bm.processor.getVerifyBackwardsQueue()
-			}
-
-			if verifyTask != nil {
-				if err := bm.processor.EnqueueTask(context.Background(), verifyTask, asynq.Queue(queue), asynq.ProcessIn(10*time.Second)); err != nil {
-					bm.processor.log.WithError(err).WithField("queue", queue).Error("Failed to enqueue verify task")
-				} else {
-					common.TasksEnqueued.WithLabelValues(bm.processor.network.Name, ProcessorName, queue, VerifyForwardsTaskType).Inc()
-				}
-			}
-
 			// Increment success metrics
 			common.TasksProcessed.WithLabelValues(
 				bm.processor.network.Name,

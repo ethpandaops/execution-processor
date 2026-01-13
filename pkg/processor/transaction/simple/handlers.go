@@ -52,8 +52,6 @@ func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	return map[string]asynq.HandlerFunc{
 		ProcessForwardsTaskType:  p.handleProcessTask,
 		ProcessBackwardsTaskType: p.handleProcessTask,
-		VerifyForwardsTaskType:   p.handleVerifyTask,
-		VerifyBackwardsTaskType:  p.handleVerifyTask,
 	}
 }
 
@@ -160,39 +158,6 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 		task.Type(),
 		"success",
 	).Inc()
-
-	// Enqueue verify task
-	verifyPayload := &VerifyPayload{
-		BlockNumber:   payload.BlockNumber,
-		NetworkID:     payload.NetworkID,
-		NetworkName:   payload.NetworkName,
-		InsertedCount: len(transactions),
-	}
-
-	var verifyTask *asynq.Task
-
-	var queue string
-
-	if payload.ProcessingMode == c.BACKWARDS_MODE {
-		verifyTask, err = NewVerifyBackwardsTask(verifyPayload)
-		queue = p.getVerifyBackwardsQueue()
-	} else {
-		verifyTask, err = NewVerifyForwardsTask(verifyPayload)
-		queue = p.getVerifyForwardsQueue()
-	}
-
-	if err != nil {
-		return fmt.Errorf("failed to create verify task: %w", err)
-	}
-
-	if err := p.EnqueueTask(ctx, verifyTask,
-		asynq.Queue(queue),
-		asynq.ProcessIn(10*time.Second),
-	); err != nil {
-		p.log.WithError(err).Warn("Failed to enqueue verify task")
-	}
-
-	common.TasksEnqueued.WithLabelValues(p.network.Name, ProcessorName, queue, verifyTask.Type()).Inc()
 
 	p.log.WithFields(logrus.Fields{
 		"block_number": blockNumber.Uint64(),
