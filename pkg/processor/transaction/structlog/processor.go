@@ -132,14 +132,6 @@ func (p *Processor) GetQueues() []c.QueueInfo {
 			Name:     c.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix),
 			Priority: 5, // Medium priority for backwards processing
 		},
-		{
-			Name:     c.PrefixedVerifyForwardsQueue(ProcessorName, p.redisPrefix),
-			Priority: 1, // Low priority for forwards verification
-		},
-		{
-			Name:     c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix),
-			Priority: 1, // Low priority for backwards verification
-		},
 	}
 }
 
@@ -148,8 +140,6 @@ func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	return map[string]asynq.HandlerFunc{
 		ProcessForwardsTaskType:  p.handleProcessForwardsTask,
 		ProcessBackwardsTaskType: p.handleProcessBackwardsTask,
-		VerifyForwardsTaskType:   p.handleVerifyForwardsTask,
-		VerifyBackwardsTaskType:  p.handleVerifyBackwardsTask,
 	}
 }
 
@@ -174,16 +164,6 @@ func (p *Processor) getProcessForwardsQueue() string {
 // getProcessBackwardsQueue returns the prefixed process backwards queue name.
 func (p *Processor) getProcessBackwardsQueue() string {
 	return c.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
-}
-
-// getVerifyForwardsQueue returns the prefixed verify forwards queue name.
-func (p *Processor) getVerifyForwardsQueue() string {
-	return c.PrefixedVerifyForwardsQueue(ProcessorName, p.redisPrefix)
-}
-
-// getVerifyBackwardsQueue returns the prefixed verify backwards queue name.
-func (p *Processor) getVerifyBackwardsQueue() string {
-	return c.PrefixedVerifyBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
 // insertStructlogs inserts structlog rows directly into ClickHouse.

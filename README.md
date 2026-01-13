@@ -10,7 +10,7 @@ A distributed system for processing Ethereum execution layer data with support f
 - **Dual Processing Modes**: Forwards (real-time) and backwards (backfill) processing
 - **State Management**: Track processing progress with ClickHouse storage
 - **Resource Management**: Memory-optimized chunked processing with leak prevention
-- **Queue Prioritization**: Separate queues for forwards/backwards processing and verification
+- **Queue Prioritization**: Separate queues for forwards/backwards processing
 
 ## Quick Start
 
@@ -43,9 +43,8 @@ A distributed system for processing Ethereum execution layer data with support f
 
 ### Processing Modes
 
-- **Forwards**: Process new blocks as they arrive (priority 100)
-- **Backwards**: Backfill historical blocks (priority 50)
-- **Verification**: Validate processed data (priority 10)
+- **Forwards**: Process new blocks as they arrive (priority 10)
+- **Backwards**: Backfill historical blocks (priority 5)
 
 ### Queue Architecture
 
@@ -55,8 +54,6 @@ A distributed system for processing Ethereum execution layer data with support f
 ├─────────────────────────────────────────┤
 │  1. Forwards Processing    (Priority 10)│
 │  2. Backwards Processing   (Priority 5) │
-│  3. Forwards Verification  (Priority 1) │
-│  4. Backwards Verification (Priority 1) │
 └─────────────────────────────────────────┘
 ```
 
@@ -147,7 +144,6 @@ curl -X POST http://localhost:8080/api/v1/queue/blocks/transaction_structlog \
 - Graceful handling of chain head scenarios
 - Retry logic for transient failures
 - Comprehensive logging and metrics
-- Verification system with mismatch detection
 
 ## Monitoring
 

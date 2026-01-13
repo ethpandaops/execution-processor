@@ -881,12 +881,10 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 		if m.config.Mode == c.FORWARDS_MODE {
 			queuesToCheck = []string{
 				c.PrefixedProcessForwardsQueue(name, m.redisPrefix),
-				c.PrefixedVerifyForwardsQueue(name, m.redisPrefix),
 			}
 		} else {
 			queuesToCheck = []string{
 				c.PrefixedProcessBackwardsQueue(name, m.redisPrefix),
-				c.PrefixedVerifyBackwardsQueue(name, m.redisPrefix),
 			}
 		}
 

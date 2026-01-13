@@ -375,128 +375,6 @@ func TestChunkProcessing(t *testing.T) {
 	}
 }
 
-// Tests from verification_test.go
-
-func TestVerificationConstants(t *testing.T) {
-	tests := []struct {
-		name     string
-		table    string
-		expected string
-	}{
-		{
-			name:     "basic table name",
-			table:    "test_table",
-			expected: "test_table",
-		},
-		{
-			name:     "production table name",
-			table:    "transaction_structlogs",
-			expected: "transaction_structlogs",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if tt.table != tt.expected {
-				t.Errorf("table name mismatch: got %s, want %s", tt.table, tt.expected)
-			}
-		})
-	}
-}
-
-func TestVerificationQueryPattern(t *testing.T) {
-	expectedElements := []string{
-		"SELECT COUNT(*)",
-		"FROM",
-		"FINAL",
-		"WHERE block_number =",
-		"AND transaction_hash =",
-		"AND transaction_index =",
-		"AND meta_network_name =",
-	}
-
-	// Simulate what the query should contain
-	queryPattern := "SELECT COUNT(*) as count FROM %s FINAL WHERE block_number = %d AND transaction_hash = '%s' AND transaction_index = %d AND meta_network_name = '%s'"
-
-	for _, element := range expectedElements {
-		if !containsElement(queryPattern, element) {
-			t.Errorf("query pattern missing element: %s", element)
-		}
-	}
-}
-
-func TestVerificationErrorPattern(t *testing.T) {
-	tests := []struct {
-		name          string
-		actualCount   int
-		expectedCount int
-		shouldError   bool
-	}{
-		{
-			name:          "counts match",
-			actualCount:   100,
-			expectedCount: 100,
-			shouldError:   false,
-		},
-		{
-			name:          "counts don't match",
-			actualCount:   50,
-			expectedCount: 100,
-			shouldError:   true,
-		},
-		{
-			name:          "zero counts match",
-			actualCount:   0,
-			expectedCount: 0,
-			shouldError:   false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Simulate the verification logic
-			hasError := tt.actualCount != tt.expectedCount
-
-			if hasError != tt.shouldError {
-				t.Errorf("error expectation mismatch: got error=%v, want error=%v",
-					hasError, tt.shouldError)
-			}
-		})
-	}
-}
-
-// Helper function to check if pattern contains element.
-func containsElement(pattern, element string) bool {
-	patternBytes := []byte(pattern)
-	elementBytes := []byte(element)
-
-	if len(elementBytes) == 0 {
-		return true
-	}
-
-	if len(patternBytes) < len(elementBytes) {
-		return false
-	}
-
-	for i := 0; i <= len(patternBytes)-len(elementBytes); i++ {
-		match := true
-
-		for j := 0; j < len(elementBytes); j++ {
-			if patternBytes[i+j] != elementBytes[j] {
-				match = false
-
-				break
-			}
-		}
-
-		if match {
-			return true
-		}
-	}
-
-	return false
-}
-
 // Tests from tasks_test.go
 
 func TestProcessPayload(t *testing.T) {
@@ -538,52 +416,6 @@ func TestProcessPayload(t *testing.T) {
 	}
 
 	var binUnmarshaled transaction_structlog.ProcessPayload
-
-	err = binUnmarshaled.UnmarshalBinary(binData)
-	if err != nil {
-		t.Fatalf("failed to unmarshal binary: %v", err)
-	}
-
-	if binUnmarshaled.TransactionHash != payload.TransactionHash {
-		t.Errorf("expected transaction hash %s, got %s", payload.TransactionHash, binUnmarshaled.TransactionHash)
-	}
-}
-
-func TestVerifyPayload(t *testing.T) {
-	payload := &transaction_structlog.VerifyPayload{
-		BlockNumber:      *big.NewInt(12345),
-		TransactionHash:  "0xabcdef1234567890",
-		TransactionIndex: 3,
-		NetworkID:        1,
-		NetworkName:      "mainnet",
-		Network:          "mainnet",
-		ProcessingMode:   c.FORWARDS_MODE,
-	}
-
-	// Test JSON marshaling
-	data, err := json.Marshal(payload)
-	if err != nil {
-		t.Fatalf("failed to marshal payload: %v", err)
-	}
-
-	var unmarshaled transaction_structlog.VerifyPayload
-
-	err = json.Unmarshal(data, &unmarshaled)
-	if err != nil {
-		t.Fatalf("failed to unmarshal payload: %v", err)
-	}
-
-	if unmarshaled.TransactionHash != payload.TransactionHash {
-		t.Errorf("expected transaction hash %s, got %s", payload.TransactionHash, unmarshaled.TransactionHash)
-	}
-
-	// Test binary marshaling
-	binData, err := payload.MarshalBinary()
-	if err != nil {
-		t.Fatalf("failed to marshal binary: %v", err)
-	}
-
-	var binUnmarshaled transaction_structlog.VerifyPayload
 
 	err = binUnmarshaled.UnmarshalBinary(binData)
 	if err != nil {
@@ -667,78 +499,6 @@ func TestNewProcessBackwardsTask(t *testing.T) {
 	}
 }
 
-func TestNewVerifyForwardsTask(t *testing.T) {
-	payload := &transaction_structlog.VerifyPayload{
-		BlockNumber:      *big.NewInt(12345),
-		TransactionHash:  "0xabcdef1234567890",
-		TransactionIndex: 3,
-		NetworkID:        1,
-		NetworkName:      "mainnet",
-		Network:          "mainnet",
-	}
-
-	task, err := transaction_structlog.NewVerifyForwardsTask(payload)
-	if err != nil {
-		t.Fatalf("failed to create task: %v", err)
-	}
-
-	if task.Type() != transaction_structlog.VerifyForwardsTaskType {
-		t.Errorf("expected task type %s, got %s", transaction_structlog.VerifyForwardsTaskType, task.Type())
-	}
-
-	// Verify payload can be unmarshaled from task
-	var unmarshaled transaction_structlog.VerifyPayload
-
-	err = json.Unmarshal(task.Payload(), &unmarshaled)
-	if err != nil {
-		t.Fatalf("failed to unmarshal task payload: %v", err)
-	}
-
-	if unmarshaled.TransactionHash != payload.TransactionHash {
-		t.Errorf("expected transaction hash %s, got %s", payload.TransactionHash, unmarshaled.TransactionHash)
-	}
-
-	if unmarshaled.ProcessingMode != c.FORWARDS_MODE {
-		t.Errorf("expected processing mode 'forwards', got %s", unmarshaled.ProcessingMode)
-	}
-}
-
-func TestNewVerifyBackwardsTask(t *testing.T) {
-	payload := &transaction_structlog.VerifyPayload{
-		BlockNumber:      *big.NewInt(12345),
-		TransactionHash:  "0xabcdef1234567890",
-		TransactionIndex: 3,
-		NetworkID:        1,
-		NetworkName:      "mainnet",
-		Network:          "mainnet",
-	}
-
-	task, err := transaction_structlog.NewVerifyBackwardsTask(payload)
-	if err != nil {
-		t.Fatalf("failed to create task: %v", err)
-	}
-
-	if task.Type() != transaction_structlog.VerifyBackwardsTaskType {
-		t.Errorf("expected task type %s, got %s", transaction_structlog.VerifyBackwardsTaskType, task.Type())
-	}
-
-	// Verify payload can be unmarshaled from task
-	var unmarshaled transaction_structlog.VerifyPayload
-
-	err = json.Unmarshal(task.Payload(), &unmarshaled)
-	if err != nil {
-		t.Fatalf("failed to unmarshal task payload: %v", err)
-	}
-
-	if unmarshaled.TransactionHash != payload.TransactionHash {
-		t.Errorf("expected transaction hash %s, got %s", payload.TransactionHash, unmarshaled.TransactionHash)
-	}
-
-	if unmarshaled.ProcessingMode != c.BACKWARDS_MODE {
-		t.Errorf("expected processing mode 'backwards', got %s", unmarshaled.ProcessingMode)
-	}
-}
-
 func TestTaskTypes(t *testing.T) {
 	// Test that task type constants are defined
 	if transaction_structlog.ProcessForwardsTaskType == "" {
@@ -747,14 +507,6 @@ func TestTaskTypes(t *testing.T) {
 
 	if transaction_structlog.ProcessBackwardsTaskType == "" {
 		t.Error("ProcessBackwardsTaskType should not be empty")
-	}
-
-	if transaction_structlog.VerifyForwardsTaskType == "" {
-		t.Error("VerifyForwardsTaskType should not be empty")
-	}
-
-	if transaction_structlog.VerifyBackwardsTaskType == "" {
-		t.Error("VerifyBackwardsTaskType should not be empty")
 	}
 
 	if transaction_structlog.ProcessorName == "" {
