@@ -16,9 +16,11 @@ type CallTracker struct {
 }
 
 // NewCallTracker creates a new CallTracker initialized with the root frame.
+// The root frame has ID 0 and Depth 1, matching EVM structlog traces where
+// execution starts at depth 1 (not 0).
 func NewCallTracker() *CallTracker {
 	return &CallTracker{
-		stack:  []CallFrame{{ID: 0, Depth: 0}},
+		stack:  []CallFrame{{ID: 0, Depth: 1}},
 		nextID: 1,
 		path:   []uint32{0},
 	}
