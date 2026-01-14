@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/sirupsen/logrus"
 
@@ -85,18 +84,8 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 	// Initialize call frame tracker
 	callTracker := NewCallTracker()
 
-	// Fetch CREATE address from receipt if trace contains CREATE/CREATE2 opcodes
-	var createAddress *string
-
-	if hasCreateOpcode(trace.Structlogs) {
-		var err error
-
-		createAddress, err = p.fetchCreateAddress(ctx, tx.Hash().String())
-		if err != nil {
-			// Continue without CREATE address - not fatal.
-			p.log.WithError(err).Warn("Failed to fetch CREATE address from receipt")
-		}
-	}
+	// Pre-compute CREATE/CREATE2 addresses from trace stack
+	createAddresses := ComputeCreateAddresses(trace.Structlogs)
 
 	// Check if this is a big transaction and register if needed
 	if totalCount >= p.bigTxManager.GetThreshold() {
@@ -180,7 +169,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 			ReturnData:             trace.Structlogs[i].ReturnData,
 			Refund:                 trace.Structlogs[i].Refund,
 			Error:                  trace.Structlogs[i].Error,
-			CallToAddress:          p.extractCallAddressWithCreate(&trace.Structlogs[i], createAddress),
+			CallToAddress:          p.extractCallAddressWithCreate(&trace.Structlogs[i], i, createAddresses),
 			CallFrameID:            frameID,
 			CallFramePath:          framePath,
 			MetaNetworkID:          p.network.ID,
@@ -276,48 +265,62 @@ func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
 	}
 }
 
-// extractCallAddressWithCreate extracts the call address, using createAddress for CREATE/CREATE2 opcodes.
-func (p *Processor) extractCallAddressWithCreate(structLog *execution.StructLog, createAddress *string) *string {
-	// For CREATE/CREATE2, use the address from the receipt
+// extractCallAddressWithCreate extracts the call address, using createAddresses map for CREATE/CREATE2 opcodes.
+func (p *Processor) extractCallAddressWithCreate(structLog *execution.StructLog, index int, createAddresses map[int]*string) *string {
+	// For CREATE/CREATE2, use the pre-computed address from the trace
 	if structLog.Op == "CREATE" || structLog.Op == "CREATE2" {
-		return createAddress
+		if createAddresses != nil {
+			return createAddresses[index]
+		}
+
+		return nil
 	}
 
 	return p.extractCallAddress(structLog)
 }
 
-// hasCreateOpcode checks if any structlog contains a CREATE or CREATE2 opcode.
-func hasCreateOpcode(structlogs []execution.StructLog) bool {
-	for i := range structlogs {
-		if structlogs[i].Op == "CREATE" || structlogs[i].Op == "CREATE2" {
-			return true
+// ComputeCreateAddresses pre-computes the created contract addresses for all CREATE/CREATE2 opcodes.
+// It scans the trace and extracts addresses from the stack when each CREATE's constructor returns.
+// The returned map contains opcode index -> created address (only for CREATE/CREATE2 opcodes).
+func ComputeCreateAddresses(structlogs []execution.StructLog) map[int]*string {
+	result := make(map[int]*string)
+
+	// Track pending CREATE operations: (index, depth)
+	type pendingCreate struct {
+		index int
+		depth uint64
+	}
+
+	var pending []pendingCreate
+
+	for i, log := range structlogs {
+		// Resolve pending CREATEs that have completed.
+		// A CREATE at depth D completes when we see an opcode at depth <= D
+		// (either immediately if CREATE failed, or after constructor returns).
+		for len(pending) > 0 {
+			last := pending[len(pending)-1]
+
+			// If current opcode is at or below CREATE's depth and it's not the CREATE itself
+			if log.Depth <= last.depth && i > last.index {
+				// Extract address from top of stack (created address or 0 if failed)
+				if log.Stack != nil && len(*log.Stack) > 0 {
+					addr := (*log.Stack)[len(*log.Stack)-1]
+					result[last.index] = &addr
+				}
+
+				pending = pending[:len(pending)-1]
+			} else {
+				break
+			}
+		}
+
+		// Track new CREATE/CREATE2
+		if log.Op == "CREATE" || log.Op == "CREATE2" {
+			pending = append(pending, pendingCreate{index: i, depth: log.Depth})
 		}
 	}
 
-	return false
-}
-
-// fetchCreateAddress fetches the contract address from the transaction receipt.
-// Returns nil if the receipt has no contract address (not a contract creation tx).
-func (p *Processor) fetchCreateAddress(ctx context.Context, txHash string) (*string, error) {
-	node := p.pool.GetHealthyExecutionNode()
-	if node == nil {
-		return nil, fmt.Errorf("no healthy execution node available")
-	}
-
-	receipt, err := node.TransactionReceipt(ctx, txHash)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch transaction receipt: %w", err)
-	}
-
-	// Check if contract was created (ContractAddress is non-zero)
-	if receipt.ContractAddress == (ethcommon.Address{}) {
-		return nil, nil //nolint:nilnil // nil address with nil error is valid - means no contract created
-	}
-
-	addr := receipt.ContractAddress.Hex()
-
-	return &addr, nil
+	return result
 }
 
 // ExtractStructlogs extracts structlog data from a transaction without inserting to database.
@@ -357,18 +360,8 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 		// Initialize call frame tracker
 		callTracker := NewCallTracker()
 
-		// Fetch CREATE address from receipt if trace contains CREATE/CREATE2 opcodes
-		var createAddress *string
-
-		if hasCreateOpcode(trace.Structlogs) {
-			var err error
-
-			createAddress, err = p.fetchCreateAddress(ctx, tx.Hash().String())
-			if err != nil {
-				p.log.WithError(err).Warn("Failed to fetch CREATE address from receipt")
-				// Continue without CREATE address - not fatal
-			}
-		}
+		// Pre-compute CREATE/CREATE2 addresses from trace stack
+		createAddresses := ComputeCreateAddresses(trace.Structlogs)
 
 		// Pre-allocate slice for better memory efficiency
 		structlogs = make([]Structlog, 0, len(trace.Structlogs))
@@ -395,7 +388,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 				ReturnData:             structLog.ReturnData,
 				Refund:                 structLog.Refund,
 				Error:                  structLog.Error,
-				CallToAddress:          p.extractCallAddressWithCreate(&structLog, createAddress),
+				CallToAddress:          p.extractCallAddressWithCreate(&structLog, i, createAddresses),
 				CallFrameID:            frameID,
 				CallFramePath:          framePath,
 				MetaNetworkID:          p.network.ID,
