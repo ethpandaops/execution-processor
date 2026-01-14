@@ -32,6 +32,8 @@ type Structlog struct {
 	Refund                 *uint64        `json:"refund"`
 	Error                  *string        `json:"error"`
 	CallToAddress          *string        `json:"call_to_address"`
+	CallFrameID            uint32         `json:"call_frame_id"`
+	CallFramePath          []uint32       `json:"call_frame_path"`
 	MetaNetworkID          int32          `json:"meta_network_id"`
 	MetaNetworkName        string         `json:"meta_network_name"`
 }
@@ -78,6 +80,9 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 
 	// Compute actual gas used for each structlog
 	gasUsed := ComputeGasUsed(trace.Structlogs)
+
+	// Initialize call frame tracker
+	callTracker := NewCallTracker()
 
 	// Check if this is a big transaction and register if needed
 	if totalCount >= p.bigTxManager.GetThreshold() {
@@ -138,6 +143,9 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 	// Producer - convert and send batches
 	batch := make([]Structlog, 0, chunkSize)
 	for i := 0; i < totalCount; i++ {
+		// Track call frame based on depth changes
+		frameID, framePath := callTracker.ProcessDepthChange(trace.Structlogs[i].Depth)
+
 		// Convert structlog
 		batch = append(batch, Structlog{
 			UpdatedDateTime:        NewClickHouseTime(time.Now()),
@@ -158,6 +166,8 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 			Refund:                 trace.Structlogs[i].Refund,
 			Error:                  trace.Structlogs[i].Error,
 			CallToAddress:          p.extractCallAddress(&trace.Structlogs[i]),
+			CallFrameID:            frameID,
+			CallFramePath:          framePath,
 			MetaNetworkID:          p.network.ID,
 			MetaNetworkName:        p.network.Name,
 		})
@@ -227,15 +237,27 @@ func (p *Processor) getTransactionTrace(ctx context.Context, tx *types.Transacti
 	return trace, nil
 }
 
-// extractCallAddress extracts the call address from a structlog if it's a CALL operation.
+// extractCallAddress extracts the call address from a structlog if it's a CALL-type operation.
+// Handles CALL, CALLCODE, DELEGATECALL, and STATICCALL opcodes.
 func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
-	if structLog.Op == "CALL" && structLog.Stack != nil && len(*structLog.Stack) > 1 {
+	if structLog.Stack == nil || len(*structLog.Stack) < 2 {
+		return nil
+	}
+
+	switch structLog.Op {
+	case "CALL", "CALLCODE":
+		// Stack: [gas, addr, value, argsOffset, argsSize, retOffset, retSize]
 		stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
 
 		return &stackValue
-	}
+	case "DELEGATECALL", "STATICCALL":
+		// Stack: [gas, addr, argsOffset, argsSize, retOffset, retSize]
+		stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
 
-	return nil
+		return &stackValue
+	default:
+		return nil
+	}
 }
 
 // ExtractStructlogs extracts structlog data from a transaction without inserting to database.
@@ -272,16 +294,15 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 		// Compute actual gas used for each structlog
 		gasUsed := ComputeGasUsed(trace.Structlogs)
 
+		// Initialize call frame tracker
+		callTracker := NewCallTracker()
+
 		// Pre-allocate slice for better memory efficiency
 		structlogs = make([]Structlog, 0, len(trace.Structlogs))
 
 		for i, structLog := range trace.Structlogs {
-			var callToAddress *string
-
-			if structLog.Op == "CALL" && structLog.Stack != nil && len(*structLog.Stack) > 1 {
-				stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
-				callToAddress = &stackValue
-			}
+			// Track call frame based on depth changes
+			frameID, framePath := callTracker.ProcessDepthChange(structLog.Depth)
 
 			row := Structlog{
 				UpdatedDateTime:        NewClickHouseTime(time.Now()),
@@ -301,7 +322,9 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 				ReturnData:             structLog.ReturnData,
 				Refund:                 structLog.Refund,
 				Error:                  structLog.Error,
-				CallToAddress:          callToAddress,
+				CallToAddress:          p.extractCallAddress(&structLog),
+				CallFrameID:            frameID,
+				CallFramePath:          framePath,
 				MetaNetworkID:          p.network.ID,
 				MetaNetworkName:        p.network.Name,
 			}
