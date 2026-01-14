@@ -93,8 +93,8 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 
 		createAddress, err = p.fetchCreateAddress(ctx, tx.Hash().String())
 		if err != nil {
+			// Continue without CREATE address - not fatal.
 			p.log.WithError(err).Warn("Failed to fetch CREATE address from receipt")
-			// Continue without CREATE address - not fatal
 		}
 	}
 
