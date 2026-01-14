@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/sirupsen/logrus"
 
@@ -83,6 +84,19 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 
 	// Initialize call frame tracker
 	callTracker := NewCallTracker()
+
+	// Fetch CREATE address from receipt if trace contains CREATE/CREATE2 opcodes
+	var createAddress *string
+
+	if hasCreateOpcode(trace.Structlogs) {
+		var err error
+
+		createAddress, err = p.fetchCreateAddress(ctx, tx.Hash().String())
+		if err != nil {
+			p.log.WithError(err).Warn("Failed to fetch CREATE address from receipt")
+			// Continue without CREATE address - not fatal
+		}
+	}
 
 	// Check if this is a big transaction and register if needed
 	if totalCount >= p.bigTxManager.GetThreshold() {
@@ -166,7 +180,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 			ReturnData:             trace.Structlogs[i].ReturnData,
 			Refund:                 trace.Structlogs[i].Refund,
 			Error:                  trace.Structlogs[i].Error,
-			CallToAddress:          p.extractCallAddress(&trace.Structlogs[i]),
+			CallToAddress:          p.extractCallAddressWithCreate(&trace.Structlogs[i], createAddress),
 			CallFrameID:            frameID,
 			CallFramePath:          framePath,
 			MetaNetworkID:          p.network.ID,
@@ -240,6 +254,7 @@ func (p *Processor) getTransactionTrace(ctx context.Context, tx *types.Transacti
 
 // extractCallAddress extracts the call address from a structlog if it's a CALL-type operation.
 // Handles CALL, CALLCODE, DELEGATECALL, and STATICCALL opcodes.
+// For CREATE/CREATE2, use extractCallAddressWithCreate instead.
 func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
 	if structLog.Stack == nil || len(*structLog.Stack) < 2 {
 		return nil
@@ -259,6 +274,50 @@ func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
 	default:
 		return nil
 	}
+}
+
+// extractCallAddressWithCreate extracts the call address, using createAddress for CREATE/CREATE2 opcodes.
+func (p *Processor) extractCallAddressWithCreate(structLog *execution.StructLog, createAddress *string) *string {
+	// For CREATE/CREATE2, use the address from the receipt
+	if structLog.Op == "CREATE" || structLog.Op == "CREATE2" {
+		return createAddress
+	}
+
+	return p.extractCallAddress(structLog)
+}
+
+// hasCreateOpcode checks if any structlog contains a CREATE or CREATE2 opcode.
+func hasCreateOpcode(structlogs []execution.StructLog) bool {
+	for i := range structlogs {
+		if structlogs[i].Op == "CREATE" || structlogs[i].Op == "CREATE2" {
+			return true
+		}
+	}
+
+	return false
+}
+
+// fetchCreateAddress fetches the contract address from the transaction receipt.
+// Returns nil if the receipt has no contract address (not a contract creation tx).
+func (p *Processor) fetchCreateAddress(ctx context.Context, txHash string) (*string, error) {
+	node := p.pool.GetHealthyExecutionNode()
+	if node == nil {
+		return nil, fmt.Errorf("no healthy execution node available")
+	}
+
+	receipt, err := node.TransactionReceipt(ctx, txHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch transaction receipt: %w", err)
+	}
+
+	// Check if contract was created (ContractAddress is non-zero)
+	if receipt.ContractAddress == (ethcommon.Address{}) {
+		return nil, nil //nolint:nilnil // nil address with nil error is valid - means no contract created
+	}
+
+	addr := receipt.ContractAddress.Hex()
+
+	return &addr, nil
 }
 
 // ExtractStructlogs extracts structlog data from a transaction without inserting to database.
@@ -298,6 +357,19 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 		// Initialize call frame tracker
 		callTracker := NewCallTracker()
 
+		// Fetch CREATE address from receipt if trace contains CREATE/CREATE2 opcodes
+		var createAddress *string
+
+		if hasCreateOpcode(trace.Structlogs) {
+			var err error
+
+			createAddress, err = p.fetchCreateAddress(ctx, tx.Hash().String())
+			if err != nil {
+				p.log.WithError(err).Warn("Failed to fetch CREATE address from receipt")
+				// Continue without CREATE address - not fatal
+			}
+		}
+
 		// Pre-allocate slice for better memory efficiency
 		structlogs = make([]Structlog, 0, len(trace.Structlogs))
 
@@ -323,7 +395,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 				ReturnData:             structLog.ReturnData,
 				Refund:                 structLog.Refund,
 				Error:                  structLog.Error,
-				CallToAddress:          p.extractCallAddress(&structLog),
+				CallToAddress:          p.extractCallAddressWithCreate(&structLog, createAddress),
 				CallFrameID:            frameID,
 				CallFramePath:          framePath,
 				MetaNetworkID:          p.network.ID,
