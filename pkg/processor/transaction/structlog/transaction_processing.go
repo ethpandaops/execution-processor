@@ -142,6 +142,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 
 	// Producer - convert and send batches
 	batch := make([]Structlog, 0, chunkSize)
+
 	for i := 0; i < totalCount; i++ {
 		// Track call frame based on depth changes
 		frameID, framePath := callTracker.ProcessDepthChange(trace.Structlogs[i].Depth)
