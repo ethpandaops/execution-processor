@@ -12,6 +12,9 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
+// Structlog represents a single EVM opcode execution within a transaction trace.
+// See gas_cost.go for detailed documentation on the gas fields.
+//
 //nolint:tagliatelle // ClickHouse uses snake_case column names
 type Structlog struct {
 	UpdatedDateTime        ClickHouseTime `json:"updated_date_time"`
@@ -24,18 +27,33 @@ type Structlog struct {
 	Index                  uint32         `json:"index"`
 	ProgramCounter         uint32         `json:"program_counter"`
 	Operation              string         `json:"operation"`
-	Gas                    uint64         `json:"gas"`
-	GasCost                uint64         `json:"gas_cost"`
-	GasUsed                uint64         `json:"gas_used"`
-	Depth                  uint64         `json:"depth"`
-	ReturnData             *string        `json:"return_data"`
-	Refund                 *uint64        `json:"refund"`
-	Error                  *string        `json:"error"`
-	CallToAddress          *string        `json:"call_to_address"`
-	CallFrameID            uint32         `json:"call_frame_id"`
-	CallFramePath          []uint32       `json:"call_frame_path"`
-	MetaNetworkID          int32          `json:"meta_network_id"`
-	MetaNetworkName        string         `json:"meta_network_name"`
+
+	// Gas is the remaining gas before this opcode executes.
+	Gas uint64 `json:"gas"`
+
+	// GasCost is from the execution node trace. For CALL/CREATE opcodes, this is the
+	// gas stipend passed to the child frame, not the call overhead.
+	GasCost uint64 `json:"gas_cost"`
+
+	// GasUsed is computed as gas[i] - gas[i+1] at the same depth level.
+	// For CALL/CREATE opcodes, this includes the call overhead plus all child frame gas.
+	// Summing across all opcodes will double count child frame gas.
+	GasUsed uint64 `json:"gas_used"`
+
+	// GasSelf excludes child frame gas. For CALL/CREATE opcodes, this is just the call
+	// overhead (warm/cold access, memory expansion). For other opcodes, equals GasUsed.
+	// Summing across all opcodes gives total execution gas without double counting.
+	GasSelf uint64 `json:"gas_self"`
+
+	Depth           uint64   `json:"depth"`
+	ReturnData      *string  `json:"return_data"`
+	Refund          *uint64  `json:"refund"`
+	Error           *string  `json:"error"`
+	CallToAddress   *string  `json:"call_to_address"`
+	CallFrameID     uint32   `json:"call_frame_id"`
+	CallFramePath   []uint32 `json:"call_frame_path"`
+	MetaNetworkID   int32    `json:"meta_network_id"`
+	MetaNetworkName string   `json:"meta_network_name"`
 }
 
 // ProcessSingleTransaction processes a single transaction and inserts its structlogs directly to ClickHouse.
@@ -80,6 +98,9 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 
 	// Compute actual gas used for each structlog
 	gasUsed := ComputeGasUsed(trace.Structlogs)
+
+	// Compute self gas (excludes child frame gas for CALL/CREATE opcodes)
+	gasSelf := ComputeGasSelf(trace.Structlogs, gasUsed)
 
 	// Initialize call frame tracker
 	callTracker := NewCallTracker()
@@ -165,6 +186,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 			Gas:                    trace.Structlogs[i].Gas,
 			GasCost:                trace.Structlogs[i].GasCost,
 			GasUsed:                gasUsed[i],
+			GasSelf:                gasSelf[i],
 			Depth:                  trace.Structlogs[i].Depth,
 			ReturnData:             trace.Structlogs[i].ReturnData,
 			Refund:                 trace.Structlogs[i].Refund,
@@ -357,6 +379,9 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 		// Compute actual gas used for each structlog
 		gasUsed := ComputeGasUsed(trace.Structlogs)
 
+		// Compute self gas (excludes child frame gas for CALL/CREATE opcodes)
+		gasSelf := ComputeGasSelf(trace.Structlogs, gasUsed)
+
 		// Initialize call frame tracker
 		callTracker := NewCallTracker()
 
@@ -384,6 +409,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 				Gas:                    structLog.Gas,
 				GasCost:                structLog.GasCost,
 				GasUsed:                gasUsed[i],
+				GasSelf:                gasSelf[i],
 				Depth:                  structLog.Depth,
 				ReturnData:             structLog.ReturnData,
 				Refund:                 structLog.Refund,
