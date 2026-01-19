@@ -45,6 +45,7 @@ func TestComputeCreateAddresses_SingleCREATE(t *testing.T) {
 	result := ComputeCreateAddresses(structlogs)
 
 	require.Contains(t, result, 1)
+	// Address is already 40 chars, so stays the same
 	assert.Equal(t, createdAddr, *result[1])
 }
 
@@ -80,7 +81,8 @@ func TestComputeCreateAddresses_FailedCREATE(t *testing.T) {
 	result := ComputeCreateAddresses(structlogs)
 
 	require.Contains(t, result, 1)
-	assert.Equal(t, zeroAddr, *result[1])
+	// Zero address is zero-padded to 40 hex chars
+	assert.Equal(t, "0x0000000000000000000000000000000000000000", *result[1])
 }
 
 func TestComputeCreateAddresses_NestedCREATEs(t *testing.T) {
@@ -204,7 +206,8 @@ func TestExtractCallAddressWithCreate_CALLDelegatesToExtractCallAddress(t *testi
 
 	// Should use extractCallAddress, not createAddresses
 	assert.NotNil(t, result)
-	assert.Equal(t, "0x5208", *result) // Second from top of stack
+	// Second from top of stack, zero-padded to 40 hex chars
+	assert.Equal(t, "0x0000000000000000000000000000000000005208", *result)
 }
 
 func TestExtractCallAddressWithCreate_DELEGATECALLDelegatesToExtractCallAddress(t *testing.T) {
@@ -220,7 +223,8 @@ func TestExtractCallAddressWithCreate_DELEGATECALLDelegatesToExtractCallAddress(
 	}, 0, createAddresses)
 
 	assert.NotNil(t, result)
-	assert.Equal(t, "0x5208", *result)
+	// Zero-padded to 40 hex chars
+	assert.Equal(t, "0x0000000000000000000000000000000000005208", *result)
 }
 
 func TestExtractCallAddressWithCreate_NonCallOpcodeReturnsNil(t *testing.T) {

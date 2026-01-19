@@ -3,6 +3,7 @@ package structlog
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/core/types"
@@ -263,25 +264,74 @@ func (p *Processor) getTransactionTrace(ctx context.Context, tx *types.Transacti
 	return trace, nil
 }
 
-// extractCallAddress extracts the call address from a structlog if it's a CALL-type operation.
+// formatAddress normalizes an address to exactly 42 characters (0x + 40 hex).
+//
+// Background: The EVM is a 256-bit (32-byte) stack machine. ALL stack values are 32 bytes,
+// including addresses. When execution clients like Erigon/Geth return debug traces, the
+// stack array contains raw 32-byte values as hex strings (66 chars with 0x prefix).
+//
+// However, Ethereum addresses are only 160 bits (20 bytes, 40 hex chars). In EVM/ABI encoding,
+// addresses are stored in the LOWER 160 bits of the 32-byte word (right-aligned, left-padded
+// with zeros). For example, address 0x7a250d5630b4cf539739df2c5dacb4c659f2488d on the stack:
+//
+//	0x0000000000000000000000007a250d5630b4cf539739df2c5dacb4c659f2488d
+//	|-------- upper 12 bytes (zeros) --------||---- lower 20 bytes (address) ----|
+//
+// Some contracts may have non-zero upper bytes in the stack value. The EVM ignores these
+// when interpreting the value as an address - only the lower 20 bytes are used.
+//
+// This function handles three cases:
+//  1. Short addresses (e.g., "0x1" for precompiles): left-pad with zeros to 40 hex chars
+//  2. Full 32-byte stack values (66 chars): extract rightmost 40 hex chars (lower 160 bits)
+//  3. Normal 42-char addresses: return as-is
+func formatAddress(addr string) string {
+	// Remove 0x prefix if present
+	hex := strings.TrimPrefix(addr, "0x")
+
+	// If longer than 40 chars, extract the lower 20 bytes (rightmost 40 hex chars).
+	// This handles raw 32-byte stack values from execution client traces.
+	if len(hex) > 40 {
+		hex = hex[len(hex)-40:]
+	}
+
+	// Left-pad with zeros to 40 chars if shorter (handles precompiles like 0x1),
+	// then add 0x prefix
+	return fmt.Sprintf("0x%040s", hex)
+}
+
+// extractCallAddress extracts the target address from a CALL-type opcode's stack.
 // Handles CALL, CALLCODE, DELEGATECALL, and STATICCALL opcodes.
 // For CREATE/CREATE2, use extractCallAddressWithCreate instead.
+//
+// Stack layout in Erigon/Geth debug traces:
+//   - Array index 0 = bottom of stack (oldest value, first pushed)
+//   - Array index len-1 = top of stack (newest value, first to be popped)
+//
+// When a CALL opcode executes, its arguments are at the top of the stack:
+//
+//	CALL/CALLCODE:        [..., retSize, retOffset, argsSize, argsOffset, value, addr, gas]
+//	DELEGATECALL/STATICCALL: [..., retSize, retOffset, argsSize, argsOffset, addr, gas]
+//	                                                                          ^     ^
+//	                                                                       len-2  len-1
+//
+// The address is always at Stack[len-2] (second from top), regardless of how many
+// other values exist below the CALL arguments on the stack.
+//
+// Note: The stack value is a raw 32-byte word. The formatAddress function extracts
+// the actual 20-byte address from the lower 160 bits.
 func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
 	if structLog.Stack == nil || len(*structLog.Stack) < 2 {
 		return nil
 	}
 
 	switch structLog.Op {
-	case "CALL", "CALLCODE":
-		// Stack: [gas, addr, value, argsOffset, argsSize, retOffset, retSize]
+	case "CALL", "CALLCODE", "DELEGATECALL", "STATICCALL":
+		// Extract the raw 32-byte stack value at the address position (second from top).
+		// formatAddress will normalize it to a proper 20-byte address.
 		stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
+		addr := formatAddress(stackValue)
 
-		return &stackValue
-	case "DELEGATECALL", "STATICCALL":
-		// Stack: [gas, addr, argsOffset, argsSize, retOffset, retSize]
-		stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
-
-		return &stackValue
+		return &addr
 	default:
 		return nil
 	}
@@ -326,7 +376,7 @@ func ComputeCreateAddresses(structlogs []execution.StructLog) map[int]*string {
 			if log.Depth <= last.depth && i > last.index {
 				// Extract address from top of stack (created address or 0 if failed)
 				if log.Stack != nil && len(*log.Stack) > 0 {
-					addr := (*log.Stack)[len(*log.Stack)-1]
+					addr := formatAddress((*log.Stack)[len(*log.Stack)-1])
 					result[last.index] = &addr
 				}
 
