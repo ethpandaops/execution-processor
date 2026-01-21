@@ -4,12 +4,15 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/sirupsen/logrus"
 
-	"github.com/ethpandaops/execution-processor/pkg/common"
+	pcommon "github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
@@ -69,33 +72,39 @@ func isCallOpcode(op string) bool {
 	}
 }
 
-// isPrecompile returns true if the address is likely a precompile contract.
-// Precompile calls don't create trace frames (unlike EOA calls which do).
+// precompileAddresses is populated from go-ethereum's precompile definitions.
+// Precompile calls don't appear in trace_transaction results (unlike EOA calls which do).
 // This is used to distinguish EOA calls from precompile calls when depth doesn't increase.
 //
-// Uses a heuristic: any address < 0x10000 is considered a precompile.
-// This covers all known precompiles (0x01-0x11, 0x100) and future-proofs for new ones.
-//
-// This is safe because the probability of an EOA at such a low address is negligible
-// (EOA addresses are keccak256 hashes, odds of being < 0x10000 are ≈ 2^-144).
+// Note: Low addresses like 0x5c, 0x60, etc. are NOT precompiles - they're real EOAs/contracts
+// deployed early in Ethereum's history. Only addresses defined in go-ethereum are precompiles.
+var (
+	precompileAddresses map[common.Address]bool
+	precompileOnce      sync.Once
+)
+
+// initPrecompileAddresses builds the set of all known precompile addresses from go-ethereum.
+// Uses PrecompiledContractsOsaka which includes all precompiles across all forks.
+func initPrecompileAddresses() {
+	precompileAddresses = make(map[common.Address]bool, len(vm.PrecompiledContractsOsaka))
+	for addr := range vm.PrecompiledContractsOsaka {
+		precompileAddresses[addr] = true
+	}
+}
+
+// isPrecompile returns true if the address is a known EVM precompile.
+// Precompile calls don't appear in trace_transaction results (unlike EOA calls which do).
 func isPrecompile(addr string) bool {
-	// Remove 0x prefix and parse as hex
+	precompileOnce.Do(initPrecompileAddresses)
+
+	// Normalize to lowercase with 0x prefix and full 40 hex chars
 	hex := strings.TrimPrefix(strings.ToLower(addr), "0x")
 
-	// Pad to 40 chars if needed (shouldn't happen with formatAddress, but be safe)
 	for len(hex) < 40 {
 		hex = "0" + hex
 	}
 
-	// Check if first 36 chars (18 bytes) are all zeros
-	// This means the address is < 0x10000 (fits in last 2 bytes)
-	for i := 0; i < 36; i++ {
-		if hex[i] != '0' {
-			return false
-		}
-	}
-
-	return true
+	return precompileAddresses[common.HexToAddress("0x"+hex)]
 }
 
 // ProcessSingleTransaction processes a single transaction and inserts its structlogs directly to ClickHouse.
@@ -117,13 +126,13 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.B
 
 	// Send for direct insertion
 	if err := p.insertStructlogs(ctx, structlogs); err != nil {
-		common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
+		pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
 
 		return 0, fmt.Errorf("failed to insert structlogs: %w", err)
 	}
 
 	// Record success metrics
-	common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
+	pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
 
 	return structlogCount, nil
 }
@@ -258,26 +267,24 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 			MetaNetworkName:        p.network.Name,
 		})
 
-		// Check for EOA call: CALL-type opcode where next opcode doesn't increase depth
+		// Check for EOA call: CALL-type opcode where depth stays the same (immediate return)
 		// and target is not a precompile (precompiles don't create trace frames)
 		if isCallOpcode(structLog.Op) && callToAddr != nil {
 			isEOACall := false
 
 			if i+1 < totalCount {
-				// Next opcode exists - check if depth increased
+				// Next opcode exists - check if depth stayed the same
+				// Depth increase = entered contract code (not EOA)
+				// Depth decrease = call returned/failed (not EOA)
+				// Depth same = called EOA or precompile (immediate return)
 				nextDepth := trace.Structlogs[i+1].Depth
-				if nextDepth <= structLog.Depth {
-					// Depth didn't increase - check if it's a precompile
-					if !isPrecompile(*callToAddr) {
-						isEOACall = true
-					}
-				}
-			} else {
-				// Last opcode is a CALL - if not precompile, must be EOA
-				if !isPrecompile(*callToAddr) {
+				if nextDepth == structLog.Depth && !isPrecompile(*callToAddr) {
 					isEOACall = true
 				}
 			}
+			// Note: If last opcode is a CALL, we can't determine if it's EOA
+			// because we don't have a next opcode to compare depth with.
+			// These are typically failed calls at end of execution.
 
 			if isEOACall {
 				// Emit synthetic structlog for EOA frame
@@ -345,7 +352,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 	}
 
 	// Record success metrics
-	common.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
+	pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
 
 	return totalCount, nil
 }
@@ -508,7 +515,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 
 	defer func() {
 		duration := time.Since(start)
-		common.TransactionProcessingDuration.WithLabelValues(p.network.Name, "structlog").Observe(duration.Seconds())
+		pcommon.TransactionProcessingDuration.WithLabelValues(p.network.Name, "structlog").Observe(duration.Seconds())
 	}()
 
 	// Get execution node
@@ -582,26 +589,24 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 
 			structlogs = append(structlogs, row)
 
-			// Check for EOA call: CALL-type opcode where next opcode doesn't increase depth
+			// Check for EOA call: CALL-type opcode where depth stays the same (immediate return)
 			// and target is not a precompile (precompiles don't create trace frames)
 			if isCallOpcode(structLog.Op) && callToAddr != nil {
 				isEOACall := false
 
 				if i+1 < len(trace.Structlogs) {
-					// Next opcode exists - check if depth increased
+					// Next opcode exists - check if depth stayed the same
+					// Depth increase = entered contract code (not EOA)
+					// Depth decrease = call returned/failed (not EOA)
+					// Depth same = called EOA or precompile (immediate return)
 					nextDepth := trace.Structlogs[i+1].Depth
-					if nextDepth <= structLog.Depth {
-						// Depth didn't increase - check if it's a precompile
-						if !isPrecompile(*callToAddr) {
-							isEOACall = true
-						}
-					}
-				} else {
-					// Last opcode is a CALL - if not precompile, must be EOA
-					if !isPrecompile(*callToAddr) {
+					if nextDepth == structLog.Depth && !isPrecompile(*callToAddr) {
 						isEOACall = true
 					}
 				}
+				// Note: If last opcode is a CALL, we can't determine if it's EOA
+				// because we don't have a next opcode to compare depth with.
+				// These are typically failed calls at end of execution.
 
 				if isEOACall {
 					// Emit synthetic structlog for EOA frame

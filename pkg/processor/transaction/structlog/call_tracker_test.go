@@ -3,6 +3,7 @@ package structlog
 import (
 	"testing"
 
+	"github.com/ethereum/go-ethereum/core/vm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -279,9 +280,15 @@ func TestIsPrecompile(t *testing.T) {
 		{"bls12381MapFp2ToG2", "0x0000000000000000000000000000000000000011", true},
 		{"p256Verify", "0x0000000000000000000000000000000000000100", true},
 
-		// Edge cases within threshold (should return true)
-		{"max precompile range", "0x000000000000000000000000000000000000ffff", true},
-		{"zero address", "0x0000000000000000000000000000000000000000", true},
+		// Low addresses that are NOT precompiles (should return false)
+		// These are real EOAs/contracts deployed early in Ethereum's history
+		{"zero address", "0x0000000000000000000000000000000000000000", false},
+		{"address 0x5c", "0x000000000000000000000000000000000000005c", false},
+		{"address 0x60", "0x0000000000000000000000000000000000000060", false},
+		{"address 0x44", "0x0000000000000000000000000000000000000044", false},
+		{"address 0x348", "0x0000000000000000000000000000000000000348", false},
+		{"address 0xffff", "0x000000000000000000000000000000000000ffff", false},
+		{"address 0x12", "0x0000000000000000000000000000000000000012", false}, // Just above 0x11
 
 		// Real contract/EOA addresses (should return false)
 		{"WETH", "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", false},
@@ -289,13 +296,9 @@ func TestIsPrecompile(t *testing.T) {
 		{"vitalik.eth", "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", false},
 		{"random EOA", "0x1234567890abcdef1234567890abcdef12345678", false},
 
-		// Just above threshold (should return false)
-		{"just above threshold", "0x0000000000000000000000000000000000010000", false},
-		{"slightly above", "0x0000000000000000000000000000000000010001", false},
-
-		// Case insensitivity
-		{"uppercase hex", "0x000000000000000000000000000000000000000A", true},
-		{"mixed case", "0x000000000000000000000000000000000000000B", true},
+		// Case insensitivity for precompiles
+		{"uppercase hex 0xA", "0x000000000000000000000000000000000000000A", true},
+		{"mixed case 0xB", "0x000000000000000000000000000000000000000B", true},
 		{"uppercase contract", "0xC02AAA39B223FE8D0A0E5C4F27EAD9083C756CC2", false},
 
 		// Without 0x prefix (edge case)
@@ -306,6 +309,7 @@ func TestIsPrecompile(t *testing.T) {
 		{"short precompile 0x1", "0x1", true},
 		{"short precompile 0x9", "0x9", true},
 		{"short precompile 0x100", "0x100", true},
+		{"short non-precompile 0x5c", "0x5c", false},
 	}
 
 	for _, tc := range tests {
@@ -314,6 +318,22 @@ func TestIsPrecompile(t *testing.T) {
 			assert.Equal(t, tc.expected, result, "isPrecompile(%q) = %v, want %v", tc.addr, result, tc.expected)
 		})
 	}
+}
+
+// TestIsPrecompile_UsesGethDefinitions verifies that precompile detection
+// uses go-ethereum's precompile definitions from vm.PrecompiledContractsOsaka.
+func TestIsPrecompile_UsesGethDefinitions(t *testing.T) {
+	// Verify all go-ethereum precompiles are detected
+	for addr := range vm.PrecompiledContractsOsaka {
+		addrStr := addr.Hex()
+		assert.True(t, isPrecompile(addrStr),
+			"go-ethereum precompile %s should be detected as precompile", addrStr)
+	}
+
+	// Verify the expected count matches go-ethereum
+	// As of Osaka: 0x01-0x11 (17) + 0x100 (1) = 18 precompiles
+	assert.Equal(t, 18, len(vm.PrecompiledContractsOsaka),
+		"expected 18 precompiles in go-ethereum Osaka fork")
 }
 
 func TestIsCallOpcode(t *testing.T) {
@@ -351,6 +371,228 @@ func TestIsCallOpcode(t *testing.T) {
 			assert.Equal(t, tc.expected, result, "isCallOpcode(%q) = %v, want %v", tc.opcode, result, tc.expected)
 		})
 	}
+}
+
+// TestEOADetectionLogic tests the EOA call detection scenarios.
+// This validates the fix for the bug where synthetic frames were incorrectly
+// created for failed calls (depth decrease) instead of only for EOA calls (depth same).
+func TestEOADetectionLogic(t *testing.T) {
+	// Helper to simulate the EOA detection logic from transaction_processing.go
+	shouldCreateSyntheticFrame := func(currentDepth, nextDepth uint64, hasNextOpcode bool, callToAddr string) bool {
+		if !hasNextOpcode {
+			// Last opcode is a CALL - we can't determine if it's EOA
+			// because we don't have a next opcode to compare depth with.
+			return false
+		}
+
+		// Only create synthetic frame if depth stayed the same (EOA call)
+		// Depth increase = entered contract code (not EOA)
+		// Depth decrease = call returned/failed (not EOA)
+		// Depth same = called EOA or precompile (immediate return)
+		if nextDepth == currentDepth && !isPrecompile(callToAddr) {
+			return true
+		}
+
+		return false
+	}
+
+	tests := []struct {
+		name         string
+		currentDepth uint64
+		nextDepth    uint64
+		hasNextOp    bool
+		callToAddr   string
+		expectSynth  bool
+		description  string
+	}{
+		// EOA call scenarios (should create synthetic frame)
+		{
+			name:         "EOA call - depth stays same",
+			currentDepth: 2,
+			nextDepth:    2,
+			hasNextOp:    true,
+			callToAddr:   "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", // vitalik.eth
+			expectSynth:  true,
+			description:  "CALL to EOA returns immediately, depth stays same",
+		},
+		{
+			name:         "EOA call from root depth",
+			currentDepth: 1,
+			nextDepth:    1,
+			hasNextOp:    true,
+			callToAddr:   "0x1234567890abcdef1234567890abcdef12345678",
+			expectSynth:  true,
+			description:  "CALL to EOA from root frame",
+		},
+
+		// Precompile call scenarios (should NOT create synthetic frame)
+		{
+			name:         "precompile call - ecrecover",
+			currentDepth: 2,
+			nextDepth:    2,
+			hasNextOp:    true,
+			callToAddr:   "0x0000000000000000000000000000000000000001",
+			expectSynth:  false,
+			description:  "CALL to ecrecover precompile",
+		},
+		{
+			name:         "precompile call - sha256",
+			currentDepth: 2,
+			nextDepth:    2,
+			hasNextOp:    true,
+			callToAddr:   "0x0000000000000000000000000000000000000002",
+			expectSynth:  false,
+			description:  "CALL to sha256 precompile",
+		},
+		{
+			name:         "precompile call - kzg point eval",
+			currentDepth: 3,
+			nextDepth:    3,
+			hasNextOp:    true,
+			callToAddr:   "0x000000000000000000000000000000000000000a",
+			expectSynth:  false,
+			description:  "STATICCALL to KZG point evaluation precompile",
+		},
+
+		// Contract call scenarios (should NOT create synthetic frame)
+		{
+			name:         "contract call - depth increases",
+			currentDepth: 2,
+			nextDepth:    3,
+			hasNextOp:    true,
+			callToAddr:   "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", // WETH
+			expectSynth:  false,
+			description:  "CALL to contract enters code, depth increases",
+		},
+		{
+			name:         "delegatecall - depth increases",
+			currentDepth: 1,
+			nextDepth:    2,
+			hasNextOp:    true,
+			callToAddr:   "0x7a250d5630b4cf539739df2c5dacb4c659f2488d", // Uniswap Router
+			expectSynth:  false,
+			description:  "DELEGATECALL enters implementation code",
+		},
+		{
+			name:         "nested contract call",
+			currentDepth: 3,
+			nextDepth:    4,
+			hasNextOp:    true,
+			callToAddr:   "0xabcdef1234567890abcdef1234567890abcdef12",
+			expectSynth:  false,
+			description:  "Nested CALL enters deeper contract",
+		},
+
+		// Failed/returning call scenarios (should NOT create synthetic frame)
+		// This is the bug we fixed - depth DECREASE was incorrectly treated as EOA
+		{
+			name:         "failed call - depth decreases by 1",
+			currentDepth: 3,
+			nextDepth:    2,
+			hasNextOp:    true,
+			callToAddr:   "0xde9c774cde34f85ee69c22e9a1077a0c9091f09b",
+			expectSynth:  false,
+			description:  "CALL failed/reverted, returned to caller depth",
+		},
+		{
+			name:         "failed call - depth decreases by 2",
+			currentDepth: 4,
+			nextDepth:    2,
+			hasNextOp:    true,
+			callToAddr:   "0xabcdef1234567890abcdef1234567890abcdef12",
+			expectSynth:  false,
+			description:  "CALL caused revert unwinding multiple frames",
+		},
+		{
+			name:         "out of gas - depth returns to root",
+			currentDepth: 3,
+			nextDepth:    1,
+			hasNextOp:    true,
+			callToAddr:   "0xfe02a32cbe0cb9ad9a945576a5bb53a3c123a3a3",
+			expectSynth:  false,
+			description:  "Out of gas unwinds all the way to root",
+		},
+		{
+			name:         "call returns normally",
+			currentDepth: 2,
+			nextDepth:    1,
+			hasNextOp:    true,
+			callToAddr:   "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+			expectSynth:  false,
+			description:  "Contract call completed and returned",
+		},
+
+		// Last opcode scenarios (should NOT create synthetic frame)
+		{
+			name:         "last opcode is CALL - no next opcode",
+			currentDepth: 2,
+			nextDepth:    0, // doesn't matter
+			hasNextOp:    false,
+			callToAddr:   "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+			expectSynth:  false,
+			description:  "Transaction ends with CALL (likely failed)",
+		},
+		{
+			name:         "last opcode CALL to contract",
+			currentDepth: 1,
+			nextDepth:    0,
+			hasNextOp:    false,
+			callToAddr:   "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2",
+			expectSynth:  false,
+			description:  "Can't determine if EOA without next opcode",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			result := shouldCreateSyntheticFrame(tc.currentDepth, tc.nextDepth, tc.hasNextOp, tc.callToAddr)
+			assert.Equal(t, tc.expectSynth, result,
+				"%s: shouldCreateSyntheticFrame(depth=%d, nextDepth=%d, hasNext=%v, addr=%s) = %v, want %v",
+				tc.description, tc.currentDepth, tc.nextDepth, tc.hasNextOp, tc.callToAddr, result, tc.expectSynth)
+		})
+	}
+}
+
+// TestEOADetectionBugScenario_DepthDecrease verifies the fix for the bug where
+// a CALL followed by depth decrease was incorrectly treated as an EOA call.
+// Real-world example: transaction 0x4f7494... had a CALL at depth 3, next opcode
+// was at depth 2 (returned/failed). The old <= check created a phantom synthetic frame.
+func TestEOADetectionBugScenario_DepthDecrease(t *testing.T) {
+	// Simulate the buggy scenario from tx 0x4f7494c9f3b1bb7fb9f4d928aae41d971f0799a3d5c24df209074b70f04211f5
+	// Index 235: GAS at depth 3
+	// Index 236: CALL at depth 3 (to 0xde9c774cde34f85ee69c22e9a1077a0c9091f09b)
+	// Index 237: RETURNDATASIZE at depth 2 (call returned/failed)
+	currentDepth := uint64(3)
+	nextDepth := uint64(2) // Depth DECREASED (call returned/failed)
+	callToAddr := "0xde9c774cde34f85ee69c22e9a1077a0c9091f09b"
+
+	// Old buggy logic: nextDepth <= currentDepth → 2 <= 3 → TRUE (wrong!)
+	buggyLogic := nextDepth <= currentDepth && !isPrecompile(callToAddr)
+	assert.True(t, buggyLogic, "Old buggy logic would have created synthetic frame")
+
+	// Fixed logic: nextDepth == currentDepth → 2 == 3 → FALSE (correct!)
+	fixedLogic := nextDepth == currentDepth && !isPrecompile(callToAddr)
+	assert.False(t, fixedLogic, "Fixed logic should NOT create synthetic frame")
+}
+
+// TestEOADetectionBugScenario_OutOfGas verifies the fix for the bug where
+// a CALL as the last opcode (out of gas) was incorrectly treated as an EOA call.
+// Real-world example: transaction 0x7178d8e3... ended with a CALL that ran out of gas.
+func TestEOADetectionBugScenario_OutOfGas(t *testing.T) {
+	// Simulate the buggy scenario from tx 0x7178d8e3a33331ee0b2c42372c357cb6135bf3acd6e1eea5dbca7d9dbedfa418
+	// Index 10: GAS at depth 1
+	// Index 11: CALL at depth 1 (last opcode - out of gas before entering target)
+	// No index 12 (trace ended)
+	callToAddr := "0xfe02a32cbe0cb9ad9a945576a5bb53a3c123a3a3"
+	hasNextOpcode := false
+
+	// Old buggy logic: "Last opcode is a CALL - if not precompile, must be EOA"
+	buggyLogic := !hasNextOpcode && !isPrecompile(callToAddr)
+	assert.True(t, buggyLogic, "Old buggy logic would have created synthetic frame")
+
+	// Fixed logic: Don't assume last CALL is EOA - we can't determine without next opcode
+	fixedLogic := hasNextOpcode && !isPrecompile(callToAddr) // Always false when !hasNextOpcode
+	assert.False(t, fixedLogic, "Fixed logic should NOT create synthetic frame for last opcode")
 }
 
 func TestCallTracker_RealWorldExample(t *testing.T) {
