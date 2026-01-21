@@ -57,6 +57,47 @@ type Structlog struct {
 	MetaNetworkName string   `json:"meta_network_name"`
 }
 
+// isCallOpcode returns true if the opcode initiates a call that creates a child frame.
+// Note: CREATE/CREATE2 always execute code (constructor), so they always increase depth.
+// CALL-type opcodes may target EOAs (no code) or precompiles (special handling).
+func isCallOpcode(op string) bool {
+	switch op {
+	case "CALL", "CALLCODE", "DELEGATECALL", "STATICCALL":
+		return true
+	default:
+		return false
+	}
+}
+
+// isPrecompile returns true if the address is likely a precompile contract.
+// Precompile calls don't create trace frames (unlike EOA calls which do).
+// This is used to distinguish EOA calls from precompile calls when depth doesn't increase.
+//
+// Uses a heuristic: any address < 0x10000 is considered a precompile.
+// This covers all known precompiles (0x01-0x11, 0x100) and future-proofs for new ones.
+//
+// This is safe because the probability of an EOA at such a low address is negligible
+// (EOA addresses are keccak256 hashes, odds of being < 0x10000 are ≈ 2^-144).
+func isPrecompile(addr string) bool {
+	// Remove 0x prefix and parse as hex
+	hex := strings.TrimPrefix(strings.ToLower(addr), "0x")
+
+	// Pad to 40 chars if needed (shouldn't happen with formatAddress, but be safe)
+	for len(hex) < 40 {
+		hex = "0" + hex
+	}
+
+	// Check if first 36 chars (18 bytes) are all zeros
+	// This means the address is < 0x10000 (fits in last 2 bytes)
+	for i := 0; i < 36; i++ {
+		if hex[i] != '0' {
+			return false
+		}
+	}
+
+	return true
+}
+
 // ProcessSingleTransaction processes a single transaction and inserts its structlogs directly to ClickHouse.
 func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
 	// Extract structlog data
@@ -168,9 +209,27 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 	// Producer - convert and send batches
 	batch := make([]Structlog, 0, chunkSize)
 
+	// Helper to send batch when full
+	sendBatchIfFull := func() error {
+		if len(batch) >= chunkSize {
+			select {
+			case batchChan <- batch:
+				batch = make([]Structlog, 0, chunkSize)
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+
+		return nil
+	}
+
 	for i := 0; i < totalCount; i++ {
+		structLog := &trace.Structlogs[i]
+
 		// Track call frame based on depth changes
-		frameID, framePath := callTracker.ProcessDepthChange(trace.Structlogs[i].Depth)
+		frameID, framePath := callTracker.ProcessDepthChange(structLog.Depth)
+
+		callToAddr := p.extractCallAddressWithCreate(structLog, i, createAddresses)
 
 		// Convert structlog
 		batch = append(batch, Structlog{
@@ -182,36 +241,84 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 			TransactionFailed:      trace.Failed,
 			TransactionReturnValue: trace.ReturnValue,
 			Index:                  uint32(i), //nolint:gosec // index is bounded by structlogs length
-			ProgramCounter:         trace.Structlogs[i].PC,
-			Operation:              trace.Structlogs[i].Op,
-			Gas:                    trace.Structlogs[i].Gas,
-			GasCost:                trace.Structlogs[i].GasCost,
+			ProgramCounter:         structLog.PC,
+			Operation:              structLog.Op,
+			Gas:                    structLog.Gas,
+			GasCost:                structLog.GasCost,
 			GasUsed:                gasUsed[i],
 			GasSelf:                gasSelf[i],
-			Depth:                  trace.Structlogs[i].Depth,
-			ReturnData:             trace.Structlogs[i].ReturnData,
-			Refund:                 trace.Structlogs[i].Refund,
-			Error:                  trace.Structlogs[i].Error,
-			CallToAddress:          p.extractCallAddressWithCreate(&trace.Structlogs[i], i, createAddresses),
+			Depth:                  structLog.Depth,
+			ReturnData:             structLog.ReturnData,
+			Refund:                 structLog.Refund,
+			Error:                  structLog.Error,
+			CallToAddress:          callToAddr,
 			CallFrameID:            frameID,
 			CallFramePath:          framePath,
 			MetaNetworkID:          p.network.ID,
 			MetaNetworkName:        p.network.Name,
 		})
 
+		// Check for EOA call: CALL-type opcode where next opcode doesn't increase depth
+		// and target is not a precompile (precompiles don't create trace frames)
+		if isCallOpcode(structLog.Op) && callToAddr != nil {
+			isEOACall := false
+
+			if i+1 < totalCount {
+				// Next opcode exists - check if depth increased
+				nextDepth := trace.Structlogs[i+1].Depth
+				if nextDepth <= structLog.Depth {
+					// Depth didn't increase - check if it's a precompile
+					if !isPrecompile(*callToAddr) {
+						isEOACall = true
+					}
+				}
+			} else {
+				// Last opcode is a CALL - if not precompile, must be EOA
+				if !isPrecompile(*callToAddr) {
+					isEOACall = true
+				}
+			}
+
+			if isEOACall {
+				// Emit synthetic structlog for EOA frame
+				eoaFrameID, eoaFramePath := callTracker.IssueFrameID()
+
+				batch = append(batch, Structlog{
+					UpdatedDateTime:        NewClickHouseTime(time.Now()),
+					BlockNumber:            block.Number().Uint64(),
+					TransactionHash:        tx.Hash().String(),
+					TransactionIndex:       uint32(index), //nolint:gosec // index is bounded by block.Transactions() length
+					TransactionGas:         trace.Gas,
+					TransactionFailed:      trace.Failed,
+					TransactionReturnValue: trace.ReturnValue,
+					Index:                  uint32(i), //nolint:gosec // Same index as parent CALL
+					ProgramCounter:         0,         // No PC for EOA
+					Operation:              "",        // Empty = synthetic EOA frame
+					Gas:                    0,
+					GasCost:                0,
+					GasUsed:                0,
+					GasSelf:                0,
+					Depth:                  structLog.Depth + 1, // One level deeper than caller
+					ReturnData:             nil,
+					Refund:                 nil,
+					Error:                  structLog.Error, // Inherit error if CALL failed
+					CallToAddress:          callToAddr,      // The EOA address
+					CallFrameID:            eoaFrameID,
+					CallFramePath:          eoaFramePath,
+					MetaNetworkID:          p.network.ID,
+					MetaNetworkName:        p.network.Name,
+				})
+			}
+		}
+
 		// CRITICAL: Free original trace data immediately
 		trace.Structlogs[i] = execution.StructLog{}
 
 		// Send full batch
-		if len(batch) == chunkSize {
-			select {
-			case batchChan <- batch:
-				batch = make([]Structlog, 0, chunkSize)
-			case <-ctx.Done():
-				close(batchChan)
+		if err := sendBatchIfFull(); err != nil {
+			close(batchChan)
 
-				return 0, ctx.Err()
-			}
+			return 0, err
 		}
 	}
 
@@ -445,6 +552,8 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 			// Track call frame based on depth changes
 			frameID, framePath := callTracker.ProcessDepthChange(structLog.Depth)
 
+			callToAddr := p.extractCallAddressWithCreate(&structLog, i, createAddresses)
+
 			row := Structlog{
 				UpdatedDateTime:        NewClickHouseTime(time.Now()),
 				BlockNumber:            block.Number().Uint64(),
@@ -464,7 +573,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 				ReturnData:             structLog.ReturnData,
 				Refund:                 structLog.Refund,
 				Error:                  structLog.Error,
-				CallToAddress:          p.extractCallAddressWithCreate(&structLog, i, createAddresses),
+				CallToAddress:          callToAddr,
 				CallFrameID:            frameID,
 				CallFramePath:          framePath,
 				MetaNetworkID:          p.network.ID,
@@ -472,6 +581,61 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 			}
 
 			structlogs = append(structlogs, row)
+
+			// Check for EOA call: CALL-type opcode where next opcode doesn't increase depth
+			// and target is not a precompile (precompiles don't create trace frames)
+			if isCallOpcode(structLog.Op) && callToAddr != nil {
+				isEOACall := false
+
+				if i+1 < len(trace.Structlogs) {
+					// Next opcode exists - check if depth increased
+					nextDepth := trace.Structlogs[i+1].Depth
+					if nextDepth <= structLog.Depth {
+						// Depth didn't increase - check if it's a precompile
+						if !isPrecompile(*callToAddr) {
+							isEOACall = true
+						}
+					}
+				} else {
+					// Last opcode is a CALL - if not precompile, must be EOA
+					if !isPrecompile(*callToAddr) {
+						isEOACall = true
+					}
+				}
+
+				if isEOACall {
+					// Emit synthetic structlog for EOA frame
+					eoaFrameID, eoaFramePath := callTracker.IssueFrameID()
+
+					eoaRow := Structlog{
+						UpdatedDateTime:        NewClickHouseTime(time.Now()),
+						BlockNumber:            block.Number().Uint64(),
+						TransactionHash:        tx.Hash().String(),
+						TransactionIndex:       uIndex,
+						TransactionGas:         trace.Gas,
+						TransactionFailed:      trace.Failed,
+						TransactionReturnValue: trace.ReturnValue,
+						Index:                  uint32(i), //nolint:gosec // Same index as parent CALL
+						ProgramCounter:         0,         // No PC for EOA
+						Operation:              "",        // Empty = synthetic EOA frame
+						Gas:                    0,
+						GasCost:                0,
+						GasUsed:                0,
+						GasSelf:                0,
+						Depth:                  structLog.Depth + 1, // One level deeper than caller
+						ReturnData:             nil,
+						Refund:                 nil,
+						Error:                  structLog.Error, // Inherit error if CALL failed
+						CallToAddress:          callToAddr,      // The EOA address
+						CallFrameID:            eoaFrameID,
+						CallFramePath:          eoaFramePath,
+						MetaNetworkID:          p.network.ID,
+						MetaNetworkName:        p.network.Name,
+					}
+
+					structlogs = append(structlogs, eoaRow)
+				}
+			}
 		}
 
 		// Clear the original trace data to free memory

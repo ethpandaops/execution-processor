@@ -52,6 +52,21 @@ func (ct *CallTracker) ProcessDepthChange(newDepth uint64) (frameID uint32, fram
 	return ct.stack[len(ct.stack)-1].ID, pathCopy
 }
 
+// IssueFrameID allocates the next frame ID without processing a depth change.
+// Used for synthetic frames (e.g., EOA calls that don't increase depth).
+// Returns the new frame ID and the path for the synthetic child frame.
+func (ct *CallTracker) IssueFrameID() (frameID uint32, framePath []uint32) {
+	newID := ct.nextID
+	ct.nextID++
+
+	// Path for synthetic frame is current path + new ID
+	pathCopy := make([]uint32, len(ct.path)+1)
+	copy(pathCopy, ct.path)
+	pathCopy[len(ct.path)] = newID
+
+	return newID, pathCopy
+}
+
 // CurrentFrameID returns the current frame ID without processing a depth change.
 func (ct *CallTracker) CurrentFrameID() uint32 {
 	return ct.stack[len(ct.stack)-1].ID
