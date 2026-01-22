@@ -515,7 +515,6 @@ func (m *Manager) handleLeadershipGain(ctx context.Context) {
 	if m.network != nil {
 		m.log.WithFields(logrus.Fields{
 			"network": m.network.Name,
-			"chainId": m.network.ID,
 		}).Debug("Starting block processing for network")
 	}
 
@@ -1016,7 +1015,6 @@ func (m *Manager) QueueBlockManually(ctx context.Context, processorName string, 
 func (m *Manager) enqueueSimpleBlockTask(ctx context.Context, p *transaction_simple.Processor, blockNumber uint64) (int, error) {
 	payload := &transaction_simple.ProcessPayload{
 		BlockNumber: *big.NewInt(int64(blockNumber)), //nolint:gosec // validated above
-		NetworkID:   m.network.ID,
 		NetworkName: m.network.Name,
 	}
 

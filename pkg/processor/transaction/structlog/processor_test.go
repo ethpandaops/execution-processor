@@ -177,7 +177,6 @@ func TestStructlogCountReturn(t *testing.T) {
 			ReturnData:             structLog.ReturnData,
 			Refund:                 structLog.Refund,
 			Error:                  structLog.Error,
-			MetaNetworkID:          1,
 			MetaNetworkName:        "test",
 		}
 
@@ -258,7 +257,6 @@ func TestMemoryManagement(t *testing.T) {
 			ReturnData:             nil,
 			Refund:                 nil,
 			Error:                  nil,
-			MetaNetworkID:          1,
 			MetaNetworkName:        "mainnet",
 		}
 	}
@@ -382,7 +380,6 @@ func TestProcessPayload(t *testing.T) {
 		BlockNumber:      *big.NewInt(12345),
 		TransactionHash:  "0x1234567890abcdef",
 		TransactionIndex: 5,
-		NetworkID:        1,
 		NetworkName:      "mainnet",
 		Network:          "mainnet",
 		ProcessingMode:   c.FORWARDS_MODE,
@@ -432,7 +429,6 @@ func TestNewProcessForwardsTask(t *testing.T) {
 		BlockNumber:      *big.NewInt(12345),
 		TransactionHash:  "0x1234567890abcdef",
 		TransactionIndex: 5,
-		NetworkID:        1,
 		NetworkName:      "mainnet",
 		Network:          "mainnet",
 	}
@@ -468,7 +464,6 @@ func TestNewProcessBackwardsTask(t *testing.T) {
 		BlockNumber:      *big.NewInt(12345),
 		TransactionHash:  "0x1234567890abcdef",
 		TransactionIndex: 5,
-		NetworkID:        1,
 		NetworkName:      "mainnet",
 		Network:          "mainnet",
 	}

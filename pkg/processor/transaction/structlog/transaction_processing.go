@@ -56,7 +56,6 @@ type Structlog struct {
 	CallToAddress   *string  `json:"call_to_address"`
 	CallFrameID     uint32   `json:"call_frame_id"`
 	CallFramePath   []uint32 `json:"call_frame_path"`
-	MetaNetworkID   int32    `json:"meta_network_id"`
 	MetaNetworkName string   `json:"meta_network_name"`
 }
 
@@ -263,7 +262,6 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 			CallToAddress:          callToAddr,
 			CallFrameID:            frameID,
 			CallFramePath:          framePath,
-			MetaNetworkID:          p.network.ID,
 			MetaNetworkName:        p.network.Name,
 		})
 
@@ -312,7 +310,6 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 					CallToAddress:          callToAddr,      // The EOA address
 					CallFrameID:            eoaFrameID,
 					CallFramePath:          eoaFramePath,
-					MetaNetworkID:          p.network.ID,
 					MetaNetworkName:        p.network.Name,
 				})
 			}
@@ -583,7 +580,6 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 				CallToAddress:          callToAddr,
 				CallFrameID:            frameID,
 				CallFramePath:          framePath,
-				MetaNetworkID:          p.network.ID,
 				MetaNetworkName:        p.network.Name,
 			}
 
@@ -634,7 +630,6 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 						CallToAddress:          callToAddr,      // The EOA address
 						CallFrameID:            eoaFrameID,
 						CallFramePath:          eoaFramePath,
-						MetaNetworkID:          p.network.ID,
 						MetaNetworkName:        p.network.Name,
 					}
 
