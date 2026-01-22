@@ -30,6 +30,23 @@ func isCallOpcode(op string) bool {
 	return op == opCALL || op == opSTATICCALL || op == opDELEGATECALL || op == opCALLCODE
 }
 
+// hasPrecomputedGasUsed detects whether GasUsed values are pre-computed by the tracer.
+//
+// In embedded mode, the tracer computes GasUsed inline during trace capture,
+// populating this field with non-zero values. In RPC mode, GasUsed is always 0
+// and must be computed post-hoc using ComputeGasUsed().
+//
+// This enables backward compatibility: execution-processor works with both
+// embedded mode (optimized, pre-computed) and RPC mode (legacy, post-computed).
+func hasPrecomputedGasUsed(structlogs []execution.StructLog) bool {
+	if len(structlogs) == 0 {
+		return false
+	}
+
+	// Check first structlog - if GasUsed > 0, tracer pre-computed values.
+	return structlogs[0].GasUsed > 0
+}
+
 // ComputeGasUsed calculates the actual gas consumed for each structlog using
 // the difference between consecutive gas values at the same depth level.
 //

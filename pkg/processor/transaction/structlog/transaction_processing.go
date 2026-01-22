@@ -75,8 +75,15 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 
 	totalCount := len(trace.Structlogs)
 
-	// Compute actual gas used for each structlog
-	gasUsed := ComputeGasUsed(trace.Structlogs)
+	// Check if GasUsed is pre-computed by the tracer (embedded mode).
+	// In embedded mode, skip the post-processing computation.
+	// In RPC mode, compute GasUsed from gas differences.
+	precomputedGasUsed := hasPrecomputedGasUsed(trace.Structlogs)
+
+	var gasUsed []uint64
+	if !precomputedGasUsed {
+		gasUsed = ComputeGasUsed(trace.Structlogs)
+	}
 
 	// Check if this is a big transaction and register if needed
 	if totalCount >= p.bigTxManager.GetThreshold() {
@@ -137,6 +144,14 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 	// Producer - convert and send batches
 	batch := make([]Structlog, 0, chunkSize)
 	for i := 0; i < totalCount; i++ {
+		// Get GasUsed: use pre-computed value from tracer (embedded) or computed value (RPC).
+		var gasUsedValue uint64
+		if precomputedGasUsed {
+			gasUsedValue = trace.Structlogs[i].GasUsed
+		} else {
+			gasUsedValue = gasUsed[i]
+		}
+
 		// Convert structlog
 		batch = append(batch, Structlog{
 			UpdatedDateTime:        NewClickHouseTime(time.Now()),
@@ -151,7 +166,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 			Operation:              trace.Structlogs[i].Op,
 			Gas:                    trace.Structlogs[i].Gas,
 			GasCost:                trace.Structlogs[i].GasCost,
-			GasUsed:                gasUsed[i],
+			GasUsed:                gasUsedValue,
 			Depth:                  trace.Structlogs[i].Depth,
 			ReturnData:             trace.Structlogs[i].ReturnData,
 			Refund:                 trace.Structlogs[i].Refund,
@@ -280,13 +295,28 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 	uIndex := uint32(index) //nolint:gosec // index is bounded by block.Transactions() length
 
 	if trace != nil {
-		// Compute actual gas used for each structlog
-		gasUsed := ComputeGasUsed(trace.Structlogs)
+		// Check if GasUsed is pre-computed by the tracer (embedded mode).
+		// In embedded mode, skip the post-processing computation.
+		// In RPC mode, compute GasUsed from gas differences.
+		precomputedGasUsed := hasPrecomputedGasUsed(trace.Structlogs)
+
+		var gasUsed []uint64
+		if !precomputedGasUsed {
+			gasUsed = ComputeGasUsed(trace.Structlogs)
+		}
 
 		// Pre-allocate slice for better memory efficiency
 		structlogs = make([]Structlog, 0, len(trace.Structlogs))
 
 		for i, structLog := range trace.Structlogs {
+			// Get GasUsed: use pre-computed value from tracer (embedded) or computed value (RPC).
+			var gasUsedValue uint64
+			if precomputedGasUsed {
+				gasUsedValue = structLog.GasUsed
+			} else {
+				gasUsedValue = gasUsed[i]
+			}
+
 			row := Structlog{
 				UpdatedDateTime:        NewClickHouseTime(time.Now()),
 				BlockNumber:            block.Number().Uint64(),
@@ -300,7 +330,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 				Operation:              structLog.Op,
 				Gas:                    structLog.Gas,
 				GasCost:                structLog.GasCost,
-				GasUsed:                gasUsed[i],
+				GasUsed:                gasUsedValue,
 				Depth:                  structLog.Depth,
 				ReturnData:             structLog.ReturnData,
 				Refund:                 structLog.Refund,
