@@ -116,7 +116,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("no healthy execution node available")
 	}
 
-	m.network, err = m.pool.GetNetworkByChainID(node.Metadata().ChainID())
+	m.network, err = m.pool.GetNetworkByChainID(node.ChainID())
 	if err != nil {
 		return fmt.Errorf("failed to get network by chain ID: %w", err)
 	}

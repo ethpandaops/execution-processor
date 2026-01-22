@@ -57,6 +57,93 @@ A distributed system for processing Ethereum execution layer data with support f
 └─────────────────────────────────────────┘
 ```
 
+## Embedded Mode (Library Usage)
+
+The execution-processor can be embedded as a library within an execution client, providing direct data access without JSON-RPC overhead.
+
+### Implementing DataSource
+
+```go
+import (
+    "context"
+    "math/big"
+
+    "github.com/ethereum/go-ethereum/core/types"
+    "github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
+)
+
+type MyDataSource struct {
+    client *MyExecutionClient
+}
+
+func (ds *MyDataSource) BlockNumber(ctx context.Context) (*uint64, error) {
+    num := ds.client.CurrentBlock()
+    return &num, nil
+}
+
+func (ds *MyDataSource) BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error) {
+    return ds.client.GetBlock(number), nil
+}
+
+func (ds *MyDataSource) BlockReceipts(ctx context.Context, number *big.Int) ([]*types.Receipt, error) {
+    return ds.client.GetBlockReceipts(number), nil
+}
+
+func (ds *MyDataSource) TransactionReceipt(ctx context.Context, hash string) (*types.Receipt, error) {
+    return ds.client.GetReceipt(hash), nil
+}
+
+func (ds *MyDataSource) DebugTraceTransaction(
+    ctx context.Context,
+    hash string,
+    blockNumber *big.Int,
+    opts execution.TraceOptions,
+) (*execution.TraceTransaction, error) {
+    return ds.client.TraceTransaction(hash, opts), nil
+}
+
+func (ds *MyDataSource) ChainID() int32 {
+    return ds.client.ChainID()
+}
+
+func (ds *MyDataSource) ClientType() string {
+    return "my-client/1.0.0"
+}
+
+func (ds *MyDataSource) IsSynced() bool {
+    return ds.client.IsSynced()
+}
+```
+
+### Creating an Embedded Pool
+
+```go
+import (
+    "github.com/ethpandaops/execution-processor/pkg/ethereum"
+    "github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
+)
+
+// Create embedded node with your data source
+dataSource := &MyDataSource{client: myClient}
+node := execution.NewEmbeddedNode(log, "embedded", dataSource)
+
+// Create pool with the embedded node
+pool := ethereum.NewPoolWithNodes(log, "processor", []execution.Node{node}, nil)
+pool.Start(ctx)
+
+// Mark ready when your client is synced and ready to serve data
+node.MarkReady(ctx)
+```
+
+### Embedded vs RPC Mode
+
+| Aspect | RPC Mode | Embedded Mode |
+|--------|----------|---------------|
+| Data Access | JSON-RPC over HTTP | Direct function calls |
+| Readiness | Auto-detected via RPC health checks | Host calls MarkReady() |
+| Performance | Network + serialization overhead | Zero serialization overhead |
+| Use Case | External execution clients | Library integration |
+
 ## Manual Block Queue API
 
 The execution processor provides an HTTP API for manually queuing blocks for reprocessing. This is useful for fixing data issues or reprocessing specific blocks.

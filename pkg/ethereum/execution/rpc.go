@@ -19,7 +19,7 @@ const (
 	STATUS_SUCCESS = "success"
 )
 
-func (n *Node) BlockNumber(ctx context.Context) (*uint64, error) {
+func (n *RPCNode) BlockNumber(ctx context.Context) (*uint64, error) {
 	start := time.Now()
 
 	blockNumber, err := n.client.BlockNumber(ctx)
@@ -44,7 +44,7 @@ func (n *Node) BlockNumber(ctx context.Context) (*uint64, error) {
 	return &blockNumber, nil
 }
 
-func (n *Node) BlockByNumber(ctx context.Context, blockNumber *big.Int) (*types.Block, error) {
+func (n *RPCNode) BlockByNumber(ctx context.Context, blockNumber *big.Int) (*types.Block, error) {
 	start := time.Now()
 
 	block, err := n.client.BlockByNumber(ctx, blockNumber)
@@ -83,7 +83,7 @@ func getTraceParams(hash string, options TraceOptions) []any {
 }
 
 // traceTransactionErigon handles tracing for Erigon clients.
-func (n *Node) traceTransactionErigon(ctx context.Context, hash string, options TraceOptions) (*TraceTransaction, error) {
+func (n *RPCNode) traceTransactionErigon(ctx context.Context, hash string, options TraceOptions) (*TraceTransaction, error) {
 	var rsp ErigonResult
 
 	start := time.Now()
@@ -145,7 +145,7 @@ func (n *Node) traceTransactionErigon(ctx context.Context, hash string, options 
 }
 
 // BlockReceipts fetches all receipts for a block by number (much faster than per-tx).
-func (n *Node) BlockReceipts(ctx context.Context, blockNumber *big.Int) ([]*types.Receipt, error) {
+func (n *RPCNode) BlockReceipts(ctx context.Context, blockNumber *big.Int) ([]*types.Receipt, error) {
 	start := time.Now()
 
 	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.BlockNumber(blockNumber.Int64()))
@@ -184,7 +184,7 @@ func (n *Node) BlockReceipts(ctx context.Context, blockNumber *big.Int) ([]*type
 }
 
 // TransactionReceipt fetches the receipt for a transaction by hash.
-func (n *Node) TransactionReceipt(ctx context.Context, hash string) (*types.Receipt, error) {
+func (n *RPCNode) TransactionReceipt(ctx context.Context, hash string) (*types.Receipt, error) {
 	start := time.Now()
 
 	txHash := common.HexToHash(hash)
@@ -223,7 +223,7 @@ func (n *Node) TransactionReceipt(ctx context.Context, hash string) (*types.Rece
 }
 
 // DebugTraceTransaction traces a transaction execution using the client's debug API.
-func (n *Node) DebugTraceTransaction(ctx context.Context, hash string, blockNumber *big.Int, options TraceOptions) (*TraceTransaction, error) {
+func (n *RPCNode) DebugTraceTransaction(ctx context.Context, hash string, blockNumber *big.Int, options TraceOptions) (*TraceTransaction, error) {
 	// Add a timeout if the context doesn't already have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
