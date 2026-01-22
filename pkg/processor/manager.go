@@ -944,7 +944,7 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 // GetQueueName returns the current queue name based on processing mode.
 func (m *Manager) GetQueueName() string {
 	// For now we only have one processor
-	processorName := "transaction-structlog"
+	processorName := "transaction_structlog"
 	if m.config.Mode == c.BACKWARDS_MODE {
 		return c.PrefixedProcessBackwardsQueue(processorName, m.redisPrefix)
 	}
