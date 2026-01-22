@@ -170,12 +170,21 @@ func (n *EmbeddedNode) TransactionReceipt(ctx context.Context, hash string) (Rec
 }
 
 // DebugTraceTransaction delegates to the DataSource.
+//
+// OPTIMIZATION: In embedded mode, the tracer extracts CallToAddress directly
+// for CALL-family opcodes instead of capturing the full stack. We explicitly
+// set DisableStack: true to signal this intent, even though the tracer ignores
+// this setting (it always uses the optimized path).
 func (n *EmbeddedNode) DebugTraceTransaction(
 	ctx context.Context,
 	hash string,
 	blockNumber *big.Int,
 	opts TraceOptions,
 ) (*TraceTransaction, error) {
+	// Override DisableStack for embedded mode optimization.
+	// The tracer extracts CallToAddress directly, so full stack capture is unnecessary.
+	opts.DisableStack = true
+
 	return n.source.DebugTraceTransaction(ctx, hash, blockNumber, opts)
 }
 
