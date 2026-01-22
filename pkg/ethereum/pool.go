@@ -320,11 +320,10 @@ func (p *Pool) Stop(ctx context.Context) error {
 
 // GetNetworkByChainID returns the network information for the given chain ID.
 // If overrideNetworkName is set in config, it returns that name instead of using networkMap.
-func (p *Pool) GetNetworkByChainID(chainID int32) (*Network, error) {
+func (p *Pool) GetNetworkByChainID(chainID int64) (*Network, error) {
 	// If override is set, use it instead of the networkMap
 	if p.config.OverrideNetworkName != nil && *p.config.OverrideNetworkName != "" {
 		return &Network{
-			ID:   chainID,
 			Name: *p.config.OverrideNetworkName,
 		}, nil
 	}

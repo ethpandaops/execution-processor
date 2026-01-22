@@ -99,7 +99,6 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	// Enqueue block processing task
 	payload := &ProcessPayload{
 		BlockNumber:    *nextBlock,
-		NetworkID:      p.network.ID,
 		NetworkName:    p.network.Name,
 		ProcessingMode: p.processingMode,
 	}

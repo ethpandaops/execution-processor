@@ -21,7 +21,6 @@ const (
 //nolint:tagliatelle // snake_case required for backwards compatibility with queued tasks
 type ProcessPayload struct {
 	BlockNumber    big.Int `json:"block_number"`
-	NetworkID      int32   `json:"network_id"`
 	NetworkName    string  `json:"network_name"`
 	ProcessingMode string  `json:"processing_mode"`
 }

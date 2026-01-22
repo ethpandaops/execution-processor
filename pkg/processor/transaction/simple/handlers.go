@@ -43,7 +43,6 @@ type Transaction struct {
 	NInputBytes        uint32                   `json:"n_input_bytes"`
 	NInputZeroBytes    uint32                   `json:"n_input_zero_bytes"`
 	NInputNonzeroBytes uint32                   `json:"n_input_nonzero_bytes"`
-	MetaNetworkID      int32                    `json:"meta_network_id"`
 	MetaNetworkName    string                   `json:"meta_network_name"`
 }
 
@@ -250,7 +249,6 @@ func (p *Processor) buildTransactionRow(
 		NInputBytes:        callDataSize,
 		NInputZeroBytes:    nInputZeroBytes,
 		NInputNonzeroBytes: nInputNonzeroBytes,
-		MetaNetworkID:      p.network.ID,
 		MetaNetworkName:    p.network.Name,
 	}
 

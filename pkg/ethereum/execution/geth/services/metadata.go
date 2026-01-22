@@ -26,7 +26,7 @@ type MetadataService struct {
 	onReadyCallbacks []func(context.Context) error
 
 	nodeVersion string
-	chainID     int32
+	chainID     int64
 
 	synced bool
 
@@ -161,7 +161,7 @@ func (m *MetadataService) web3ClientVersion(ctx context.Context) (string, error)
 	return version, nil
 }
 
-func (m *MetadataService) GetChainID(ctx context.Context) (*int32, error) {
+func (m *MetadataService) GetChainID(ctx context.Context) (*int64, error) {
 	var chainID string
 
 	err := m.rpcClient.CallContext(ctx, &chainID, "eth_chainId")
@@ -175,7 +175,7 @@ func (m *MetadataService) GetChainID(ctx context.Context) (*int32, error) {
 	chainIDStr := strings.TrimPrefix(chainID, "0x")
 
 	// Parse the hex string to int64
-	chainIDInt, err := strconv.ParseInt(chainIDStr, 16, 32)
+	chainIDInt, err := strconv.ParseInt(chainIDStr, 16, 64)
 	if err != nil {
 		m.log.WithFields(logrus.Fields{
 			"raw_chain_id": chainID,
@@ -186,9 +186,7 @@ func (m *MetadataService) GetChainID(ctx context.Context) (*int32, error) {
 		return nil, fmt.Errorf("failed to parse chain ID %s: %w", chainID, err)
 	}
 
-	chainIDInt32 := int32(chainIDInt)
-
-	return &chainIDInt32, nil
+	return &chainIDInt, nil
 }
 
 func (m *MetadataService) RefreshAll(ctx context.Context) error {
@@ -249,6 +247,6 @@ func (m *MetadataService) IsSynced() bool {
 	return m.synced
 }
 
-func (m *MetadataService) ChainID() int32 {
+func (m *MetadataService) ChainID() int64 {
 	return m.chainID
 }

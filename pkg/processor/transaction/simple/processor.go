@@ -82,8 +82,7 @@ func (p *Processor) Start(ctx context.Context) error {
 	}
 
 	p.log.WithFields(logrus.Fields{
-		"network":  p.network.Name,
-		"chain_id": p.network.ID,
+		"network": p.network.Name,
 	}).Info("Transaction simple processor ready")
 
 	return nil
