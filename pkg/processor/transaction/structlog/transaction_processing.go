@@ -143,6 +143,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 
 	// Producer - convert and send batches
 	batch := make([]Structlog, 0, chunkSize)
+
 	for i := 0; i < totalCount; i++ {
 		// Get GasUsed: use pre-computed value from tracer (embedded) or computed value (RPC).
 		var gasUsedValue uint64
