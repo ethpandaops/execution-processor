@@ -51,7 +51,7 @@ type Node interface {
 	DebugTraceTransaction(ctx context.Context, hash string, blockNumber *big.Int, opts TraceOptions) (*TraceTransaction, error)
 
 	// ChainID returns the chain ID reported by the execution client.
-	ChainID() int32
+	ChainID() int64
 
 	// ClientType returns the client type/version string (e.g., "geth/1.10.0").
 	ClientType() string

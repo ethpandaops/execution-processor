@@ -147,10 +147,10 @@ func (m *MockDataSource) DebugTraceTransaction(
 	return val, args.Error(1)
 }
 
-func (m *MockDataSource) ChainID() int32 {
+func (m *MockDataSource) ChainID() int64 {
 	args := m.Called()
 
-	val, ok := args.Get(0).(int32)
+	val, ok := args.Get(0).(int64)
 	if !ok {
 		return 0
 	}

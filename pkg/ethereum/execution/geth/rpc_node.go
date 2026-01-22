@@ -272,7 +272,7 @@ func (n *RPCNode) Name() string {
 }
 
 // ChainID returns the chain ID from the metadata service.
-func (n *RPCNode) ChainID() int32 {
+func (n *RPCNode) ChainID() int64 {
 	if meta := n.Metadata(); meta != nil {
 		return meta.ChainID()
 	}

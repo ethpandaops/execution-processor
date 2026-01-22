@@ -115,7 +115,7 @@ func (m *MockNode) DebugTraceTransaction(
 	return &execution.TraceTransaction{}, nil
 }
 
-func (m *MockNode) ChainID() int32 {
+func (m *MockNode) ChainID() int64 {
 	return 1
 }
 
@@ -795,7 +795,7 @@ func (ds *testDataSource) DebugTraceTransaction(
 	return &execution.TraceTransaction{}, nil
 }
 
-func (ds *testDataSource) ChainID() int32 {
+func (ds *testDataSource) ChainID() int64 {
 	return 1
 }
 

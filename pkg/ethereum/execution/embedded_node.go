@@ -46,7 +46,7 @@ type DataSource interface {
 	DebugTraceTransaction(ctx context.Context, hash string, blockNumber *big.Int, opts TraceOptions) (*TraceTransaction, error)
 
 	// ChainID returns the chain ID.
-	ChainID() int32
+	ChainID() int64
 
 	// ClientType returns the client type/version string.
 	ClientType() string
@@ -189,7 +189,7 @@ func (n *EmbeddedNode) DebugTraceTransaction(
 }
 
 // ChainID delegates to the DataSource.
-func (n *EmbeddedNode) ChainID() int32 {
+func (n *EmbeddedNode) ChainID() int64 {
 	return n.source.ChainID()
 }
 

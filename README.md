@@ -37,7 +37,7 @@ A distributed system for processing Ethereum execution layer data with support f
 ### Core Components
 
 - **Ethereum Nodes**: Configure execution node endpoints
-- **Redis**: Task queue and leader election coordination  
+- **Redis**: Task queue and leader election coordination
 - **State Manager**: Track processing progress in ClickHouse
 - **Processors**: Configure structlog extraction settings
 
@@ -102,7 +102,7 @@ func (ds *MyDataSource) DebugTraceTransaction(
     return ds.client.TraceTransaction(hash, opts), nil
 }
 
-func (ds *MyDataSource) ChainID() int32 {
+func (ds *MyDataSource) ChainID() int64 {
     return ds.client.ChainID()
 }
 
@@ -167,7 +167,7 @@ curl -X POST http://localhost:8080/api/v1/queue/block/transaction_structlog/1234
   "status": "queued",
   "block_number": 12345,
   "processor": "transaction_structlog",
-  "queue": "process:forwards",  
+  "queue": "process:forwards",
   "transaction_count": 150,
   "tasks_created": 150
 }
@@ -245,7 +245,7 @@ curl -X POST http://localhost:8080/api/v1/queue/blocks/transaction_structlog \
 # Run tests
 go test ./...
 
-# Run with race detector  
+# Run with race detector
 go test ./... --race
 
 # Build
