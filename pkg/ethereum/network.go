@@ -19,7 +19,7 @@ var networkMap = map[int64]Network{
 func GetNetworkByChainID(chainID int64) (*Network, error) {
 	network, exists := networkMap[chainID]
 	if !exists {
-		return nil, fmt.Errorf("unsupported chain ID: %d", chainID)
+		return nil, fmt.Errorf("unsupported chain ID: %d - set 'overrideNetworkName' in config for custom networks", chainID)
 	}
 
 	return &network, nil
