@@ -226,9 +226,21 @@ func (p *Processor) getTransactionTrace(ctx context.Context, tx execution.Transa
 	return trace, nil
 }
 
-// extractCallAddress extracts the call address from a structlog if it's a CALL operation.
+// extractCallAddress extracts the call address from a structlog for CALL-family opcodes.
+//
+// Supports two modes for backward compatibility:
+//   - Embedded mode: CallToAddress is pre-populated by the tracer, use directly.
+//   - RPC mode: CallToAddress is nil, extract from Stack[len-2] for CALL-family opcodes.
+//
+// CALL-family opcodes: CALL, STATICCALL, DELEGATECALL, CALLCODE.
 func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
-	if structLog.Op == "CALL" && structLog.Stack != nil && len(*structLog.Stack) > 1 {
+	// Embedded mode: use pre-extracted CallToAddress
+	if structLog.CallToAddress != nil {
+		return structLog.CallToAddress
+	}
+
+	// RPC mode fallback: extract from Stack for CALL-family opcodes
+	if isCallOpcode(structLog.Op) && structLog.Stack != nil && len(*structLog.Stack) > 1 {
 		stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
 
 		return &stackValue
@@ -275,13 +287,6 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 		structlogs = make([]Structlog, 0, len(trace.Structlogs))
 
 		for i, structLog := range trace.Structlogs {
-			var callToAddress *string
-
-			if structLog.Op == "CALL" && structLog.Stack != nil && len(*structLog.Stack) > 1 {
-				stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
-				callToAddress = &stackValue
-			}
-
 			row := Structlog{
 				UpdatedDateTime:        NewClickHouseTime(time.Now()),
 				BlockNumber:            block.Number().Uint64(),
@@ -300,7 +305,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 				ReturnData:             structLog.ReturnData,
 				Refund:                 structLog.Refund,
 				Error:                  structLog.Error,
-				CallToAddress:          callToAddress,
+				CallToAddress:          p.extractCallAddress(&structLog),
 				MetaNetworkID:          p.network.ID,
 				MetaNetworkName:        p.network.Name,
 			}

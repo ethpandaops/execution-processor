@@ -6,6 +6,30 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
+// EVM opcode name constants used for opcode identification and benchmarking.
+const (
+	opCALL         = "CALL"
+	opSTATICCALL   = "STATICCALL"
+	opDELEGATECALL = "DELEGATECALL"
+	opCALLCODE     = "CALLCODE"
+	opPUSH1        = "PUSH1"
+	opRETURN       = "RETURN"
+	opSTOP         = "STOP"
+)
+
+// isCallOpcode checks if the opcode is a call-family opcode that has a target address.
+//
+// Call-family opcodes are:
+//   - CALL: Standard external call
+//   - STATICCALL: Read-only external call (no state modifications)
+//   - DELEGATECALL: Call using caller's context (msg.sender, msg.value preserved)
+//   - CALLCODE: Deprecated, similar to DELEGATECALL but uses callee's msg.value
+//
+// For these opcodes, the target address is at stack position len-2 (second from top).
+func isCallOpcode(op string) bool {
+	return op == opCALL || op == opSTATICCALL || op == opDELEGATECALL || op == opCALLCODE
+}
+
 // ComputeGasUsed calculates the actual gas consumed for each structlog using
 // the difference between consecutive gas values at the same depth level.
 //
