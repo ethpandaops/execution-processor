@@ -21,7 +21,6 @@ type ProcessPayload struct {
 	BlockNumber      big.Int `json:"block_number"`
 	TransactionHash  string  `json:"transaction_hash"`
 	TransactionIndex uint32  `json:"transaction_index"`
-	NetworkID        int32   `json:"network_id"`
 	NetworkName      string  `json:"network_name"`
 	Network          string  `json:"network"`         // Alias for NetworkName
 	ProcessingMode   string  `json:"processing_mode"` // "forwards" or "backwards"

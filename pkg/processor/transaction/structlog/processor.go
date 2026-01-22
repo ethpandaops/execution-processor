@@ -66,8 +66,7 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 	processor.network = deps.Network
 
 	processor.log.WithFields(logrus.Fields{
-		"network":  processor.network.Name,
-		"chain_id": processor.network.ID,
+		"network": processor.network.Name,
 	}).Info("Detected network")
 
 	return processor, nil
