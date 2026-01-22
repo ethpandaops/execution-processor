@@ -7,13 +7,30 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// MockBlock implements execution.Block for testing.
+type MockBlock struct {
+	number *big.Int
+}
+
+func (b *MockBlock) Number() *big.Int                      { return b.number }
+func (b *MockBlock) Hash() execution.Hash                  { return execution.Hash{} }
+func (b *MockBlock) ParentHash() execution.Hash            { return execution.Hash{} }
+func (b *MockBlock) BaseFee() *big.Int                     { return nil }
+func (b *MockBlock) Transactions() []execution.Transaction { return nil }
+
+// MockReceipt implements execution.Receipt for testing.
+type MockReceipt struct{}
+
+func (r *MockReceipt) Status() uint64         { return 1 }
+func (r *MockReceipt) TxHash() execution.Hash { return execution.Hash{} }
+func (r *MockReceipt) GasUsed() uint64        { return 21000 }
 
 // MockNode implements execution.Node for testing.
 type MockNode struct {
@@ -77,16 +94,16 @@ func (m *MockNode) BlockNumber(_ context.Context) (*uint64, error) {
 	return &num, nil
 }
 
-func (m *MockNode) BlockByNumber(_ context.Context, number *big.Int) (*types.Block, error) {
-	return types.NewBlock(&types.Header{Number: number}, nil, nil, nil), nil
+func (m *MockNode) BlockByNumber(_ context.Context, number *big.Int) (execution.Block, error) {
+	return &MockBlock{number: number}, nil
 }
 
-func (m *MockNode) BlockReceipts(_ context.Context, _ *big.Int) ([]*types.Receipt, error) {
-	return []*types.Receipt{}, nil
+func (m *MockNode) BlockReceipts(_ context.Context, _ *big.Int) ([]execution.Receipt, error) {
+	return []execution.Receipt{}, nil
 }
 
-func (m *MockNode) TransactionReceipt(_ context.Context, _ string) (*types.Receipt, error) {
-	return &types.Receipt{}, nil
+func (m *MockNode) TransactionReceipt(_ context.Context, _ string) (execution.Receipt, error) {
+	return &MockReceipt{}, nil
 }
 
 func (m *MockNode) DebugTraceTransaction(
@@ -758,16 +775,16 @@ func (ds *testDataSource) BlockNumber(_ context.Context) (*uint64, error) {
 	return &num, nil
 }
 
-func (ds *testDataSource) BlockByNumber(_ context.Context, number *big.Int) (*types.Block, error) {
-	return types.NewBlock(&types.Header{Number: number}, nil, nil, nil), nil
+func (ds *testDataSource) BlockByNumber(_ context.Context, number *big.Int) (execution.Block, error) {
+	return &MockBlock{number: number}, nil
 }
 
-func (ds *testDataSource) BlockReceipts(_ context.Context, _ *big.Int) ([]*types.Receipt, error) {
-	return []*types.Receipt{}, nil
+func (ds *testDataSource) BlockReceipts(_ context.Context, _ *big.Int) ([]execution.Receipt, error) {
+	return []execution.Receipt{}, nil
 }
 
-func (ds *testDataSource) TransactionReceipt(_ context.Context, _ string) (*types.Receipt, error) {
-	return &types.Receipt{}, nil
+func (ds *testDataSource) TransactionReceipt(_ context.Context, _ string) (execution.Receipt, error) {
+	return &MockReceipt{}, nil
 }
 
 func (ds *testDataSource) DebugTraceTransaction(

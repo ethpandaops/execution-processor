@@ -9,13 +9,58 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
+
+// MockBlock implements execution.Block for testing.
+type MockBlock struct {
+	number     *big.Int
+	hash       execution.Hash
+	parentHash execution.Hash
+	baseFee    *big.Int
+	txs        []execution.Transaction
+}
+
+func (b *MockBlock) Number() *big.Int                      { return b.number }
+func (b *MockBlock) Hash() execution.Hash                  { return b.hash }
+func (b *MockBlock) ParentHash() execution.Hash            { return b.parentHash }
+func (b *MockBlock) BaseFee() *big.Int                     { return b.baseFee }
+func (b *MockBlock) Transactions() []execution.Transaction { return b.txs }
+
+// NewMockBlock creates a mock block with the given number.
+func NewMockBlock(number *big.Int) *MockBlock {
+	return &MockBlock{
+		number:     number,
+		hash:       execution.Hash{},
+		parentHash: execution.Hash{},
+		baseFee:    big.NewInt(1000000000),
+		txs:        []execution.Transaction{},
+	}
+}
+
+// MockReceipt implements execution.Receipt for testing.
+type MockReceipt struct {
+	status  uint64
+	txHash  execution.Hash
+	gasUsed uint64
+}
+
+func (r *MockReceipt) Status() uint64         { return r.status }
+func (r *MockReceipt) TxHash() execution.Hash { return r.txHash }
+func (r *MockReceipt) GasUsed() uint64        { return r.gasUsed }
+
+// NewMockReceipt creates a mock receipt with the given status.
+func NewMockReceipt(status uint64, gasUsed uint64) *MockReceipt {
+	return &MockReceipt{
+		status:  status,
+		txHash:  execution.Hash{},
+		gasUsed: gasUsed,
+	}
+}
 
 // MockDataSource implements execution.DataSource for testing.
 type MockDataSource struct {
@@ -37,14 +82,14 @@ func (m *MockDataSource) BlockNumber(ctx context.Context) (*uint64, error) {
 	return val, args.Error(1)
 }
 
-func (m *MockDataSource) BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error) {
+func (m *MockDataSource) BlockByNumber(ctx context.Context, number *big.Int) (execution.Block, error) {
 	args := m.Called(ctx, number)
 
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 
-	val, ok := args.Get(0).(*types.Block)
+	val, ok := args.Get(0).(execution.Block)
 	if !ok {
 		return nil, args.Error(1)
 	}
@@ -52,14 +97,14 @@ func (m *MockDataSource) BlockByNumber(ctx context.Context, number *big.Int) (*t
 	return val, args.Error(1)
 }
 
-func (m *MockDataSource) BlockReceipts(ctx context.Context, number *big.Int) ([]*types.Receipt, error) {
+func (m *MockDataSource) BlockReceipts(ctx context.Context, number *big.Int) ([]execution.Receipt, error) {
 	args := m.Called(ctx, number)
 
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 
-	val, ok := args.Get(0).([]*types.Receipt)
+	val, ok := args.Get(0).([]execution.Receipt)
 	if !ok {
 		return nil, args.Error(1)
 	}
@@ -67,14 +112,14 @@ func (m *MockDataSource) BlockReceipts(ctx context.Context, number *big.Int) ([]
 	return val, args.Error(1)
 }
 
-func (m *MockDataSource) TransactionReceipt(ctx context.Context, hash string) (*types.Receipt, error) {
+func (m *MockDataSource) TransactionReceipt(ctx context.Context, hash string) (execution.Receipt, error) {
 	args := m.Called(ctx, hash)
 
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 
-	val, ok := args.Get(0).(*types.Receipt)
+	val, ok := args.Get(0).(execution.Receipt)
 	if !ok {
 		return nil, args.Error(1)
 	}
@@ -346,13 +391,13 @@ func TestEmbeddedNode_DelegatesToDataSource_BlockByNumber(t *testing.T) {
 
 	ctx := context.Background()
 	blockNum := big.NewInt(12345)
-	expectedBlock := types.NewBlock(&types.Header{Number: blockNum}, nil, nil, nil)
+	expectedBlock := NewMockBlock(blockNum)
 
 	ds.On("BlockByNumber", ctx, blockNum).Return(expectedBlock, nil)
 
 	result, err := node.BlockByNumber(ctx, blockNum)
 	require.NoError(t, err)
-	assert.Equal(t, expectedBlock, result)
+	assert.Equal(t, expectedBlock.Number(), result.Number())
 
 	ds.AssertExpectations(t)
 }
@@ -366,13 +411,16 @@ func TestEmbeddedNode_DelegatesToDataSource_BlockReceipts(t *testing.T) {
 
 	ctx := context.Background()
 	blockNum := big.NewInt(12345)
-	expectedReceipts := []*types.Receipt{{Status: 1}, {Status: 0}}
+	expectedReceipts := []execution.Receipt{
+		NewMockReceipt(1, 21000),
+		NewMockReceipt(0, 50000),
+	}
 
 	ds.On("BlockReceipts", ctx, blockNum).Return(expectedReceipts, nil)
 
 	result, err := node.BlockReceipts(ctx, blockNum)
 	require.NoError(t, err)
-	assert.Equal(t, expectedReceipts, result)
+	assert.Len(t, result, 2)
 
 	ds.AssertExpectations(t)
 }
@@ -386,13 +434,14 @@ func TestEmbeddedNode_DelegatesToDataSource_TransactionReceipt(t *testing.T) {
 
 	ctx := context.Background()
 	txHash := "0x1234567890abcdef"
-	expectedReceipt := &types.Receipt{Status: 1, GasUsed: 21000}
+	expectedReceipt := NewMockReceipt(1, 21000)
 
 	ds.On("TransactionReceipt", ctx, txHash).Return(expectedReceipt, nil)
 
 	result, err := node.TransactionReceipt(ctx, txHash)
 	require.NoError(t, err)
-	assert.Equal(t, expectedReceipt, result)
+	assert.Equal(t, uint64(1), result.Status())
+	assert.Equal(t, uint64(21000), result.GasUsed())
 
 	ds.AssertExpectations(t)
 }

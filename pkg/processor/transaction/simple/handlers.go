@@ -6,11 +6,11 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/hibiken/asynq"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 )
@@ -100,13 +100,13 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 	blockTxs := block.Transactions()
 
 	// Build receipt map - try batch first, fall back to per-tx
-	receiptMap := make(map[string]*types.Receipt, len(blockTxs))
+	receiptMap := make(map[string]execution.Receipt, len(blockTxs))
 
 	receipts, err := node.BlockReceipts(ctx, blockNumber)
 	if err == nil {
 		// Use batch receipts
 		for _, r := range receipts {
-			receiptMap[r.TxHash.Hex()] = r
+			receiptMap[r.TxHash().Hex()] = r
 		}
 	}
 
@@ -169,26 +169,13 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 
 // buildTransactionRow builds a transaction row from block, tx, and receipt data.
 func (p *Processor) buildTransactionRow(
-	block *types.Block,
-	tx *types.Transaction,
-	receipt *types.Receipt,
+	block execution.Block,
+	tx execution.Transaction,
+	receipt execution.Receipt,
 	index uint64,
 ) (Transaction, error) {
-	// Get sender (from) - handle legacy transactions without chain ID
-	var signer types.Signer
-
-	chainID := tx.ChainId()
-	if chainID == nil || chainID.Sign() == 0 {
-		// Legacy transaction without EIP-155 replay protection
-		signer = types.HomesteadSigner{}
-	} else {
-		signer = types.LatestSignerForChainID(chainID)
-	}
-
-	from, err := types.Sender(signer, tx)
-	if err != nil {
-		return Transaction{}, fmt.Errorf("failed to get sender: %w", err)
-	}
+	// Get sender (from) - computed by the data source
+	from := tx.From()
 
 	// Build to address (nil for contract creation)
 	var toAddress *string
@@ -259,7 +246,7 @@ func (p *Processor) buildTransactionRow(
 		Size:               txSize,
 		CallDataSize:       callDataSize,
 		BlobHashes:         []string{}, // Default empty array
-		Success:            receipt.Status == 1,
+		Success:            receipt.Status() == 1,
 		NInputBytes:        callDataSize,
 		NInputZeroBytes:    nInputZeroBytes,
 		NInputNonzeroBytes: nInputNonzeroBytes,
@@ -268,7 +255,7 @@ func (p *Processor) buildTransactionRow(
 	}
 
 	// Handle blob transaction fields (type 3)
-	if tx.Type() == types.BlobTxType {
+	if tx.Type() == execution.BlobTxType {
 		blobGas := tx.BlobGas()
 		txRow.BlobGas = &blobGas
 
@@ -292,11 +279,11 @@ func (p *Processor) buildTransactionRow(
 // calculateEffectiveGasPrice calculates the effective gas price for a transaction.
 // For legacy/access list txs: returns tx.GasPrice().
 // For EIP-1559+ txs: returns min(max_fee_per_gas, base_fee + max_priority_fee_per_gas).
-func calculateEffectiveGasPrice(block *types.Block, tx *types.Transaction) *big.Int {
+func calculateEffectiveGasPrice(block execution.Block, tx execution.Transaction) *big.Int {
 	txType := tx.Type()
 
 	// Legacy and access list transactions use GasPrice directly
-	if txType == types.LegacyTxType || txType == types.AccessListTxType {
+	if txType == execution.LegacyTxType || txType == execution.AccessListTxType {
 		if tx.GasPrice() != nil {
 			return tx.GasPrice()
 		}

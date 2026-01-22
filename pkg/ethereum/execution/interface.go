@@ -3,20 +3,18 @@ package execution
 import (
 	"context"
 	"math/big"
-
-	"github.com/ethereum/go-ethereum/core/types"
 )
 
 // Node defines the interface for execution data providers.
 //
 // Implementations include:
-//   - RPCNode: connects to execution clients via JSON-RPC over HTTP
+//   - geth.RPCNode: connects to execution clients via JSON-RPC over HTTP
 //   - EmbeddedNode: receives data directly from host application via DataSource
 //
 // All methods must be safe for concurrent use by multiple goroutines.
 //
 // Lifecycle:
-//  1. Create node with appropriate constructor (NewRPCNode or NewEmbeddedNode)
+//  1. Create node with appropriate constructor (geth.NewRPCNode or NewEmbeddedNode)
 //  2. Register OnReady callbacks before calling Start
 //  3. Call Start to begin initialization
 //  4. Node signals readiness by executing OnReady callbacks
@@ -41,13 +39,13 @@ type Node interface {
 	BlockNumber(ctx context.Context) (*uint64, error)
 
 	// BlockByNumber returns the block at the given number.
-	BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error)
+	BlockByNumber(ctx context.Context, number *big.Int) (Block, error)
 
 	// BlockReceipts returns all receipts for the block at the given number.
-	BlockReceipts(ctx context.Context, number *big.Int) ([]*types.Receipt, error)
+	BlockReceipts(ctx context.Context, number *big.Int) ([]Receipt, error)
 
 	// TransactionReceipt returns the receipt for the transaction with the given hash.
-	TransactionReceipt(ctx context.Context, hash string) (*types.Receipt, error)
+	TransactionReceipt(ctx context.Context, hash string) (Receipt, error)
 
 	// DebugTraceTransaction returns the execution trace for the transaction.
 	DebugTraceTransaction(ctx context.Context, hash string, blockNumber *big.Int, opts TraceOptions) (*TraceTransaction, error)

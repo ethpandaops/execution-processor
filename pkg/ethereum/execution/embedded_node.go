@@ -5,7 +5,6 @@ import (
 	"math/big"
 	"sync"
 
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/sirupsen/logrus"
 )
 
@@ -15,6 +14,10 @@ import (
 //
 // All methods must be safe for concurrent calls from multiple goroutines.
 // Context cancellation should be respected for all I/O operations.
+//
+// The interface uses abstract types (Block, Transaction, Receipt) instead of
+// go-ethereum types to avoid CGO dependencies. Host applications should
+// implement these interfaces with their own types.
 //
 // Example implementation:
 //
@@ -31,13 +34,13 @@ type DataSource interface {
 	BlockNumber(ctx context.Context) (*uint64, error)
 
 	// BlockByNumber returns the block at the given number.
-	BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error)
+	BlockByNumber(ctx context.Context, number *big.Int) (Block, error)
 
 	// BlockReceipts returns all receipts for the block at the given number.
-	BlockReceipts(ctx context.Context, number *big.Int) ([]*types.Receipt, error)
+	BlockReceipts(ctx context.Context, number *big.Int) ([]Receipt, error)
 
 	// TransactionReceipt returns the receipt for the transaction with the given hash.
-	TransactionReceipt(ctx context.Context, hash string) (*types.Receipt, error)
+	TransactionReceipt(ctx context.Context, hash string) (Receipt, error)
 
 	// DebugTraceTransaction returns the execution trace for the transaction.
 	DebugTraceTransaction(ctx context.Context, hash string, blockNumber *big.Int, opts TraceOptions) (*TraceTransaction, error)
@@ -152,17 +155,17 @@ func (n *EmbeddedNode) BlockNumber(ctx context.Context) (*uint64, error) {
 }
 
 // BlockByNumber delegates to the DataSource.
-func (n *EmbeddedNode) BlockByNumber(ctx context.Context, number *big.Int) (*types.Block, error) {
+func (n *EmbeddedNode) BlockByNumber(ctx context.Context, number *big.Int) (Block, error) {
 	return n.source.BlockByNumber(ctx, number)
 }
 
 // BlockReceipts delegates to the DataSource.
-func (n *EmbeddedNode) BlockReceipts(ctx context.Context, number *big.Int) ([]*types.Receipt, error) {
+func (n *EmbeddedNode) BlockReceipts(ctx context.Context, number *big.Int) ([]Receipt, error) {
 	return n.source.BlockReceipts(ctx, number)
 }
 
 // TransactionReceipt delegates to the DataSource.
-func (n *EmbeddedNode) TransactionReceipt(ctx context.Context, hash string) (*types.Receipt, error) {
+func (n *EmbeddedNode) TransactionReceipt(ctx context.Context, hash string) (Receipt, error) {
 	return n.source.TransactionReceipt(ctx, hash)
 }
 

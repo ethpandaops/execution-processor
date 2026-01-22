@@ -1,4 +1,6 @@
-package execution
+//go:build !embedded
+
+package geth
 
 import (
 	"context"
@@ -8,18 +10,18 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rpc"
 
 	pcommon "github.com/ethpandaops/execution-processor/pkg/common"
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
 const (
-	STATUS_ERROR   = "error"
-	STATUS_SUCCESS = "success"
+	statusError   = "error"
+	statusSuccess = "success"
 )
 
-func (n *RPCNode) BlockNumber(ctx context.Context) (*uint64, error) {
+func (n *RPCNode) blockNumber(ctx context.Context) (*uint64, error) {
 	start := time.Now()
 
 	blockNumber, err := n.client.BlockNumber(ctx)
@@ -27,9 +29,9 @@ func (n *RPCNode) BlockNumber(ctx context.Context) (*uint64, error) {
 	duration := time.Since(start)
 
 	// Record RPC metrics
-	status := STATUS_SUCCESS
+	status := statusSuccess
 	if err != nil {
-		status = STATUS_ERROR
+		status = statusError
 	}
 
 	network := n.Metadata().ChainID()
@@ -44,7 +46,7 @@ func (n *RPCNode) BlockNumber(ctx context.Context) (*uint64, error) {
 	return &blockNumber, nil
 }
 
-func (n *RPCNode) BlockByNumber(ctx context.Context, blockNumber *big.Int) (*types.Block, error) {
+func (n *RPCNode) blockByNumber(ctx context.Context, blockNumber *big.Int) (execution.Block, error) {
 	start := time.Now()
 
 	block, err := n.client.BlockByNumber(ctx, blockNumber)
@@ -52,9 +54,9 @@ func (n *RPCNode) BlockByNumber(ctx context.Context, blockNumber *big.Int) (*typ
 	duration := time.Since(start)
 
 	// Record RPC metrics
-	status := STATUS_SUCCESS
+	status := statusSuccess
 	if err != nil {
-		status = STATUS_ERROR
+		status = statusError
 	}
 
 	network := n.Metadata().ChainID()
@@ -66,11 +68,11 @@ func (n *RPCNode) BlockByNumber(ctx context.Context, blockNumber *big.Int) (*typ
 		return nil, err
 	}
 
-	return block, nil
+	return NewBlockAdapter(block), nil
 }
 
 // getTraceParams returns VM trace parameters with configurable options.
-func getTraceParams(hash string, options TraceOptions) []any {
+func getTraceParams(hash string, options execution.TraceOptions) []any {
 	return []any{
 		hash,
 		map[string]any{
@@ -83,8 +85,8 @@ func getTraceParams(hash string, options TraceOptions) []any {
 }
 
 // traceTransactionErigon handles tracing for Erigon clients.
-func (n *RPCNode) traceTransactionErigon(ctx context.Context, hash string, options TraceOptions) (*TraceTransaction, error) {
-	var rsp ErigonResult
+func (n *RPCNode) traceTransactionErigon(ctx context.Context, hash string, options execution.TraceOptions) (*execution.TraceTransaction, error) {
+	var rsp erigonResult
 
 	start := time.Now()
 
@@ -93,9 +95,9 @@ func (n *RPCNode) traceTransactionErigon(ctx context.Context, hash string, optio
 	duration := time.Since(start)
 
 	// Record RPC metrics
-	status := STATUS_SUCCESS
+	status := statusSuccess
 	if err != nil {
-		status = STATUS_ERROR
+		status = statusError
 	}
 
 	network := n.Metadata().ChainID()
@@ -112,11 +114,11 @@ func (n *RPCNode) traceTransactionErigon(ctx context.Context, hash string, optio
 		returnValue = nil
 	}
 
-	result := &TraceTransaction{
+	result := &execution.TraceTransaction{
 		Gas:         rsp.Gas,
 		Failed:      rsp.Failed,
 		ReturnValue: returnValue,
-		Structlogs:  []StructLog{},
+		Structlogs:  []execution.StructLog{},
 	}
 
 	// Empty array on transfer
@@ -128,7 +130,7 @@ func (n *RPCNode) traceTransactionErigon(ctx context.Context, hash string, optio
 			*returnData = hex.EncodeToString(log.ReturnData)
 		}
 
-		result.Structlogs = append(result.Structlogs, StructLog{
+		result.Structlogs = append(result.Structlogs, execution.StructLog{
 			PC:         log.PC,
 			Op:         log.Op,
 			Gas:        log.Gas,
@@ -144,8 +146,8 @@ func (n *RPCNode) traceTransactionErigon(ctx context.Context, hash string, optio
 	return result, nil
 }
 
-// BlockReceipts fetches all receipts for a block by number (much faster than per-tx).
-func (n *RPCNode) BlockReceipts(ctx context.Context, blockNumber *big.Int) ([]*types.Receipt, error) {
+// blockReceipts fetches all receipts for a block by number (much faster than per-tx).
+func (n *RPCNode) blockReceipts(ctx context.Context, blockNumber *big.Int) ([]execution.Receipt, error) {
 	start := time.Now()
 
 	blockNrOrHash := rpc.BlockNumberOrHashWithNumber(rpc.BlockNumber(blockNumber.Int64()))
@@ -155,9 +157,9 @@ func (n *RPCNode) BlockReceipts(ctx context.Context, blockNumber *big.Int) ([]*t
 	duration := time.Since(start)
 
 	// Record RPC metrics
-	status := STATUS_SUCCESS
+	status := statusSuccess
 	if err != nil {
-		status = STATUS_ERROR
+		status = statusError
 	}
 
 	network := n.Metadata().ChainID()
@@ -180,11 +182,11 @@ func (n *RPCNode) BlockReceipts(ctx context.Context, blockNumber *big.Int) ([]*t
 		return nil, err
 	}
 
-	return receipts, nil
+	return AdaptReceipts(receipts), nil
 }
 
-// TransactionReceipt fetches the receipt for a transaction by hash.
-func (n *RPCNode) TransactionReceipt(ctx context.Context, hash string) (*types.Receipt, error) {
+// transactionReceipt fetches the receipt for a transaction by hash.
+func (n *RPCNode) transactionReceipt(ctx context.Context, hash string) (execution.Receipt, error) {
 	start := time.Now()
 
 	txHash := common.HexToHash(hash)
@@ -194,9 +196,9 @@ func (n *RPCNode) TransactionReceipt(ctx context.Context, hash string) (*types.R
 	duration := time.Since(start)
 
 	// Record RPC metrics
-	status := STATUS_SUCCESS
+	status := statusSuccess
 	if err != nil {
-		status = STATUS_ERROR
+		status = statusError
 	}
 
 	network := n.Metadata().ChainID()
@@ -219,11 +221,16 @@ func (n *RPCNode) TransactionReceipt(ctx context.Context, hash string) (*types.R
 		return nil, err
 	}
 
-	return receipt, nil
+	return NewReceiptAdapter(receipt), nil
 }
 
-// DebugTraceTransaction traces a transaction execution using the client's debug API.
-func (n *RPCNode) DebugTraceTransaction(ctx context.Context, hash string, blockNumber *big.Int, options TraceOptions) (*TraceTransaction, error) {
+// debugTraceTransaction traces a transaction execution using the client's debug API.
+func (n *RPCNode) debugTraceTransaction(
+	ctx context.Context,
+	hash string,
+	_ *big.Int,
+	options execution.TraceOptions,
+) (*execution.TraceTransaction, error) {
 	// Add a timeout if the context doesn't already have one
 	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
 		var cancel context.CancelFunc
@@ -250,4 +257,25 @@ func (n *RPCNode) DebugTraceTransaction(ctx context.Context, hash string, blockN
 		// Default to Erigon format if client is unknown
 		return n.traceTransactionErigon(ctx, hash, options)
 	}
+}
+
+// erigonResult represents the result from an Erigon debug_traceTransaction call.
+type erigonResult struct {
+	Gas         uint64            `json:"gas"`
+	Failed      bool              `json:"failed"`
+	ReturnValue *string           `json:"returnValue"`
+	StructLogs  []erigonStructLog `json:"structLogs"`
+}
+
+// erigonStructLog represents a single structlog entry from Erigon.
+type erigonStructLog struct {
+	PC         uint32    `json:"pc"`
+	Op         string    `json:"op"`
+	Gas        uint64    `json:"gas"`
+	GasCost    uint64    `json:"gasCost"`
+	Depth      uint64    `json:"depth"`
+	ReturnData []byte    `json:"returnData"`
+	Refund     *uint64   `json:"refund"`
+	Error      *string   `json:"error"`
+	Stack      *[]string `json:"stack"`
 }

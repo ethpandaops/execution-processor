@@ -1,9 +1,12 @@
-package execution
+//go:build !embedded
+
+package geth
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"sync"
@@ -11,12 +14,14 @@ import (
 
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
-	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution/services"
 	"github.com/sirupsen/logrus"
+
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution/geth/services"
 )
 
-// Compile-time check that RPCNode implements Node interface.
-var _ Node = (*RPCNode)(nil)
+// Compile-time check that RPCNode implements execution.Node interface.
+var _ execution.Node = (*RPCNode)(nil)
 
 // headerTransport adds custom headers to requests and respects context cancellation.
 type headerTransport struct {
@@ -39,9 +44,9 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(req)
 }
 
-// RPCNode implements Node using JSON-RPC connections.
+// RPCNode implements execution.Node using JSON-RPC connections.
 type RPCNode struct {
-	config    *Config
+	config    *execution.Config
 	log       logrus.FieldLogger
 	client    *ethclient.Client
 	rpcClient *rpc.Client
@@ -58,7 +63,7 @@ type RPCNode struct {
 }
 
 // NewRPCNode creates a new RPC-based execution node.
-func NewRPCNode(log logrus.FieldLogger, conf *Config) *RPCNode {
+func NewRPCNode(log logrus.FieldLogger, conf *execution.Config) *RPCNode {
 	return &RPCNode{
 		config:   conf,
 		log:      log.WithFields(logrus.Fields{"type": "execution", "source": conf.Name}),
@@ -291,4 +296,34 @@ func (n *RPCNode) IsSynced() bool {
 	}
 
 	return false
+}
+
+// BlockNumber returns the current block number.
+func (n *RPCNode) BlockNumber(ctx context.Context) (*uint64, error) {
+	return n.blockNumber(ctx)
+}
+
+// BlockByNumber returns the block at the given number.
+func (n *RPCNode) BlockByNumber(ctx context.Context, number *big.Int) (execution.Block, error) {
+	return n.blockByNumber(ctx, number)
+}
+
+// BlockReceipts returns all receipts for the block at the given number.
+func (n *RPCNode) BlockReceipts(ctx context.Context, number *big.Int) ([]execution.Receipt, error) {
+	return n.blockReceipts(ctx, number)
+}
+
+// TransactionReceipt returns the receipt for the transaction with the given hash.
+func (n *RPCNode) TransactionReceipt(ctx context.Context, hash string) (execution.Receipt, error) {
+	return n.transactionReceipt(ctx, hash)
+}
+
+// DebugTraceTransaction returns the execution trace for the transaction.
+func (n *RPCNode) DebugTraceTransaction(
+	ctx context.Context,
+	hash string,
+	blockNumber *big.Int,
+	opts execution.TraceOptions,
+) (*execution.TraceTransaction, error) {
+	return n.debugTraceTransaction(ctx, hash, blockNumber, opts)
 }

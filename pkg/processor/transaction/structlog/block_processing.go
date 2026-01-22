@@ -7,11 +7,11 @@ import (
 	"math/big"
 	"strings"
 
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/hibiken/asynq"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
@@ -175,7 +175,7 @@ func isBlockNotFoundError(err error) bool {
 
 // enqueueTransactionTasks enqueues tasks for all transactions in a block.
 // EnqueueTransactionTasks enqueues transaction processing tasks for a given block.
-func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block *types.Block) (int, error) {
+func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block execution.Block) (int, error) {
 	var enqueuedCount int
 
 	var errs []error

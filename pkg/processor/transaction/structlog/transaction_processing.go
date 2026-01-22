@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
@@ -37,7 +36,7 @@ type Structlog struct {
 }
 
 // ProcessSingleTransaction processes a single transaction and inserts its structlogs directly to ClickHouse.
-func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
+func (p *Processor) ProcessSingleTransaction(ctx context.Context, block execution.Block, index int, tx execution.Transaction) (int, error) {
 	// Extract structlog data
 	structlogs, err := p.ExtractStructlogs(ctx, block, index, tx)
 	if err != nil {
@@ -67,7 +66,7 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block *types.B
 }
 
 // ProcessTransaction processes a transaction using memory-efficient channel-based batching.
-func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, index int, tx *types.Transaction) (int, error) {
+func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Block, index int, tx execution.Transaction) (int, error) {
 	// Get trace from execution node
 	trace, err := p.getTransactionTrace(ctx, tx, block)
 	if err != nil {
@@ -207,7 +206,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 }
 
 // getTransactionTrace gets the trace for a transaction.
-func (p *Processor) getTransactionTrace(ctx context.Context, tx *types.Transaction, block *types.Block) (*execution.TraceTransaction, error) {
+func (p *Processor) getTransactionTrace(ctx context.Context, tx execution.Transaction, block execution.Block) (*execution.TraceTransaction, error) {
 	// Get execution node
 	node := p.pool.GetHealthyExecutionNode()
 	if node == nil {
@@ -239,7 +238,7 @@ func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
 }
 
 // ExtractStructlogs extracts structlog data from a transaction without inserting to database.
-func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, index int, tx *types.Transaction) ([]Structlog, error) {
+func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block, index int, tx execution.Transaction) ([]Structlog, error) {
 	start := time.Now()
 
 	defer func() {
