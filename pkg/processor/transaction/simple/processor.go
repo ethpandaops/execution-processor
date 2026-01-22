@@ -50,7 +50,7 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 	clickhouseConfig.Network = deps.Network.Name
 	clickhouseConfig.Processor = ProcessorName
 
-	clickhouseClient, err := clickhouse.New(&clickhouseConfig)
+	clickhouseClient, err := clickhouse.New(ctx, &clickhouseConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clickhouse client: %w", err)
 	}

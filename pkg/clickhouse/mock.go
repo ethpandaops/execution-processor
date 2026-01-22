@@ -7,18 +7,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+
+	"github.com/ClickHouse/ch-go"
 )
 
 // MockClient is a mock implementation of ClientInterface for testing.
 // It should only be used in test files, not in production code.
 type MockClient struct {
 	// Function fields that can be set by tests
-	QueryOneFunc   func(ctx context.Context, query string, dest interface{}) error
-	QueryManyFunc  func(ctx context.Context, query string, dest interface{}) error
-	ExecuteFunc    func(ctx context.Context, query string) error
-	BulkInsertFunc func(ctx context.Context, table string, data interface{}) error
-	StartFunc      func() error
-	StopFunc       func() error
+	QueryOneFunc       func(ctx context.Context, query string, dest any) error
+	QueryManyFunc      func(ctx context.Context, query string, dest any) error
+	ExecuteFunc        func(ctx context.Context, query string) error
+	IsStorageEmptyFunc func(ctx context.Context, table string, conditions map[string]any) (bool, error)
+	StartFunc          func() error
+	StopFunc           func() error
+	DoFunc             func(ctx context.Context, query ch.Query) error
 
 	// Track calls for assertions
 	Calls []MockCall
@@ -27,23 +30,23 @@ type MockClient struct {
 // MockCall represents a method call made to the mock.
 type MockCall struct {
 	Method string
-	Args   []interface{}
+	Args   []any
 }
 
 // NewMockClient creates a new mock client with default implementations.
 func NewMockClient() *MockClient {
 	return &MockClient{
-		QueryOneFunc: func(ctx context.Context, query string, dest interface{}) error {
+		QueryOneFunc: func(ctx context.Context, query string, dest any) error {
 			return nil
 		},
-		QueryManyFunc: func(ctx context.Context, query string, dest interface{}) error {
+		QueryManyFunc: func(ctx context.Context, query string, dest any) error {
 			return nil
 		},
 		ExecuteFunc: func(ctx context.Context, query string) error {
 			return nil
 		},
-		BulkInsertFunc: func(ctx context.Context, table string, data interface{}) error {
-			return nil
+		IsStorageEmptyFunc: func(ctx context.Context, table string, conditions map[string]any) (bool, error) {
+			return true, nil
 		},
 		StartFunc: func() error {
 			return nil
@@ -51,15 +54,18 @@ func NewMockClient() *MockClient {
 		StopFunc: func() error {
 			return nil
 		},
+		DoFunc: func(ctx context.Context, query ch.Query) error {
+			return nil
+		},
 		Calls: make([]MockCall, 0),
 	}
 }
 
 // QueryOne implements ClientInterface.
-func (m *MockClient) QueryOne(ctx context.Context, query string, dest interface{}) error {
+func (m *MockClient) QueryOne(ctx context.Context, query string, dest any) error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "QueryOne",
-		Args:   []interface{}{ctx, query, dest},
+		Args:   []any{ctx, query, dest},
 	})
 
 	if m.QueryOneFunc != nil {
@@ -70,10 +76,10 @@ func (m *MockClient) QueryOne(ctx context.Context, query string, dest interface{
 }
 
 // QueryMany implements ClientInterface.
-func (m *MockClient) QueryMany(ctx context.Context, query string, dest interface{}) error {
+func (m *MockClient) QueryMany(ctx context.Context, query string, dest any) error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "QueryMany",
-		Args:   []interface{}{ctx, query, dest},
+		Args:   []any{ctx, query, dest},
 	})
 
 	if m.QueryManyFunc != nil {
@@ -87,7 +93,7 @@ func (m *MockClient) QueryMany(ctx context.Context, query string, dest interface
 func (m *MockClient) Execute(ctx context.Context, query string) error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "Execute",
-		Args:   []interface{}{ctx, query},
+		Args:   []any{ctx, query},
 	})
 
 	if m.ExecuteFunc != nil {
@@ -97,25 +103,33 @@ func (m *MockClient) Execute(ctx context.Context, query string) error {
 	return nil
 }
 
-// BulkInsert implements ClientInterface.
-func (m *MockClient) BulkInsert(ctx context.Context, table string, data interface{}) error {
+// IsStorageEmpty implements ClientInterface.
+func (m *MockClient) IsStorageEmpty(ctx context.Context, table string, conditions map[string]any) (bool, error) {
 	m.Calls = append(m.Calls, MockCall{
-		Method: "BulkInsert",
-		Args:   []interface{}{ctx, table, data},
+		Method: "IsStorageEmpty",
+		Args:   []any{ctx, table, conditions},
 	})
 
-	if m.BulkInsertFunc != nil {
-		return m.BulkInsertFunc(ctx, table, data)
+	if m.IsStorageEmptyFunc != nil {
+		return m.IsStorageEmptyFunc(ctx, table, conditions)
 	}
 
-	return nil
+	return true, nil
+}
+
+// SetNetwork implements ClientInterface.
+func (m *MockClient) SetNetwork(network string) {
+	m.Calls = append(m.Calls, MockCall{
+		Method: "SetNetwork",
+		Args:   []any{network},
+	})
 }
 
 // Start implements ClientInterface.
 func (m *MockClient) Start() error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "Start",
-		Args:   []interface{}{},
+		Args:   []any{},
 	})
 
 	if m.StartFunc != nil {
@@ -129,11 +143,25 @@ func (m *MockClient) Start() error {
 func (m *MockClient) Stop() error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "Stop",
-		Args:   []interface{}{},
+		Args:   []any{},
 	})
 
 	if m.StopFunc != nil {
 		return m.StopFunc()
+	}
+
+	return nil
+}
+
+// Do implements ClientInterface.
+func (m *MockClient) Do(ctx context.Context, query ch.Query) error {
+	m.Calls = append(m.Calls, MockCall{
+		Method: "Do",
+		Args:   []any{ctx, query},
+	})
+
+	if m.DoFunc != nil {
+		return m.DoFunc(ctx, query)
 	}
 
 	return nil
@@ -165,8 +193,8 @@ func (m *MockClient) Reset() {
 // Helper functions for common test scenarios
 
 // SetQueryOneResponse sets up the mock to return specific data for QueryOne.
-func (m *MockClient) SetQueryOneResponse(data interface{}) {
-	m.QueryOneFunc = func(ctx context.Context, query string, dest interface{}) error {
+func (m *MockClient) SetQueryOneResponse(data any) {
+	m.QueryOneFunc = func(ctx context.Context, query string, dest any) error {
 		// Marshal the data to JSON and then unmarshal into dest
 		jsonData, err := json.Marshal(data)
 		if err != nil {
@@ -178,8 +206,8 @@ func (m *MockClient) SetQueryOneResponse(data interface{}) {
 }
 
 // SetQueryManyResponse sets up the mock to return specific data for QueryMany.
-func (m *MockClient) SetQueryManyResponse(data interface{}) {
-	m.QueryManyFunc = func(ctx context.Context, query string, dest interface{}) error {
+func (m *MockClient) SetQueryManyResponse(data any) {
+	m.QueryManyFunc = func(ctx context.Context, query string, dest any) error {
 		// Use reflection to set the slice
 		destValue := reflect.ValueOf(dest).Elem()
 		srcValue := reflect.ValueOf(data)
@@ -196,22 +224,25 @@ func (m *MockClient) SetQueryManyResponse(data interface{}) {
 
 // SetError sets all functions to return the specified error.
 func (m *MockClient) SetError(err error) {
-	m.QueryOneFunc = func(ctx context.Context, query string, dest interface{}) error {
+	m.QueryOneFunc = func(ctx context.Context, query string, dest any) error {
 		return err
 	}
-	m.QueryManyFunc = func(ctx context.Context, query string, dest interface{}) error {
+	m.QueryManyFunc = func(ctx context.Context, query string, dest any) error {
 		return err
 	}
 	m.ExecuteFunc = func(ctx context.Context, query string) error {
 		return err
 	}
-	m.BulkInsertFunc = func(ctx context.Context, table string, data interface{}) error {
-		return err
+	m.IsStorageEmptyFunc = func(ctx context.Context, table string, conditions map[string]any) (bool, error) {
+		return false, err
 	}
 	m.StartFunc = func() error {
 		return err
 	}
 	m.StopFunc = func() error {
+		return err
+	}
+	m.DoFunc = func(ctx context.Context, query ch.Query) error {
 		return err
 	}
 }

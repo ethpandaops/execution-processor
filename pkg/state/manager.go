@@ -45,7 +45,7 @@ func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*M
 	storageConfig := config.Storage.Config
 	storageConfig.Processor = "state"
 
-	storageClient, err := clickhouse.New(&storageConfig)
+	storageClient, err := clickhouse.New(ctx, &storageConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage clickhouse client: %w", err)
 	}
@@ -62,7 +62,7 @@ func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*M
 		limiterConfig := config.Limiter.Config
 		limiterConfig.Processor = "state-limiter"
 
-		limiterClient, err := clickhouse.New(&limiterConfig)
+		limiterClient, err := clickhouse.New(ctx, &limiterConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create limiter clickhouse client: %w", err)
 		}

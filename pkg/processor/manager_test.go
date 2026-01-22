@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
@@ -17,6 +18,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newTestRedis creates an in-memory Redis server for testing.
+func newTestRedis(t *testing.T) *redis.Client {
+	t.Helper()
+
+	s := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: s.Addr()})
+
+	t.Cleanup(func() {
+		_ = client.Close()
+	})
+
+	return client
+}
 
 // Basic functionality tests
 
@@ -39,11 +54,7 @@ func TestManager_Creation(t *testing.T) {
 		},
 	}
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-		DB:   15, // Use high DB number for tests
-	})
-	defer redisClient.Close()
+	redisClient := newTestRedis(t)
 
 	// Create proper pool and state mocks
 	poolConfig := &ethereum.Config{
@@ -59,7 +70,7 @@ func TestManager_Creation(t *testing.T) {
 	stateConfig := &state.Config{
 		Storage: state.StorageConfig{
 			Config: clickhouse.Config{
-				URL: "http://localhost:8123",
+				Addr: "localhost:9000",
 			},
 			Table: "test_manager_blocks",
 		},
@@ -94,11 +105,7 @@ func TestManager_StartStop(t *testing.T) {
 		},
 	}
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-		DB:   15,
-	})
-	defer redisClient.Close()
+	redisClient := newTestRedis(t)
 
 	// Create proper components
 	poolConfig := &ethereum.Config{
@@ -114,7 +121,7 @@ func TestManager_StartStop(t *testing.T) {
 	stateConfig := &state.Config{
 		Storage: state.StorageConfig{
 			Config: clickhouse.Config{
-				URL: "http://localhost:8123",
+				Addr: "localhost:9000",
 			},
 			Table: "test_manager_start_stop_blocks",
 		},
@@ -176,11 +183,7 @@ func TestManager_MultipleStops(t *testing.T) {
 		},
 	}
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-		DB:   14,
-	})
-	defer redisClient.Close()
+	redisClient := newTestRedis(t)
 
 	// Create proper components
 	poolConfig := &ethereum.Config{
@@ -196,7 +199,7 @@ func TestManager_MultipleStops(t *testing.T) {
 	stateConfig := &state.Config{
 		Storage: state.StorageConfig{
 			Config: clickhouse.Config{
-				URL: "http://localhost:8123",
+				Addr: "localhost:9000",
 			},
 			Table: "test_manager_multi_stop_blocks",
 		},
@@ -263,12 +266,8 @@ func TestManager_ModeSpecificLeaderElection(t *testing.T) {
 					Enabled: false, // Disable to avoid ClickHouse requirements
 					Table:   "test_structlog",
 					Config: clickhouse.Config{
-						URL: "http://localhost:8123",
+						Addr: "localhost:9000",
 					},
-					BigTransactionThreshold: 500000,
-					BatchInsertThreshold:    50000,
-					BatchFlushInterval:      5 * time.Second,
-					BatchMaxSize:            100000,
 				},
 			}
 
@@ -286,7 +285,7 @@ func TestManager_ModeSpecificLeaderElection(t *testing.T) {
 			stateConfig := &state.Config{
 				Storage: state.StorageConfig{
 					Config: clickhouse.Config{
-						URL: "http://localhost:8123",
+						Addr: "localhost:9000",
 					},
 					Table: "test_mode_blocks",
 				},
@@ -297,11 +296,7 @@ func TestManager_ModeSpecificLeaderElection(t *testing.T) {
 			stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
 			require.NoError(t, err)
 
-			redisClient := redis.NewClient(&redis.Options{
-				Addr: "localhost:6379",
-				DB:   15, // Use test DB
-			})
-			defer redisClient.Close()
+			redisClient := newTestRedis(t)
 
 			// Create manager (leader election will be initialized)
 			manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
@@ -363,7 +358,7 @@ func TestManager_ConcurrentModes(t *testing.T) {
 	stateConfig := &state.Config{
 		Storage: state.StorageConfig{
 			Config: clickhouse.Config{
-				URL: "http://localhost:8123",
+				Addr: "localhost:9000",
 			},
 			Table: "test_concurrent_blocks",
 		},
@@ -374,18 +369,9 @@ func TestManager_ConcurrentModes(t *testing.T) {
 	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
-	// Use different Redis DBs to simulate separate Redis instances
-	forwardsRedis := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-		DB:   10, // Forwards Redis DB
-	})
-	defer forwardsRedis.Close()
-
-	backwardsRedis := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-		DB:   11, // Backwards Redis DB
-	})
-	defer backwardsRedis.Close()
+	// Each miniredis instance is isolated, simulating separate Redis servers
+	forwardsRedis := newTestRedis(t)
+	backwardsRedis := newTestRedis(t)
 
 	// Create both managers - they should not conflict with mode-specific leader keys
 	forwardsManager, err := processor.NewManager(log.WithField("mode", "forwards"), forwardsConfig, pool, stateManager, forwardsRedis, "test-prefix")
@@ -427,7 +413,7 @@ func TestManager_LeaderElectionDisabled(t *testing.T) {
 	stateConfig := &state.Config{
 		Storage: state.StorageConfig{
 			Config: clickhouse.Config{
-				URL: "http://localhost:8123",
+				Addr: "localhost:9000",
 			},
 			Table: "test_no_leader_blocks",
 		},
@@ -438,11 +424,7 @@ func TestManager_LeaderElectionDisabled(t *testing.T) {
 	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-		DB:   15,
-	})
-	defer redisClient.Close()
+	redisClient := newTestRedis(t)
 
 	// Should work fine even with leader election disabled
 	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
@@ -487,7 +469,7 @@ func TestManager_RaceConditions(t *testing.T) {
 	stateConfig := &state.Config{
 		Storage: state.StorageConfig{
 			Config: clickhouse.Config{
-				URL: "http://localhost:8123",
+				Addr: "localhost:9000",
 			},
 			Table: "test_race_blocks",
 		},
@@ -498,11 +480,7 @@ func TestManager_RaceConditions(t *testing.T) {
 	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-		DB:   15,
-	})
-	defer redisClient.Close()
+	redisClient := newTestRedis(t)
 
 	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
 	require.NoError(t, err)
@@ -572,7 +550,7 @@ func TestManager_ConcurrentConfiguration(t *testing.T) {
 	stateConfig := &state.Config{
 		Storage: state.StorageConfig{
 			Config: clickhouse.Config{
-				URL: "http://localhost:8123",
+				Addr: "localhost:9000",
 			},
 			Table: "test_config_blocks",
 		},
@@ -583,11 +561,7 @@ func TestManager_ConcurrentConfiguration(t *testing.T) {
 	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
-	redisClient := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-		DB:   14,
-	})
-	defer redisClient.Close()
+	redisClient := newTestRedis(t)
 
 	_, err = processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
 	require.NoError(t, err)

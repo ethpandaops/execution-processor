@@ -99,8 +99,8 @@ func (c *Config) Validate() error {
 	}
 
 	if c.TransactionStructlog.Enabled {
-		if c.TransactionStructlog.URL == "" {
-			return fmt.Errorf("transaction structlog URL is required when enabled")
+		if c.TransactionStructlog.Addr == "" {
+			return fmt.Errorf("transaction structlog addr is required when enabled")
 		}
 
 		if c.TransactionStructlog.Table == "" {

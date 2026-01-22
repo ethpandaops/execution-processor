@@ -152,4 +152,57 @@ var (
 		Name: "execution_processor_retry_count_total",
 		Help: "Total number of retry attempts",
 	}, []string{"network", "processor", "reason"})
+
+	// ClickHouse pool metrics - gauges for current state.
+	ClickHousePoolAcquiredResources = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_clickhouse_pool_acquired_resources",
+		Help: "Number of currently acquired resources in the ClickHouse connection pool",
+	}, []string{"network", "processor"})
+
+	ClickHousePoolIdleResources = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_clickhouse_pool_idle_resources",
+		Help: "Number of currently idle resources in the ClickHouse connection pool",
+	}, []string{"network", "processor"})
+
+	ClickHousePoolConstructingResources = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_clickhouse_pool_constructing_resources",
+		Help: "Number of resources currently being constructed in the ClickHouse connection pool",
+	}, []string{"network", "processor"})
+
+	ClickHousePoolTotalResources = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_clickhouse_pool_total_resources",
+		Help: "Total number of resources in the ClickHouse connection pool",
+	}, []string{"network", "processor"})
+
+	ClickHousePoolMaxResources = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_clickhouse_pool_max_resources",
+		Help: "Maximum number of resources allowed in the ClickHouse connection pool",
+	}, []string{"network", "processor"})
+
+	// ClickHouse pool metrics - counters for cumulative values.
+	ClickHousePoolAcquireTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "execution_processor_clickhouse_pool_acquire_total",
+		Help: "Total number of successful resource acquisitions from the ClickHouse connection pool",
+	}, []string{"network", "processor"})
+
+	ClickHousePoolEmptyAcquireTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "execution_processor_clickhouse_pool_empty_acquire_total",
+		Help: "Total number of acquires that waited for a resource because the pool was empty",
+	}, []string{"network", "processor"})
+
+	ClickHousePoolCanceledAcquireTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "execution_processor_clickhouse_pool_canceled_acquire_total",
+		Help: "Total number of acquires that were canceled due to context cancellation",
+	}, []string{"network", "processor"})
+
+	// ClickHouse pool timing metrics - cumulative durations.
+	ClickHousePoolAcquireDuration = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_clickhouse_pool_acquire_duration_seconds",
+		Help: "Cumulative time spent acquiring resources from the ClickHouse connection pool",
+	}, []string{"network", "processor"})
+
+	ClickHousePoolEmptyAcquireWaitDuration = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_clickhouse_pool_empty_acquire_wait_duration_seconds",
+		Help: "Cumulative time spent waiting for a resource when pool was empty",
+	}, []string{"network", "processor"})
 )

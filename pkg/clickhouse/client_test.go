@@ -2,260 +2,20 @@ package clickhouse
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
+	"errors"
+	"io"
+	"net"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/ClickHouse/ch-go"
+	"github.com/ClickHouse/ch-go/compress"
+	"github.com/ClickHouse/ch-go/proto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func TestHTTPClient_QueryOne(t *testing.T) {
-	type testResult struct {
-		Count int `json:"count"`
-	}
-
-	tests := []struct {
-		name           string
-		query          string
-		serverResponse string
-		serverStatus   int
-		expectedResult *testResult
-		expectedError  bool
-	}{
-		{
-			name:  "successful query with result",
-			query: "SELECT count FROM test_table",
-			serverResponse: `{
-				"data": [{"count": 42}],
-				"meta": [{"name": "count", "type": "UInt64"}],
-				"rows": 1,
-				"rows_read": 1
-			}`,
-			serverStatus:   http.StatusOK,
-			expectedResult: &testResult{Count: 42},
-			expectedError:  false,
-		},
-		{
-			name:  "query with no results",
-			query: "SELECT count FROM test_table WHERE id = 999",
-			serverResponse: `{
-				"data": [],
-				"meta": [{"name": "count", "type": "UInt64"}],
-				"rows": 0,
-				"rows_read": 0
-			}`,
-			serverStatus:   http.StatusOK,
-			expectedResult: nil,
-			expectedError:  false,
-		},
-		{
-			name:           "server error",
-			query:          "SELECT invalid",
-			serverResponse: `{"exception": "DB::Exception: Unknown identifier: invalid"}`,
-			serverStatus:   http.StatusBadRequest,
-			expectedResult: nil,
-			expectedError:  true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create test server
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				assert.Equal(t, "POST", r.Method)
-				assert.Contains(t, r.Header.Get("Content-Type"), "text/plain")
-
-				w.WriteHeader(tt.serverStatus)
-				_, _ = w.Write([]byte(tt.serverResponse))
-			}))
-			defer server.Close()
-
-			// Create client
-			client, err := New(&Config{
-				URL: server.URL,
-			})
-			require.NoError(t, err)
-
-			// Execute query
-			var result testResult
-
-			err = client.QueryOne(context.Background(), tt.query, &result)
-
-			if tt.expectedError {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-
-				if tt.expectedResult != nil {
-					assert.Equal(t, *tt.expectedResult, result)
-				}
-			}
-		})
-	}
-}
-
-func TestHTTPClient_QueryMany(t *testing.T) {
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := `{
-			"data": [
-				{"id": 1, "name": "first"},
-				{"id": 2, "name": "second"},
-				{"id": 3, "name": "third"}
-			],
-			"meta": [
-				{"name": "id", "type": "UInt64"},
-				{"name": "name", "type": "String"}
-			],
-			"rows": 3,
-			"rows_read": 3
-		}`
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(response))
-	}))
-	defer server.Close()
-
-	// Create client
-	client, err := New(&Config{
-		URL: server.URL,
-	})
-	require.NoError(t, err)
-
-	// Execute query
-	type testRow struct {
-		ID   int    `json:"id"`
-		Name string `json:"name"`
-	}
-
-	var results []testRow
-
-	err = client.QueryMany(context.Background(), "SELECT id, name FROM test_table", &results)
-	require.NoError(t, err)
-
-	// Verify results
-	assert.Len(t, results, 3)
-	assert.Equal(t, 1, results[0].ID)
-	assert.Equal(t, "first", results[0].Name)
-	assert.Equal(t, 2, results[1].ID)
-	assert.Equal(t, "second", results[1].Name)
-}
-
-func TestHTTPClient_BulkInsert(t *testing.T) {
-	var receivedBody string
-
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		assert.Equal(t, "POST", r.Method)
-
-		// Read body
-		body := make([]byte, r.ContentLength)
-		_, _ = r.Body.Read(body)
-		receivedBody = string(body)
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("Ok."))
-	}))
-	defer server.Close()
-
-	// Create client
-	client, err := New(&Config{
-		URL: server.URL,
-	})
-	require.NoError(t, err)
-
-	// Test data
-	type testData struct {
-		ID        int    `json:"id"`
-		Name      string `json:"name"`
-		Timestamp int64  `json:"timestamp"`
-	}
-
-	data := []testData{
-		{ID: 1, Name: "first", Timestamp: 1000},
-		{ID: 2, Name: "second", Timestamp: 2000},
-		{ID: 3, Name: "third", Timestamp: 3000},
-	}
-
-	// Execute bulk insert
-	err = client.BulkInsert(context.Background(), "test_table", data)
-	require.NoError(t, err)
-
-	// Verify the request body
-	assert.Contains(t, receivedBody, "INSERT INTO test_table FORMAT JSONEachRow")
-	assert.Contains(t, receivedBody, `{"id":1,"name":"first","timestamp":1000}`)
-	assert.Contains(t, receivedBody, `{"id":2,"name":"second","timestamp":2000}`)
-	assert.Contains(t, receivedBody, `{"id":3,"name":"third","timestamp":3000}`)
-}
-
-func TestHTTPClient_Execute(t *testing.T) {
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("Ok."))
-	}))
-	defer server.Close()
-
-	// Create client
-	client, err := New(&Config{
-		URL: server.URL,
-	})
-	require.NoError(t, err)
-
-	// Execute command
-	err = client.Execute(context.Background(), "CREATE TABLE test_table (id UInt64) ENGINE = Memory")
-	require.NoError(t, err)
-}
-
-func TestHTTPClient_Timeouts(t *testing.T) {
-	// Create a slow server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(2 * time.Second)
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
-	// Create client with short timeout
-	client, err := New(&Config{
-		URL:          server.URL,
-		QueryTimeout: 100 * time.Millisecond,
-	})
-	require.NoError(t, err)
-
-	// Execute query - should timeout
-	ctx := context.Background()
-
-	var result struct{}
-
-	err = client.QueryOne(ctx, "SELECT 1", &result)
-	assert.Error(t, err)
-	// The timeout causes the request to fail - we just need to ensure an error occurred
-}
-
-func TestHTTPClient_StartStop(t *testing.T) {
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("Ok."))
-	}))
-	defer server.Close()
-
-	// Create client
-	client, err := New(&Config{
-		URL: server.URL,
-	})
-	require.NoError(t, err)
-
-	// Start should succeed
-	err = client.Start()
-	assert.NoError(t, err)
-
-	// Stop should succeed
-	err = client.Stop()
-	assert.NoError(t, err)
-}
 
 func TestConfig_Validate(t *testing.T) {
 	tests := []struct {
@@ -264,16 +24,32 @@ func TestConfig_Validate(t *testing.T) {
 		expectError bool
 	}{
 		{
-			name: "valid config",
+			name: "valid config with addr",
 			config: Config{
-				URL: "http://localhost:8123",
+				Addr: "localhost:9000",
 			},
 			expectError: false,
 		},
 		{
-			name:        "missing URL",
+			name:        "missing addr",
 			config:      Config{},
 			expectError: true,
+		},
+		{
+			name: "valid config with all fields",
+			config: Config{
+				Addr:              "localhost:9000",
+				Database:          "test_db",
+				Username:          "default",
+				Password:          "secret",
+				MaxConns:          20,
+				MinConns:          5,
+				ConnMaxLifetime:   2 * time.Hour,
+				ConnMaxIdleTime:   1 * time.Hour,
+				HealthCheckPeriod: 30 * time.Second,
+				Compression:       "zstd",
+			},
+			expectError: false,
 		},
 	}
 
@@ -291,39 +67,410 @@ func TestConfig_Validate(t *testing.T) {
 
 func TestConfig_SetDefaults(t *testing.T) {
 	config := Config{
-		URL: "http://localhost:8123",
+		Addr: "localhost:9000",
 	}
 
 	config.SetDefaults()
 
-	assert.Equal(t, 30*time.Second, config.QueryTimeout)
-	assert.Equal(t, 5*time.Minute, config.InsertTimeout)
-	assert.Equal(t, 30*time.Second, config.KeepAlive)
+	assert.Equal(t, "default", config.Database)
+	assert.Equal(t, int32(10), config.MaxConns)
+	assert.Equal(t, int32(2), config.MinConns)
+	assert.Equal(t, time.Hour, config.ConnMaxLifetime)
+	assert.Equal(t, 30*time.Minute, config.ConnMaxIdleTime)
+	assert.Equal(t, time.Minute, config.HealthCheckPeriod)
+	assert.Equal(t, 10*time.Second, config.DialTimeout)
+	assert.Equal(t, "lz4", config.Compression)
+	assert.Equal(t, 60*time.Second, config.QueryTimeout)
 }
 
-func TestHTTPClient_DebugLogging(t *testing.T) {
-	// Create test server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := `{"data": [{"value": 1}], "meta": [], "rows": 1}`
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(response))
-	}))
-	defer server.Close()
-
-	// Create client with debug enabled
-	client, err := New(&Config{
-		URL:   server.URL,
-		Debug: true,
-	})
-	require.NoError(t, err)
-
-	// Execute query - debug logging should not cause errors
-	var result struct {
-		Value int `json:"value"`
+func TestConfig_SetDefaults_PreservesValues(t *testing.T) {
+	config := Config{
+		Addr:              "localhost:9000",
+		Database:          "custom_db",
+		MaxConns:          50,
+		MinConns:          10,
+		ConnMaxLifetime:   3 * time.Hour,
+		ConnMaxIdleTime:   2 * time.Hour,
+		HealthCheckPeriod: 5 * time.Minute,
+		DialTimeout:       30 * time.Second,
+		Compression:       "zstd",
+		QueryTimeout:      120 * time.Second,
 	}
 
-	err = client.QueryOne(context.Background(), "SELECT 1 as value", &result)
-	assert.NoError(t, err)
-	assert.Equal(t, 1, result.Value)
+	config.SetDefaults()
+
+	// Should preserve custom values
+	assert.Equal(t, "custom_db", config.Database)
+	assert.Equal(t, int32(50), config.MaxConns)
+	assert.Equal(t, int32(10), config.MinConns)
+	assert.Equal(t, 3*time.Hour, config.ConnMaxLifetime)
+	assert.Equal(t, 2*time.Hour, config.ConnMaxIdleTime)
+	assert.Equal(t, 5*time.Minute, config.HealthCheckPeriod)
+	assert.Equal(t, 30*time.Second, config.DialTimeout)
+	assert.Equal(t, "zstd", config.Compression)
+	assert.Equal(t, 120*time.Second, config.QueryTimeout)
 }
+
+func TestClient_withQueryTimeout(t *testing.T) {
+	tests := []struct {
+		name             string
+		queryTimeout     time.Duration
+		ctxHasDeadline   bool
+		expectNewContext bool
+	}{
+		{
+			name:             "applies timeout when no deadline exists",
+			queryTimeout:     5 * time.Second,
+			ctxHasDeadline:   false,
+			expectNewContext: true,
+		},
+		{
+			name:             "preserves existing deadline",
+			queryTimeout:     5 * time.Second,
+			ctxHasDeadline:   true,
+			expectNewContext: false,
+		},
+		{
+			name:             "no-op when timeout is zero",
+			queryTimeout:     0,
+			ctxHasDeadline:   false,
+			expectNewContext: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := &Client{
+				config: &Config{
+					QueryTimeout: tt.queryTimeout,
+				},
+			}
+
+			var ctx context.Context
+
+			var originalCancel context.CancelFunc
+
+			if tt.ctxHasDeadline {
+				ctx, originalCancel = context.WithTimeout(context.Background(), 10*time.Second)
+				defer originalCancel()
+			} else {
+				ctx = context.Background()
+			}
+
+			newCtx, cancel := client.withQueryTimeout(ctx)
+			defer cancel()
+
+			_, hasDeadline := newCtx.Deadline()
+
+			if tt.expectNewContext {
+				require.True(t, hasDeadline, "expected context to have deadline")
+			} else if tt.ctxHasDeadline {
+				require.True(t, hasDeadline, "expected original deadline to be preserved")
+			} else {
+				require.False(t, hasDeadline, "expected no deadline")
+			}
+		})
+	}
+}
+
+// Integration tests - require CLICKHOUSE_ADDR environment variable
+
+func TestClient_Integration_New(t *testing.T) {
+	addr := os.Getenv("CLICKHOUSE_ADDR")
+	if addr == "" {
+		t.Skip("CLICKHOUSE_ADDR not set, skipping integration test")
+	}
+
+	cfg := &Config{
+		Addr:        addr,
+		Database:    "default",
+		Compression: "lz4",
+	}
+
+	client, err := New(context.Background(), cfg)
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	err = client.Stop()
+	require.NoError(t, err)
+}
+
+func TestClient_Integration_StartStop(t *testing.T) {
+	addr := os.Getenv("CLICKHOUSE_ADDR")
+	if addr == "" {
+		t.Skip("CLICKHOUSE_ADDR not set, skipping integration test")
+	}
+
+	cfg := &Config{
+		Addr:        addr,
+		Database:    "default",
+		Compression: "lz4",
+		Network:     "test",
+	}
+
+	client, err := New(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// Start should ping successfully
+	err = client.Start()
+	require.NoError(t, err)
+
+	// Stop should close pool
+	err = client.Stop()
+	require.NoError(t, err)
+}
+
+func TestClient_Integration_Execute(t *testing.T) {
+	addr := os.Getenv("CLICKHOUSE_ADDR")
+	if addr == "" {
+		t.Skip("CLICKHOUSE_ADDR not set, skipping integration test")
+	}
+
+	cfg := &Config{
+		Addr:        addr,
+		Database:    "default",
+		Compression: "lz4",
+		Network:     "test",
+	}
+
+	client, err := New(context.Background(), cfg)
+	require.NoError(t, err)
+
+	defer func() { _ = client.Stop() }()
+
+	err = client.Start()
+	require.NoError(t, err)
+
+	// Execute a simple query
+	err = client.Execute(t.Context(), "SELECT 1")
+	require.NoError(t, err)
+}
+
+func TestClient_Integration_QueryOne(t *testing.T) {
+	addr := os.Getenv("CLICKHOUSE_ADDR")
+	if addr == "" {
+		t.Skip("CLICKHOUSE_ADDR not set, skipping integration test")
+	}
+
+	cfg := &Config{
+		Addr:        addr,
+		Database:    "default",
+		Compression: "lz4",
+		Network:     "test",
+	}
+
+	client, err := New(context.Background(), cfg)
+	require.NoError(t, err)
+
+	defer func() { _ = client.Stop() }()
+
+	err = client.Start()
+	require.NoError(t, err)
+
+	var result struct {
+		Value int64 `json:"value"`
+	}
+
+	err = client.QueryOne(t.Context(), "SELECT 42 as value", &result)
+	require.NoError(t, err)
+	assert.Equal(t, int64(42), result.Value)
+}
+
+func TestClient_Integration_IsStorageEmpty(t *testing.T) {
+	addr := os.Getenv("CLICKHOUSE_ADDR")
+	if addr == "" {
+		t.Skip("CLICKHOUSE_ADDR not set, skipping integration test")
+	}
+
+	cfg := &Config{
+		Addr:        addr,
+		Database:    "default",
+		Compression: "lz4",
+		Network:     "test",
+	}
+
+	client, err := New(context.Background(), cfg)
+	require.NoError(t, err)
+
+	defer func() { _ = client.Stop() }()
+
+	err = client.Start()
+	require.NoError(t, err)
+
+	// Create a temporary table
+	err = client.Execute(t.Context(), `
+		CREATE TABLE IF NOT EXISTS test_empty_check (
+			id UInt64,
+			name String
+		) ENGINE = Memory
+	`)
+	require.NoError(t, err)
+
+	// Should be empty
+	isEmpty, err := client.IsStorageEmpty(t.Context(), "test_empty_check", nil)
+	require.NoError(t, err)
+	assert.True(t, isEmpty)
+
+	// Drop the table
+	err = client.Execute(t.Context(), "DROP TABLE IF EXISTS test_empty_check")
+	require.NoError(t, err)
+}
+
+// mockNetError implements net.Error for testing.
+type mockNetError struct {
+	timeout   bool
+	temporary bool
+}
+
+func (e *mockNetError) Error() string   { return "mock network error" }
+func (e *mockNetError) Timeout() bool   { return e.timeout }
+func (e *mockNetError) Temporary() bool { return e.temporary }
+
+func TestIsRetryableError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		// Nil error
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
+		// Context errors - non-retryable
+		{
+			name:     "context canceled",
+			err:      context.Canceled,
+			expected: false,
+		},
+		{
+			name:     "context deadline exceeded",
+			err:      context.DeadlineExceeded,
+			expected: false,
+		},
+		// ch-go sentinel errors - non-retryable
+		{
+			name:     "ch.ErrClosed",
+			err:      ch.ErrClosed,
+			expected: false,
+		},
+		{
+			name:     "wrapped ch.ErrClosed",
+			err:      errors.Join(errors.New("operation failed"), ch.ErrClosed),
+			expected: false,
+		},
+		// ch-go server exceptions - retryable codes (using ch.Exception which implements error)
+		{
+			name:     "proto.ErrTimeoutExceeded",
+			err:      &ch.Exception{Code: proto.ErrTimeoutExceeded, Message: "timeout"},
+			expected: true,
+		},
+		{
+			name:     "proto.ErrNoFreeConnection",
+			err:      &ch.Exception{Code: proto.ErrNoFreeConnection, Message: "no free connection"},
+			expected: true,
+		},
+		{
+			name:     "proto.ErrTooManySimultaneousQueries",
+			err:      &ch.Exception{Code: proto.ErrTooManySimultaneousQueries, Message: "rate limited"},
+			expected: true,
+		},
+		{
+			name:     "proto.ErrSocketTimeout",
+			err:      &ch.Exception{Code: proto.ErrSocketTimeout, Message: "socket timeout"},
+			expected: true,
+		},
+		{
+			name:     "proto.ErrNetworkError",
+			err:      &ch.Exception{Code: proto.ErrNetworkError, Message: "network error"},
+			expected: true,
+		},
+		// ch-go server exceptions - non-retryable codes
+		{
+			name:     "proto.ErrBadArguments",
+			err:      &ch.Exception{Code: proto.ErrBadArguments, Message: "bad arguments"},
+			expected: false,
+		},
+		{
+			name:     "proto.ErrUnknownTable",
+			err:      &ch.Exception{Code: proto.ErrUnknownTable, Message: "unknown table"},
+			expected: false,
+		},
+		// Data corruption - non-retryable
+		{
+			name:     "compress.CorruptedDataErr",
+			err:      &compress.CorruptedDataErr{},
+			expected: false,
+		},
+		// Network errors
+		{
+			name:     "network timeout error",
+			err:      &mockNetError{timeout: true},
+			expected: true,
+		},
+		{
+			name:     "network non-timeout error",
+			err:      &mockNetError{timeout: false},
+			expected: false,
+		},
+		// Syscall errors - retryable
+		{
+			name:     "syscall.ECONNRESET",
+			err:      syscall.ECONNRESET,
+			expected: true,
+		},
+		{
+			name:     "syscall.ECONNREFUSED",
+			err:      syscall.ECONNREFUSED,
+			expected: true,
+		},
+		{
+			name:     "syscall.EPIPE",
+			err:      syscall.EPIPE,
+			expected: true,
+		},
+		{
+			name:     "io.EOF",
+			err:      io.EOF,
+			expected: true,
+		},
+		{
+			name:     "io.ErrUnexpectedEOF",
+			err:      io.ErrUnexpectedEOF,
+			expected: true,
+		},
+		// String pattern fallback - retryable
+		{
+			name:     "connection reset string",
+			err:      errors.New("connection reset by peer"),
+			expected: true,
+		},
+		{
+			name:     "server overloaded string",
+			err:      errors.New("server is overloaded"),
+			expected: true,
+		},
+		{
+			name:     "too many connections string",
+			err:      errors.New("too many connections"),
+			expected: true,
+		},
+		// Unknown errors - non-retryable
+		{
+			name:     "unknown error",
+			err:      errors.New("some unknown error"),
+			expected: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isRetryableError(tt.err)
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
+// Ensure mockNetError implements net.Error.
+var _ net.Error = (*mockNetError)(nil)

@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/ClickHouse/ch-go"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -33,12 +34,6 @@ func (m *MockClickHouseClient) Execute(ctx context.Context, query string) error 
 	return args.Error(0)
 }
 
-func (m *MockClickHouseClient) BulkInsert(ctx context.Context, table string, data interface{}) error {
-	args := m.Called(ctx, table, data)
-
-	return args.Error(0)
-}
-
 func (m *MockClickHouseClient) Start() error {
 	args := m.Called()
 
@@ -59,6 +54,12 @@ func (m *MockClickHouseClient) IsStorageEmpty(ctx context.Context, table string,
 
 func (m *MockClickHouseClient) SetNetwork(network string) {
 	m.Called(network)
+}
+
+func (m *MockClickHouseClient) Do(ctx context.Context, query ch.Query) error {
+	args := m.Called(ctx, query)
+
+	return args.Error(0)
 }
 
 func TestNextBlock_NoResultsVsBlock0(t *testing.T) {
