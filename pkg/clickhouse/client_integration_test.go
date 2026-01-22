@@ -3,6 +3,7 @@
 package clickhouse
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ethpandaops/execution-processor/internal/testutil"
@@ -23,7 +24,7 @@ func TestClient_Integration_Container_New(t *testing.T) {
 		Compression: "lz4",
 	}
 
-	client, err := New(cfg)
+	client, err := New(context.Background(), cfg)
 	require.NoError(t, err)
 	require.NotNil(t, client)
 
@@ -43,7 +44,7 @@ func TestClient_Integration_Container_StartStop(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(cfg)
+	client, err := New(context.Background(), cfg)
 	require.NoError(t, err)
 
 	// Start should ping successfully
@@ -67,7 +68,7 @@ func TestClient_Integration_Container_Execute(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(cfg)
+	client, err := New(context.Background(), cfg)
 	require.NoError(t, err)
 
 	defer func() { _ = client.Stop() }()
@@ -75,8 +76,15 @@ func TestClient_Integration_Container_Execute(t *testing.T) {
 	err = client.Start()
 	require.NoError(t, err)
 
-	// Execute a simple query
-	err = client.Execute(t.Context(), "SELECT 1")
+	// Execute DDL - Create and drop a table
+	err = client.Execute(t.Context(), `
+		CREATE TABLE IF NOT EXISTS test_execute (
+			id UInt64
+		) ENGINE = Memory
+	`)
+	require.NoError(t, err)
+
+	err = client.Execute(t.Context(), "DROP TABLE IF EXISTS test_execute")
 	require.NoError(t, err)
 }
 
@@ -92,7 +100,7 @@ func TestClient_Integration_Container_QueryOne(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(cfg)
+	client, err := New(context.Background(), cfg)
 	require.NoError(t, err)
 
 	defer func() { _ = client.Stop() }()
@@ -100,11 +108,13 @@ func TestClient_Integration_Container_QueryOne(t *testing.T) {
 	err = client.Start()
 	require.NoError(t, err)
 
+	// QueryOne expects JSON string result that gets deserialized
 	var result struct {
 		Value int64 `json:"value"`
 	}
 
-	err = client.QueryOne(t.Context(), "SELECT 42 as value", &result)
+	// The query must return a single column with JSON string
+	err = client.QueryOne(t.Context(), "SELECT '{\"value\": 42}' as json_result", &result)
 	require.NoError(t, err)
 	assert.Equal(t, int64(42), result.Value)
 }
@@ -121,7 +131,7 @@ func TestClient_Integration_Container_IsStorageEmpty(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(cfg)
+	client, err := New(context.Background(), cfg)
 	require.NoError(t, err)
 
 	defer func() { _ = client.Stop() }()
@@ -129,12 +139,13 @@ func TestClient_Integration_Container_IsStorageEmpty(t *testing.T) {
 	err = client.Start()
 	require.NoError(t, err)
 
-	// Create a temporary table
+	// Create a table with ReplacingMergeTree engine (supports FINAL)
 	err = client.Execute(t.Context(), `
 		CREATE TABLE IF NOT EXISTS test_empty_check (
 			id UInt64,
 			name String
-		) ENGINE = Memory
+		) ENGINE = ReplacingMergeTree()
+		ORDER BY id
 	`)
 	require.NoError(t, err)
 

@@ -96,7 +96,7 @@ func NewClickHouseContainer(t *testing.T) ClickHouseConnection {
 
 	c, err := tcclickhouse.Run(ctx, "clickhouse/clickhouse-server:latest",
 		tcclickhouse.WithUsername("default"),
-		tcclickhouse.WithPassword(""),
+		tcclickhouse.WithPassword("test"),
 		tcclickhouse.WithDatabase("default"),
 	)
 	if err != nil {
@@ -120,6 +120,6 @@ func NewClickHouseContainer(t *testing.T) ClickHouseConnection {
 		Port:     port.Int(),
 		Database: "default",
 		Username: "default",
-		Password: "",
+		Password: "test",
 	}
 }
