@@ -32,7 +32,6 @@ type Structlog struct {
 	Refund                 *uint64        `json:"refund"`
 	Error                  *string        `json:"error"`
 	CallToAddress          *string        `json:"call_to_address"`
-	MetaNetworkID          int32          `json:"meta_network_id"`
 	MetaNetworkName        string         `json:"meta_network_name"`
 }
 
@@ -158,7 +157,6 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 			Refund:                 trace.Structlogs[i].Refund,
 			Error:                  trace.Structlogs[i].Error,
 			CallToAddress:          p.extractCallAddress(&trace.Structlogs[i]),
-			MetaNetworkID:          p.network.ID,
 			MetaNetworkName:        p.network.Name,
 		})
 
@@ -302,7 +300,6 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block *types.Block, i
 				Refund:                 structLog.Refund,
 				Error:                  structLog.Error,
 				CallToAddress:          callToAddress,
-				MetaNetworkID:          p.network.ID,
 				MetaNetworkName:        p.network.Name,
 			}
 

@@ -186,7 +186,6 @@ func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block *types.Bl
 			BlockNumber:      *block.Number(),
 			TransactionHash:  tx.Hash().String(),
 			TransactionIndex: uint32(index), //nolint:gosec // index is bounded by block.Transactions() length
-			NetworkID:        p.network.ID,
 			NetworkName:      p.network.Name,
 			Network:          p.network.Name,
 		}

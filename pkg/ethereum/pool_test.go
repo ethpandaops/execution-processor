@@ -234,7 +234,7 @@ func TestPool_NetworkNameOverride(t *testing.T) {
 	testCases := []struct {
 		name         string
 		override     *string
-		chainID      int32
+		chainID      int64
 		expectedName string
 		expectError  bool
 	}{
@@ -291,7 +291,6 @@ func TestPool_NetworkNameOverride(t *testing.T) {
 				assert.NoError(t, err)
 				require.NotNil(t, network)
 				assert.Equal(t, tc.expectedName, network.Name)
-				assert.Equal(t, tc.chainID, network.ID)
 			}
 		})
 	}
