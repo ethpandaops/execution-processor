@@ -3,7 +3,6 @@
 package clickhouse
 
 import (
-	"context"
 	"testing"
 
 	"github.com/ethpandaops/execution-processor/internal/testutil"
@@ -24,7 +23,7 @@ func TestClient_Integration_Container_New(t *testing.T) {
 		Compression: "lz4",
 	}
 
-	client, err := New(context.Background(), cfg)
+	client, err := New(cfg)
 	require.NoError(t, err)
 	require.NotNil(t, client)
 
@@ -44,7 +43,7 @@ func TestClient_Integration_Container_StartStop(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(context.Background(), cfg)
+	client, err := New(cfg)
 	require.NoError(t, err)
 
 	// Start should ping successfully
@@ -68,7 +67,7 @@ func TestClient_Integration_Container_Execute(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(context.Background(), cfg)
+	client, err := New(cfg)
 	require.NoError(t, err)
 
 	defer func() { _ = client.Stop() }()
@@ -100,7 +99,7 @@ func TestClient_Integration_Container_QueryUInt64(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(context.Background(), cfg)
+	client, err := New(cfg)
 	require.NoError(t, err)
 
 	defer func() { _ = client.Stop() }()
@@ -109,7 +108,7 @@ func TestClient_Integration_Container_QueryUInt64(t *testing.T) {
 	require.NoError(t, err)
 
 	// QueryUInt64 returns a single UInt64 value
-	result, err := client.QueryUInt64(t.Context(), "SELECT 42 as value", "value")
+	result, err := client.QueryUInt64(t.Context(), "SELECT toUInt64(42) as value", "value")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, uint64(42), *result)
@@ -127,7 +126,7 @@ func TestClient_Integration_Container_QueryMinMaxUInt64(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(context.Background(), cfg)
+	client, err := New(cfg)
 	require.NoError(t, err)
 
 	defer func() { _ = client.Stop() }()
@@ -136,7 +135,7 @@ func TestClient_Integration_Container_QueryMinMaxUInt64(t *testing.T) {
 	require.NoError(t, err)
 
 	// QueryMinMaxUInt64 returns min and max values
-	minVal, maxVal, err := client.QueryMinMaxUInt64(t.Context(), "SELECT 10 as min, 100 as max")
+	minVal, maxVal, err := client.QueryMinMaxUInt64(t.Context(), "SELECT toUInt64(10) as min, toUInt64(100) as max")
 	require.NoError(t, err)
 	require.NotNil(t, minVal)
 	require.NotNil(t, maxVal)
@@ -156,7 +155,7 @@ func TestClient_Integration_Container_IsStorageEmpty(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(context.Background(), cfg)
+	client, err := New(cfg)
 	require.NoError(t, err)
 
 	defer func() { _ = client.Stop() }()

@@ -270,7 +270,7 @@ func TestClient_Integration_QueryUInt64(t *testing.T) {
 	err = client.Start()
 	require.NoError(t, err)
 
-	result, err := client.QueryUInt64(t.Context(), "SELECT 42 as value", "value")
+	result, err := client.QueryUInt64(t.Context(), "SELECT toUInt64(42) as value", "value")
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, uint64(42), *result)
