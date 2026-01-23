@@ -9,6 +9,33 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
+// =============================================================================
+// hasPrecomputedGasUsed Tests
+// =============================================================================
+
+func TestHasPrecomputedGasUsed_Empty(t *testing.T) {
+	assert.False(t, hasPrecomputedGasUsed(nil))
+	assert.False(t, hasPrecomputedGasUsed([]execution.StructLog{}))
+}
+
+func TestHasPrecomputedGasUsed_WithGasUsed(t *testing.T) {
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1", GasUsed: 3},
+	}
+	assert.True(t, hasPrecomputedGasUsed(structlogs))
+}
+
+func TestHasPrecomputedGasUsed_WithoutGasUsed(t *testing.T) {
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1", GasUsed: 0},
+	}
+	assert.False(t, hasPrecomputedGasUsed(structlogs))
+}
+
+// =============================================================================
+// ComputeGasUsed Tests
+// =============================================================================
+
 func TestComputeGasUsed_EmptyLogs(t *testing.T) {
 	result := ComputeGasUsed(nil)
 	assert.Nil(t, result)
