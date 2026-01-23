@@ -40,7 +40,7 @@ type Processor struct {
 }
 
 // New creates a new simple transaction processor.
-func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, error) {
+func New(deps *Dependencies, config *Config) (*Processor, error) {
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}

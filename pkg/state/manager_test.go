@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/ClickHouse/ch-go"
 	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -15,26 +16,36 @@ type MockClickHouseClient struct {
 	mock.Mock
 }
 
-func (m *MockClickHouseClient) QueryOne(ctx context.Context, query string, dest interface{}) error {
-	args := m.Called(ctx, query, dest)
+func (m *MockClickHouseClient) QueryUInt64(ctx context.Context, query string, columnName string) (*uint64, error) {
+	args := m.Called(ctx, query, columnName)
 
-	return args.Error(0)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+
+	val, _ := args.Get(0).(*uint64)
+
+	return val, args.Error(1)
 }
 
-func (m *MockClickHouseClient) QueryMany(ctx context.Context, query string, dest interface{}) error {
-	args := m.Called(ctx, query, dest)
+func (m *MockClickHouseClient) QueryMinMaxUInt64(ctx context.Context, query string) (*uint64, *uint64, error) {
+	args := m.Called(ctx, query)
 
-	return args.Error(0)
+	var minResult, maxResult *uint64
+
+	if args.Get(0) != nil {
+		minResult = args.Get(0).(*uint64) //nolint:errcheck // test mock
+	}
+
+	if args.Get(1) != nil {
+		maxResult = args.Get(1).(*uint64) //nolint:errcheck // test mock
+	}
+
+	return minResult, maxResult, args.Error(2)
 }
 
 func (m *MockClickHouseClient) Execute(ctx context.Context, query string) error {
 	args := m.Called(ctx, query)
-
-	return args.Error(0)
-}
-
-func (m *MockClickHouseClient) BulkInsert(ctx context.Context, table string, data interface{}) error {
-	args := m.Called(ctx, table, data)
 
 	return args.Error(0)
 }
@@ -61,6 +72,17 @@ func (m *MockClickHouseClient) SetNetwork(network string) {
 	m.Called(network)
 }
 
+func (m *MockClickHouseClient) Do(ctx context.Context, query ch.Query) error {
+	args := m.Called(ctx, query)
+
+	return args.Error(0)
+}
+
+// Helper to create uint64 pointer.
+func uint64Ptr(v uint64) *uint64 {
+	return &v
+}
+
 func TestNextBlock_NoResultsVsBlock0(t *testing.T) {
 	ctx := context.Background()
 	log := logrus.New()
@@ -75,12 +97,9 @@ func TestNextBlock_NoResultsVsBlock0(t *testing.T) {
 		{
 			name: "No results - should return chain head",
 			setupMock: func(m *MockClickHouseClient) {
-				// QueryOne returns nil error but doesn't modify the dest struct
-				// This simulates the behavior when no rows are found
-				m.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-					// Don't modify dest - this is what happens when no rows are found
-				})
-				// IsStorageEmpty is called inside getProgressiveNextBlock when result is nil
+				// QueryUInt64 returns nil (no rows found)
+				m.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(nil, nil)
+				// IsStorageEmpty is called when result is nil
 				m.On("IsStorageEmpty", ctx, "test_table", map[string]interface{}{
 					"processor":         "test_processor",
 					"meta_network_name": "mainnet",
@@ -92,12 +111,7 @@ func TestNextBlock_NoResultsVsBlock0(t *testing.T) {
 		{
 			name: "Block 0 found - should return 1",
 			setupMock: func(m *MockClickHouseClient) {
-				m.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-					// Simulate finding block 0
-					result := args.Get(2).(*blockNumberResult) //nolint:errcheck // type assertion in test
-					blockNum := JSONInt64(0)
-					result.BlockNumber = &blockNum
-				})
+				m.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(uint64Ptr(0), nil)
 			},
 			expectedNextBlock: big.NewInt(1), // Next block after 0
 			expectError:       false,
@@ -105,12 +119,7 @@ func TestNextBlock_NoResultsVsBlock0(t *testing.T) {
 		{
 			name: "Block 100 found - should return 101",
 			setupMock: func(m *MockClickHouseClient) {
-				m.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-					// Simulate finding block 100
-					result := args.Get(2).(*blockNumberResult) //nolint:errcheck // type assertion in test
-					blockNum := JSONInt64(100)
-					result.BlockNumber = &blockNum
-				})
+				m.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(uint64Ptr(100), nil)
 			},
 			expectedNextBlock: big.NewInt(101), // Next block after 100
 			expectError:       false,
@@ -151,28 +160,28 @@ func TestNextBlock_EmptyStorageWithLimiter(t *testing.T) {
 	tests := []struct {
 		name           string
 		chainHead      *big.Int
-		limiterMax     *big.Int
+		limiterMax     *uint64
 		limiterEnabled bool
 		expectedNext   *big.Int
 	}{
 		{
 			name:           "empty storage with limiter and high chain head",
 			chainHead:      big.NewInt(5000),
-			limiterMax:     big.NewInt(1000),
+			limiterMax:     uint64Ptr(1000),
 			limiterEnabled: true,
 			expectedNext:   big.NewInt(999), // limiterMax - 1
 		},
 		{
 			name:           "empty storage with limiter and nil chain head",
 			chainHead:      nil,
-			limiterMax:     big.NewInt(1000),
+			limiterMax:     uint64Ptr(1000),
 			limiterEnabled: true,
 			expectedNext:   big.NewInt(999), // limiterMax - 1
 		},
 		{
 			name:           "empty storage with limiter and zero chain head",
 			chainHead:      big.NewInt(0),
-			limiterMax:     big.NewInt(1000),
+			limiterMax:     uint64Ptr(1000),
 			limiterEnabled: true,
 			expectedNext:   big.NewInt(999), // limiterMax - 1
 		},
@@ -189,9 +198,7 @@ func TestNextBlock_EmptyStorageWithLimiter(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create mock storage that reports empty
 			mockStorage := new(MockClickHouseClient)
-			mockStorage.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-				// Don't modify dest - storage is empty
-			})
+			mockStorage.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(nil, nil)
 			mockStorage.On("IsStorageEmpty", ctx, "test_table", map[string]interface{}{
 				"processor":         "test-processor",
 				"meta_network_name": "mainnet",
@@ -201,15 +208,7 @@ func TestNextBlock_EmptyStorageWithLimiter(t *testing.T) {
 			var mockLimiter *MockClickHouseClient
 			if tt.limiterEnabled {
 				mockLimiter = new(MockClickHouseClient)
-				mockLimiter.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-					// Set the limiter max block
-					result := args.Get(2).(*blockNumberResult) //nolint:errcheck // type assertion in test
-
-					if tt.limiterMax != nil {
-						blockNum := JSONInt64(tt.limiterMax.Int64())
-						result.BlockNumber = &blockNum
-					}
-				})
+				mockLimiter.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(tt.limiterMax, nil)
 			}
 
 			// Create manager
@@ -290,20 +289,14 @@ func TestGetProgressiveNextBlock_EmptyStorage(t *testing.T) {
 
 			if tt.storageEmpty {
 				// Empty storage case
-				mockStorage.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-					// Don't modify dest - storage is empty
-				})
+				mockStorage.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(nil, nil)
 				mockStorage.On("IsStorageEmpty", ctx, "test_table", map[string]interface{}{
 					"processor":         "test-processor",
 					"meta_network_name": "mainnet",
 				}).Return(true, nil)
 			} else {
 				// Non-empty storage case
-				mockStorage.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-					result := args.Get(2).(*blockNumberResult) //nolint:errcheck // type assertion in test
-					blockNum := JSONInt64(tt.storedBlock)
-					result.BlockNumber = &blockNum
-				})
+				mockStorage.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(uint64Ptr(tt.storedBlock), nil)
 			}
 
 			manager := &Manager{
@@ -338,9 +331,7 @@ func TestGetProgressiveNextBlock_NoResultsVsBlock0(t *testing.T) {
 		{
 			name: "No results with chain head - should return chain head",
 			setupMock: func(m *MockClickHouseClient) {
-				m.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-					// Don't modify dest - this is what happens when no rows are found
-				})
+				m.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(nil, nil)
 				// IsStorageEmpty is called when result is nil
 				m.On("IsStorageEmpty", ctx, "test_table", map[string]interface{}{
 					"processor":         "test_processor",
@@ -354,9 +345,7 @@ func TestGetProgressiveNextBlock_NoResultsVsBlock0(t *testing.T) {
 		{
 			name: "No results without chain head - should return 0",
 			setupMock: func(m *MockClickHouseClient) {
-				m.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-					// Don't modify dest - this is what happens when no rows are found
-				})
+				m.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(nil, nil)
 				// IsStorageEmpty is called when result is nil
 				m.On("IsStorageEmpty", ctx, "test_table", map[string]interface{}{
 					"processor":         "test_processor",
@@ -370,11 +359,7 @@ func TestGetProgressiveNextBlock_NoResultsVsBlock0(t *testing.T) {
 		{
 			name: "Block 0 found - should return 1",
 			setupMock: func(m *MockClickHouseClient) {
-				m.On("QueryOne", ctx, mock.AnythingOfType("string"), mock.Anything).Return(nil).Run(func(args mock.Arguments) {
-					result := args.Get(2).(*blockNumberResult) //nolint:errcheck // type assertion in test
-					blockNum := JSONInt64(0)
-					result.BlockNumber = &blockNum
-				})
+				m.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(uint64Ptr(0), nil)
 			},
 			chainHead:         big.NewInt(1000),
 			expectedNextBlock: big.NewInt(1),

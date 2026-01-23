@@ -17,13 +17,15 @@ redis:
 
 stateManager:
   storage:
-    url: "http://localhost:8123?database=admin"
+    addr: "localhost:9000"
+    database: "admin"
     table: "execution_block"
   limiter:
     # enable limiter to stop processing blocks up to the latest canonical beacon block table
     # if disabled, the state manager will process blocks up to head of the execution node
     enabled: false
-    url: "http://localhost:8123?database=default"
+    addr: "localhost:9000"
+    database: "default"
     table: "canonical_beacon_block"
 
 # Processor configuration (block discovery with leader election)
@@ -45,7 +47,8 @@ processors:
   # Processor configuration
   transactionStructlog:
     enabled: true
-    url: "http://localhost:8123?database=default"
+    addr: "localhost:9000"
+    database: "default"
     table: "canonical_execution_transaction_structlog"
     # debug: false                     # Enable debug logging for ClickHouse queries
     # Channel-based batching configuration for memory-efficient processing
@@ -62,7 +65,8 @@ processors:
   # Simple transaction processor (lightweight - no debug traces)
   transactionSimple:
     enabled: false
-    url: "http://localhost:8123?database=default"
+    addr: "localhost:9000"
+    database: "default"
     table: "execution_transaction"
     # debug: false                     # Enable debug logging for ClickHouse queries
 

@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/ethpandaops/execution-processor/pkg/leaderelection"
 	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
@@ -14,24 +15,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// skipIfRedisUnavailable checks if Redis is available and skips the test if not.
-func skipIfRedisUnavailable(t *testing.T) *redis.Client {
+// newTestRedis creates an in-memory Redis server for testing.
+// The server and client are automatically cleaned up when the test completes.
+func newTestRedis(t *testing.T) *redis.Client {
 	t.Helper()
 
-	client := redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-		DB:   15, // Use high DB number for tests
+	s := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: s.Addr()})
+
+	t.Cleanup(func() {
+		_ = client.Close()
 	})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	if err := client.Ping(ctx).Err(); err != nil {
-		client.Close()
-		t.Skipf("Redis unavailable at localhost:6379: %v", err)
-
-		return nil
-	}
 
 	return client
 }
@@ -41,11 +35,7 @@ func skipIfRedisUnavailable(t *testing.T) *redis.Client {
 // =====================================
 
 func TestNewRedisElector(t *testing.T) {
-	client := skipIfRedisUnavailable(t)
-	if client == nil {
-		return
-	}
-	defer client.Close()
+	client := newTestRedis(t)
 
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -127,11 +117,7 @@ func TestNewRedisElector(t *testing.T) {
 }
 
 func TestRedisElector_GetLeaderID_NoLeader(t *testing.T) {
-	client := skipIfRedisUnavailable(t)
-	if client == nil {
-		return
-	}
-	defer client.Close()
+	client := newTestRedis(t)
 
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -162,11 +148,7 @@ func TestRedisElector_GetLeaderID_NoLeader(t *testing.T) {
 }
 
 func TestRedisElector_StartStop(t *testing.T) {
-	client := skipIfRedisUnavailable(t)
-	if client == nil {
-		return
-	}
-	defer client.Close()
+	client := newTestRedis(t)
 
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -212,11 +194,7 @@ func TestRedisElector_StartStop(t *testing.T) {
 }
 
 func TestRedisElector_LeadershipAcquisition(t *testing.T) {
-	client := skipIfRedisUnavailable(t)
-	if client == nil {
-		return
-	}
-	defer client.Close()
+	client := newTestRedis(t)
 
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -285,11 +263,7 @@ func TestRedisElector_LeadershipAcquisition(t *testing.T) {
 }
 
 func TestRedisElector_MultipleNodes(t *testing.T) {
-	client := skipIfRedisUnavailable(t)
-	if client == nil {
-		return
-	}
-	defer client.Close()
+	client := newTestRedis(t)
 
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -368,11 +342,7 @@ func TestRedisElector_MultipleNodes(t *testing.T) {
 }
 
 func TestRedisElector_LeadershipTransition(t *testing.T) {
-	client := skipIfRedisUnavailable(t)
-	if client == nil {
-		return
-	}
-	defer client.Close()
+	client := newTestRedis(t)
 
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -479,11 +449,7 @@ func TestRedisElector_LeadershipTransition(t *testing.T) {
 // =====================================
 
 func TestRedisElector_RenewalFailure(t *testing.T) {
-	client := skipIfRedisUnavailable(t)
-	if client == nil {
-		return
-	}
-	defer client.Close()
+	client := newTestRedis(t)
 
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -545,11 +511,7 @@ func TestRedisElector_RenewalFailure(t *testing.T) {
 }
 
 func TestRedisElector_ConcurrentElectors(t *testing.T) {
-	client := skipIfRedisUnavailable(t)
-	if client == nil {
-		return
-	}
-	defer client.Close()
+	client := newTestRedis(t)
 
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -638,11 +600,7 @@ func TestRedisElector_ConcurrentElectors(t *testing.T) {
 }
 
 func TestRedisElector_StopWithoutStart(t *testing.T) {
-	client := skipIfRedisUnavailable(t)
-	if client == nil {
-		return
-	}
-	defer client.Close()
+	client := newTestRedis(t)
 
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -665,11 +623,7 @@ func TestRedisElector_StopWithoutStart(t *testing.T) {
 }
 
 func TestRedisElector_MultipleStops(t *testing.T) {
-	client := skipIfRedisUnavailable(t)
-	if client == nil {
-		return
-	}
-	defer client.Close()
+	client := newTestRedis(t)
 
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
@@ -709,11 +663,7 @@ func TestRedisElector_MultipleStops(t *testing.T) {
 }
 
 func TestRedisElector_ContextCancellation(t *testing.T) {
-	client := skipIfRedisUnavailable(t)
-	if client == nil {
-		return
-	}
-	defer client.Close()
+	client := newTestRedis(t)
 
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)

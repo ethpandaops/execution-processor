@@ -6,44 +6,52 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/ClickHouse/ch-go"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/hibiken/asynq"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
-	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 )
+
+// ClickHouseDateTime is a time.Time wrapper that formats correctly for ClickHouse JSON.
+type ClickHouseDateTime time.Time
+
+// MarshalJSON formats time for ClickHouse DateTime column.
+func (t ClickHouseDateTime) MarshalJSON() ([]byte, error) {
+	return []byte(fmt.Sprintf(`"%s"`, time.Time(t).UTC().Format("2006-01-02 15:04:05"))), nil
+}
 
 // Transaction represents a row in the execution_transaction table.
 //
 //nolint:tagliatelle // ClickHouse uses snake_case column names
 type Transaction struct {
-	UpdatedDateTime    structlog.ClickHouseTime `json:"updated_date_time"`
-	BlockNumber        uint64                   `json:"block_number"`
-	BlockHash          string                   `json:"block_hash"`
-	ParentHash         string                   `json:"parent_hash"`
-	Position           uint32                   `json:"position"`
-	Hash               string                   `json:"hash"`
-	From               string                   `json:"from"`
-	To                 *string                  `json:"to"`
-	Nonce              uint64                   `json:"nonce"`
-	GasPrice           string                   `json:"gas_price"`        // Effective gas price as UInt128 string
-	Gas                uint64                   `json:"gas"`              // Gas limit
-	GasTipCap          *string                  `json:"gas_tip_cap"`      // Nullable UInt128 string
-	GasFeeCap          *string                  `json:"gas_fee_cap"`      // Nullable UInt128 string
-	Value              string                   `json:"value"`            // UInt128 string
-	Type               uint8                    `json:"type"`             // Transaction type
-	Size               uint32                   `json:"size"`             // Transaction size in bytes
-	CallDataSize       uint32                   `json:"call_data_size"`   // Size of call data
-	BlobGas            *uint64                  `json:"blob_gas"`         // Nullable - for type 3 txs
-	BlobGasFeeCap      *string                  `json:"blob_gas_fee_cap"` // Nullable UInt128 string
-	BlobHashes         []string                 `json:"blob_hashes"`      // Array of versioned hashes
-	Success            bool                     `json:"success"`
-	NInputBytes        uint32                   `json:"n_input_bytes"`
-	NInputZeroBytes    uint32                   `json:"n_input_zero_bytes"`
-	NInputNonzeroBytes uint32                   `json:"n_input_nonzero_bytes"`
-	MetaNetworkName    string                   `json:"meta_network_name"`
+	UpdatedDateTime    ClickHouseDateTime `json:"updated_date_time"`
+	BlockNumber        uint64             `json:"block_number"`
+	BlockHash          string             `json:"block_hash"`
+	ParentHash         string             `json:"parent_hash"`
+	Position           uint32             `json:"position"`
+	Hash               string             `json:"hash"`
+	From               string             `json:"from"`
+	To                 *string            `json:"to"`
+	Nonce              uint64             `json:"nonce"`
+	GasPrice           string             `json:"gas_price"`        // Effective gas price as UInt128 string
+	Gas                uint64             `json:"gas"`              // Gas limit
+	GasTipCap          *string            `json:"gas_tip_cap"`      // Nullable UInt128 string
+	GasFeeCap          *string            `json:"gas_fee_cap"`      // Nullable UInt128 string
+	Value              string             `json:"value"`            // UInt128 string
+	Type               uint8              `json:"type"`             // Transaction type
+	Size               uint32             `json:"size"`             // Transaction size in bytes
+	CallDataSize       uint32             `json:"call_data_size"`   // Size of call data
+	BlobGas            *uint64            `json:"blob_gas"`         // Nullable - for type 3 txs
+	BlobGasFeeCap      *string            `json:"blob_gas_fee_cap"` // Nullable UInt128 string
+	BlobHashes         []string           `json:"blob_hashes"`      // Array of versioned hashes
+	Success            bool               `json:"success"`
+	NInputBytes        uint32             `json:"n_input_bytes"`
+	NInputZeroBytes    uint32             `json:"n_input_zero_bytes"`
+	NInputNonzeroBytes uint32             `json:"n_input_nonzero_bytes"`
+	MetaNetworkName    string             `json:"meta_network_name"`
 }
 
 // GetHandlers returns the task handlers for this processor.
@@ -240,7 +248,7 @@ func (p *Processor) buildTransactionRow(
 
 	// Build transaction row
 	txRow := Transaction{
-		UpdatedDateTime:    structlog.NewClickHouseTime(time.Now()),
+		UpdatedDateTime:    ClickHouseDateTime(time.Now()),
 		BlockNumber:        block.Number().Uint64(),
 		BlockHash:          block.Hash().String(),
 		ParentHash:         block.ParentHash().String(),
@@ -322,13 +330,23 @@ func calculateEffectiveGasPrice(block *types.Block, tx *types.Transaction) *big.
 	return effectiveGasPrice
 }
 
-// insertTransactions inserts transactions into ClickHouse.
+// insertTransactions inserts transactions into ClickHouse using columnar protocol.
 func (p *Processor) insertTransactions(ctx context.Context, transactions []Transaction) error {
 	if len(transactions) == 0 {
 		return nil
 	}
 
-	if err := p.clickhouse.BulkInsert(ctx, p.config.Table, transactions); err != nil {
+	cols := NewColumns()
+	for _, tx := range transactions {
+		cols.Append(tx)
+	}
+
+	input := cols.Input()
+
+	if err := p.clickhouse.Do(ctx, ch.Query{
+		Body:  input.Into(p.config.Table),
+		Input: input,
+	}); err != nil {
 		common.ClickHouseInsertsRows.WithLabelValues(
 			p.network.Name,
 			ProcessorName,

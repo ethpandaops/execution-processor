@@ -312,7 +312,7 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 	if m.config.TransactionStructlog.Enabled {
 		m.log.Debug("Transaction structlog processor is enabled, initializing...")
 
-		processor, err := transaction_structlog.New(ctx, &transaction_structlog.Dependencies{
+		processor, err := transaction_structlog.New(&transaction_structlog.Dependencies{
 			Log:         m.log.WithField("processor", "transaction_structlog"),
 			Pool:        m.pool,
 			State:       m.state,
@@ -331,7 +331,7 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 
 		m.log.WithField("processor", "transaction_structlog").Info("Initialized processor")
 
-		if err := processor.Start(ctx); err != nil {
+		if err := m.startProcessorWithRetry(ctx, processor, "transaction_structlog"); err != nil {
 			return fmt.Errorf("failed to start transaction_structlog processor: %w", err)
 		}
 	} else {
@@ -342,7 +342,7 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 	if m.config.TransactionSimple.Enabled {
 		m.log.Debug("Transaction simple processor is enabled, initializing...")
 
-		processor, err := transaction_simple.New(ctx, &transaction_simple.Dependencies{
+		processor, err := transaction_simple.New(&transaction_simple.Dependencies{
 			Log:         m.log.WithField("processor", "transaction_simple"),
 			Pool:        m.pool,
 			State:       m.state,
@@ -361,7 +361,7 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 
 		m.log.WithField("processor", "transaction_simple").Info("Initialized processor")
 
-		if err := processor.Start(ctx); err != nil {
+		if err := m.startProcessorWithRetry(ctx, processor, "transaction_simple"); err != nil {
 			return fmt.Errorf("failed to start transaction_simple processor: %w", err)
 		}
 	} else {
@@ -371,6 +371,49 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 	m.log.WithField("total_processors", len(m.processors)).Info("Completed processor initialization")
 
 	return nil
+}
+
+// startProcessorWithRetry starts a processor with infinite retry and capped exponential backoff.
+// This ensures processors can wait for their dependencies (like ClickHouse) to become available.
+func (m *Manager) startProcessorWithRetry(ctx context.Context, processor c.BlockProcessor, name string) error {
+	const (
+		baseDelay = 100 * time.Millisecond
+		maxDelay  = 10 * time.Second
+	)
+
+	attempt := 0
+
+	for {
+		err := processor.Start(ctx)
+		if err == nil {
+			if attempt > 0 {
+				m.log.WithField("processor", name).Info("Processor started successfully after retries")
+			}
+
+			return nil
+		}
+
+		// Calculate delay with exponential backoff, capped at maxDelay
+		delay := baseDelay * time.Duration(1<<attempt)
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+
+		m.log.WithFields(logrus.Fields{
+			"processor": name,
+			"attempt":   attempt + 1,
+			"delay":     delay,
+			"error":     err,
+		}).Warn("Failed to start processor, retrying...")
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+
+		attempt++
+	}
 }
 
 func (m *Manager) processBlocks(ctx context.Context) {
