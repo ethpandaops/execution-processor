@@ -44,6 +44,18 @@ func (m *MockClickHouseClient) QueryMinMaxUInt64(ctx context.Context, query stri
 	return minResult, maxResult, args.Error(2)
 }
 
+func (m *MockClickHouseClient) QueryUInt64Slice(ctx context.Context, query string, columnName string) ([]uint64, error) {
+	args := m.Called(ctx, query, columnName)
+
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+
+	result, _ := args.Get(0).([]uint64)
+
+	return result, args.Error(1)
+}
+
 func (m *MockClickHouseClient) Execute(ctx context.Context, query string) error {
 	args := m.Called(ctx, query)
 
@@ -385,6 +397,152 @@ func TestGetProgressiveNextBlock_NoResultsVsBlock0(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.expectedNextBlock, nextBlock)
+			}
+
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestGetOldestIncompleteBlock(t *testing.T) {
+	ctx := context.Background()
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+
+	tests := []struct {
+		name           string
+		minBlockNumber uint64
+		mockReturn     *uint64
+		expected       *uint64
+		expectError    bool
+	}{
+		{
+			name:           "no incomplete blocks",
+			minBlockNumber: 0,
+			mockReturn:     nil,
+			expected:       nil,
+			expectError:    false,
+		},
+		{
+			name:           "finds oldest at 101",
+			minBlockNumber: 0,
+			mockReturn:     uint64Ptr(101),
+			expected:       uint64Ptr(101),
+			expectError:    false,
+		},
+		{
+			name:           "respects minBlockNumber filter",
+			minBlockNumber: 100,
+			mockReturn:     uint64Ptr(105),
+			expected:       uint64Ptr(105),
+			expectError:    false,
+		},
+		{
+			name:           "no matches above minBlockNumber",
+			minBlockNumber: 500,
+			mockReturn:     nil,
+			expected:       nil,
+			expectError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := new(MockClickHouseClient)
+			mockClient.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(tt.mockReturn, nil)
+
+			manager := &Manager{
+				log:           log.WithField("test", tt.name),
+				storageClient: mockClient,
+				storageTable:  "test_table",
+			}
+
+			result, err := manager.GetOldestIncompleteBlock(ctx, "mainnet", "test_processor", tt.minBlockNumber)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+
+				if tt.expected == nil {
+					assert.Nil(t, result)
+				} else {
+					assert.NotNil(t, result)
+					assert.Equal(t, *tt.expected, *result)
+				}
+			}
+
+			mockClient.AssertExpectations(t)
+		})
+	}
+}
+
+func TestGetNewestIncompleteBlock(t *testing.T) {
+	ctx := context.Background()
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+
+	tests := []struct {
+		name           string
+		maxBlockNumber uint64
+		mockReturn     *uint64
+		expected       *uint64
+		expectError    bool
+	}{
+		{
+			name:           "no incomplete blocks",
+			maxBlockNumber: 1000,
+			mockReturn:     nil,
+			expected:       nil,
+			expectError:    false,
+		},
+		{
+			name:           "finds newest at 250",
+			maxBlockNumber: 1000,
+			mockReturn:     uint64Ptr(250),
+			expected:       uint64Ptr(250),
+			expectError:    false,
+		},
+		{
+			name:           "respects maxBlockNumber filter",
+			maxBlockNumber: 300,
+			mockReturn:     uint64Ptr(250),
+			expected:       uint64Ptr(250),
+			expectError:    false,
+		},
+		{
+			name:           "no matches below maxBlockNumber",
+			maxBlockNumber: 100,
+			mockReturn:     nil,
+			expected:       nil,
+			expectError:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockClient := new(MockClickHouseClient)
+			mockClient.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(tt.mockReturn, nil)
+
+			manager := &Manager{
+				log:           log.WithField("test", tt.name),
+				storageClient: mockClient,
+				storageTable:  "test_table",
+			}
+
+			result, err := manager.GetNewestIncompleteBlock(ctx, "mainnet", "test_processor", tt.maxBlockNumber)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+
+				if tt.expected == nil {
+					assert.Nil(t, result)
+				} else {
+					assert.NotNil(t, result)
+					assert.Equal(t, *tt.expected, *result)
+				}
 			}
 
 			mockClient.AssertExpectations(t)

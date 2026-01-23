@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
-	"github.com/ethpandaops/execution-processor/pkg/processor/common"
+	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	"github.com/sirupsen/logrus"
 )
 
@@ -160,7 +160,7 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 
 	var err error
 
-	if mode == common.BACKWARDS_MODE {
+	if mode == tracker.BACKWARDS_MODE {
 		progressiveNext, err = s.getProgressiveNextBlockBackwards(ctx, processor, network, chainHead)
 	} else {
 		// Default to forwards mode
@@ -173,7 +173,7 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 
 	// If limiter is disabled or backwards mode, return progressive next block
 	// Limiter only applies to forwards processing to prevent exceeding beacon chain
-	if !s.limiterEnabled || mode == common.BACKWARDS_MODE {
+	if !s.limiterEnabled || mode == tracker.BACKWARDS_MODE {
 		return progressiveNext, nil
 	}
 
@@ -447,6 +447,173 @@ func (s *Manager) MarkBlockProcessed(ctx context.Context, blockNumber uint64, ne
 	return nil
 }
 
+// MarkBlockEnqueued inserts a block with complete=false to track that tasks have been enqueued.
+// This is the first phase of two-phase completion tracking.
+func (s *Manager) MarkBlockEnqueued(ctx context.Context, blockNumber uint64, taskCount int, network, processor string) error {
+	query := fmt.Sprintf(
+		"INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name, complete, task_count) VALUES ('%s', %d, '%s', '%s', 0, %d)",
+		s.storageTable,
+		time.Now().Format("2006-01-02 15:04:05"),
+		blockNumber,
+		processor,
+		network,
+		taskCount,
+	)
+
+	err := s.storageClient.Execute(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to mark block as enqueued in %s: %w", s.storageTable, err)
+	}
+
+	s.log.WithFields(logrus.Fields{
+		"block_number": blockNumber,
+		"processor":    processor,
+		"network":      network,
+		"task_count":   taskCount,
+	}).Debug("Marked block as enqueued (complete=false)")
+
+	return nil
+}
+
+// MarkBlockComplete inserts a block with complete=true to indicate all tasks finished.
+// This is the second phase of two-phase completion tracking.
+// ReplacingMergeTree will keep the latest row per (processor, network, block_number).
+func (s *Manager) MarkBlockComplete(ctx context.Context, blockNumber uint64, network, processor string) error {
+	query := fmt.Sprintf(
+		"INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name, complete, task_count) VALUES ('%s', %d, '%s', '%s', 1, 0)",
+		s.storageTable,
+		time.Now().Format("2006-01-02 15:04:05"),
+		blockNumber,
+		processor,
+		network,
+	)
+
+	err := s.storageClient.Execute(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to mark block as complete in %s: %w", s.storageTable, err)
+	}
+
+	s.log.WithFields(logrus.Fields{
+		"block_number": blockNumber,
+		"processor":    processor,
+		"network":      network,
+	}).Debug("Marked block as complete")
+
+	return nil
+}
+
+// CountIncompleteBlocks returns the count of blocks that are not yet complete.
+func (s *Manager) CountIncompleteBlocks(ctx context.Context, network, processor string) (int, error) {
+	query := fmt.Sprintf(`
+		SELECT count(*) as count
+		FROM %s FINAL
+		WHERE processor = '%s'
+		  AND meta_network_name = '%s'
+		  AND complete = 0
+	`, s.storageTable, processor, network)
+
+	count, err := s.storageClient.QueryUInt64(ctx, query, "count")
+	if err != nil {
+		return 0, fmt.Errorf("failed to count incomplete blocks: %w", err)
+	}
+
+	if count == nil {
+		return 0, nil
+	}
+
+	// Safe conversion - count of incomplete blocks will never exceed int max
+	if *count > uint64(^uint(0)>>1) {
+		return 0, fmt.Errorf("incomplete block count exceeds int max: %d", *count)
+	}
+
+	return int(*count), nil
+}
+
+// GetOldestIncompleteBlock returns the oldest incomplete block >= minBlockNumber.
+// Returns nil if no incomplete blocks exist within the range.
+// The minBlockNumber parameter enables startup optimization by limiting the search range.
+func (s *Manager) GetOldestIncompleteBlock(ctx context.Context, network, processor string, minBlockNumber uint64) (*uint64, error) {
+	query := fmt.Sprintf(`
+		SELECT block_number
+		FROM %s FINAL
+		WHERE processor = '%s'
+		  AND meta_network_name = '%s'
+		  AND complete = 0
+		  AND block_number >= %d
+		ORDER BY block_number ASC
+		LIMIT 1
+	`, s.storageTable, processor, network, minBlockNumber)
+
+	s.log.WithFields(logrus.Fields{
+		"processor":        processor,
+		"network":          network,
+		"min_block_number": minBlockNumber,
+	}).Debug("Querying for oldest incomplete block")
+
+	blockNumber, err := s.storageClient.QueryUInt64(ctx, query, "block_number")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get oldest incomplete block: %w", err)
+	}
+
+	return blockNumber, nil
+}
+
+// GetNewestIncompleteBlock returns the newest incomplete block <= maxBlockNumber.
+// Returns nil if no incomplete blocks exist within the range.
+// The maxBlockNumber parameter enables startup optimization by limiting the search range.
+// This method is used for backwards processing mode.
+func (s *Manager) GetNewestIncompleteBlock(ctx context.Context, network, processor string, maxBlockNumber uint64) (*uint64, error) {
+	query := fmt.Sprintf(`
+		SELECT block_number
+		FROM %s FINAL
+		WHERE processor = '%s'
+		  AND meta_network_name = '%s'
+		  AND complete = 0
+		  AND block_number <= %d
+		ORDER BY block_number DESC
+		LIMIT 1
+	`, s.storageTable, processor, network, maxBlockNumber)
+
+	s.log.WithFields(logrus.Fields{
+		"processor":        processor,
+		"network":          network,
+		"max_block_number": maxBlockNumber,
+	}).Debug("Querying for newest incomplete block")
+
+	blockNumber, err := s.storageClient.QueryUInt64(ctx, query, "block_number")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get newest incomplete block: %w", err)
+	}
+
+	return blockNumber, nil
+}
+
+// GetIncompleteBlocks returns block numbers that are not yet complete, ordered by block_number.
+func (s *Manager) GetIncompleteBlocks(ctx context.Context, network, processor string, limit int) ([]uint64, error) {
+	query := fmt.Sprintf(`
+		SELECT block_number
+		FROM %s FINAL
+		WHERE processor = '%s'
+		  AND meta_network_name = '%s'
+		  AND complete = 0
+		ORDER BY block_number ASC
+		LIMIT %d
+	`, s.storageTable, processor, network, limit)
+
+	s.log.WithFields(logrus.Fields{
+		"processor": processor,
+		"network":   network,
+		"limit":     limit,
+	}).Debug("Querying for incomplete blocks")
+
+	blocks, err := s.storageClient.QueryUInt64Slice(ctx, query, "block_number")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get incomplete blocks: %w", err)
+	}
+
+	return blocks, nil
+}
+
 func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor string) (minBlock, maxBlock *big.Int, err error) {
 	query := fmt.Sprintf(`
 		SELECT min(block_number) as min, max(block_number) as max
@@ -532,7 +699,7 @@ func (s *Manager) GetHeadDistance(ctx context.Context, processor, network, mode 
 	}
 
 	// Determine which head to use based on limiter status and mode
-	if !s.limiterEnabled || mode == common.BACKWARDS_MODE {
+	if !s.limiterEnabled || mode == tracker.BACKWARDS_MODE {
 		// Use execution node head
 		if executionHead == nil {
 			return 0, "", fmt.Errorf("execution head not available")

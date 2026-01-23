@@ -15,6 +15,9 @@ type Config struct {
 	// Streaming settings
 	ChunkSize            int `yaml:"chunkSize"`            // Default: 10,000 rows per OnInput iteration
 	ProgressLogThreshold int `yaml:"progressLogThreshold"` // Default: 100,000 - log progress for large txs
+
+	// Block completion tracking
+	MaxPendingBlockRange int `yaml:"maxPendingBlockRange"` // Max distance between oldest incomplete and current block. Default: 2
 }
 
 // Validate validates the configuration.
