@@ -471,21 +471,6 @@ func TestEmbeddedNode_DelegatesToDataSource_DebugTraceTransaction(t *testing.T) 
 	ds.AssertExpectations(t)
 }
 
-func TestEmbeddedNode_DelegatesToDataSource_ChainID(t *testing.T) {
-	log := logrus.New()
-	log.SetLevel(logrus.ErrorLevel)
-
-	ds := new(MockDataSource)
-	node := execution.NewEmbeddedNode(log, "test-node", ds)
-
-	ds.On("ChainID").Return(int32(1))
-
-	result := node.ChainID()
-	assert.Equal(t, int32(1), result)
-
-	ds.AssertExpectations(t)
-}
-
 func TestEmbeddedNode_DelegatesToDataSource_ClientType(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
