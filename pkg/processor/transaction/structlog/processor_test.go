@@ -7,11 +7,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
-	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
-	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 	"github.com/hibiken/asynq"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
+	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
+	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 )
 
 func TestProcessor_Creation(t *testing.T) {
@@ -19,12 +20,9 @@ func TestProcessor_Creation(t *testing.T) {
 		Enabled: true,
 		Table:   "test_structlog",
 		Config: clickhouse.Config{
-			URL: "http://localhost:8123",
+			Addr: "localhost:9000",
 		},
-		BigTransactionThreshold: 500000,
-		BatchInsertThreshold:    50000,
-		BatchFlushInterval:      5 * time.Second,
-		BatchMaxSize:            100000,
+		ChunkSize: 10000,
 	}
 
 	// Test config validation
@@ -44,12 +42,9 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_table",
 				Config: clickhouse.Config{
-					URL: "http://localhost:8123",
+					Addr: "localhost:9000",
 				},
-				BigTransactionThreshold: 500000,
-				BatchInsertThreshold:    50000,
-				BatchFlushInterval:      5 * time.Second,
-				BatchMaxSize:            100000,
+				ChunkSize: 10000,
 			},
 			expectError: false,
 		},
@@ -61,14 +56,11 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 			expectError: false,
 		},
 		{
-			name: "missing URL",
+			name: "missing addr",
 			config: transaction_structlog.Config{
-				Enabled:                 true,
-				Table:                   "test_table",
-				BigTransactionThreshold: 500000,
-				BatchInsertThreshold:    50000,
-				BatchFlushInterval:      5 * time.Second,
-				BatchMaxSize:            100000,
+				Enabled:   true,
+				Table:     "test_table",
+				ChunkSize: 10000,
 			},
 			expectError: true,
 		},
@@ -77,12 +69,9 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 			config: transaction_structlog.Config{
 				Enabled: true,
 				Config: clickhouse.Config{
-					URL: "http://localhost:8123",
+					Addr: "localhost:9000",
 				},
-				BigTransactionThreshold: 500000,
-				BatchInsertThreshold:    50000,
-				BatchFlushInterval:      5 * time.Second,
-				BatchMaxSize:            100000,
+				ChunkSize: 10000,
 			},
 			expectError: true,
 		},
@@ -113,12 +102,9 @@ func TestProcessor_ConcurrentConfigValidation(t *testing.T) {
 				Enabled: true,
 				Table:   "test_concurrent",
 				Config: clickhouse.Config{
-					URL: "http://localhost:8123",
+					Addr: "localhost:9000",
 				},
-				BigTransactionThreshold: 500000,
-				BatchInsertThreshold:    50000,
-				BatchFlushInterval:      5 * time.Second,
-				BatchMaxSize:            100000,
+				ChunkSize: 10000,
 			}
 			results <- cfg.Validate()
 		}()
@@ -146,60 +132,58 @@ func TestStructlogCountReturn(t *testing.T) {
 		},
 	}
 
-	// Note: cannot directly create processor with private fields in _test package
-	// This test validates the counting logic conceptually
-
 	// Test the count calculation and return
 	expectedCount := len(mockTrace.Structlogs)
 
-	// We can not easily test the full processTransaction method without a real execution node,
-	// but we can test the logic of creating structlogs and counting them
-	structlogs := make([]transaction_structlog.Structlog, 0, expectedCount)
-
+	// Test using Columns type for counting
+	cols := transaction_structlog.NewColumns()
 	now := time.Now()
 
-	// Simulate the structlog creation logic
+	// Simulate the structlog appending logic
 	for i, structLog := range mockTrace.Structlogs {
-		row := transaction_structlog.Structlog{
-			UpdatedDateTime:        transaction_structlog.NewClickHouseTime(now),
-			BlockNumber:            12345,
-			TransactionHash:        "0x1234567890abcdef",
-			TransactionIndex:       0,
-			TransactionGas:         mockTrace.Gas,
-			TransactionFailed:      mockTrace.Failed,
-			TransactionReturnValue: mockTrace.ReturnValue,
-			Index:                  uint32(i),
-			ProgramCounter:         structLog.PC,
-			Operation:              structLog.Op,
-			Gas:                    structLog.Gas,
-			GasCost:                structLog.GasCost,
-			Depth:                  structLog.Depth,
-			ReturnData:             structLog.ReturnData,
-			Refund:                 structLog.Refund,
-			Error:                  structLog.Error,
-			MetaNetworkName:        "test",
-		}
-
-		structlogs = append(structlogs, row)
+		cols.Append(
+			now,
+			12345,                 // blockNumber
+			"0x1234567890abcdef",  // txHash
+			0,                     // txIndex
+			mockTrace.Gas,         // txGas
+			mockTrace.Failed,      // txFailed
+			mockTrace.ReturnValue, // txReturnValue
+			uint32(i),             // index
+			structLog.PC,          // pc
+			structLog.Op,          // op
+			structLog.Gas,         // gas
+			structLog.GasCost,     // gasCost
+			structLog.GasCost,     // gasUsed (simplified)
+			structLog.GasCost,     // gasSelf (simplified)
+			structLog.Depth,       // depth
+			structLog.ReturnData,  // returnData
+			structLog.Refund,      // refund
+			structLog.Error,       // error
+			nil,                   // callTo
+			uint32(0),             // callFrameID
+			[]uint32{},            // callFramePath
+			"test",                // network
+		)
 	}
 
-	// Test the key fix: save count before clearing slice
-	structlogCount := len(structlogs)
-
-	// Clear slice like the real code does
-	structlogs = nil
+	// Test the key fix: count is tracked by Columns
+	structlogCount := cols.Rows()
 
 	// Verify the count was saved correctly
 	if structlogCount != expectedCount {
 		t.Errorf("Expected count %d, but got %d", expectedCount, structlogCount)
 	}
 
-	// Verify that len(structlogs) is now 0 (which would be the bug)
-	if len(structlogs) != 0 {
-		t.Errorf("Expected cleared slice to have length 0, but got %d", len(structlogs))
+	// Reset columns (like the real code does between chunks)
+	cols.Reset()
+
+	// Verify that Rows() is now 0 (which would be the bug if we returned this after reset)
+	if cols.Rows() != 0 {
+		t.Errorf("Expected reset columns to have 0 rows, but got %d", cols.Rows())
 	}
 
-	// The fix ensures we return structlogCount, not len(structlogs)
+	// The fix ensures we track count before reset
 	if structlogCount == 0 {
 		t.Error("structlogCount should not be 0 after processing valid structlogs")
 	}
@@ -235,45 +219,55 @@ func TestMemoryManagement(t *testing.T) {
 
 	runtime.ReadMemStats(&initialMemStats)
 
-	// Create a large slice of structlogs to simulate memory usage
-	largeStructlogs := make([]transaction_structlog.Structlog, 10000)
+	// Create columns and simulate large batch of structlogs
+	cols := transaction_structlog.NewColumns()
 	now := time.Now()
 
-	for i := range largeStructlogs {
-		largeStructlogs[i] = transaction_structlog.Structlog{
-			UpdatedDateTime:        transaction_structlog.NewClickHouseTime(now),
-			BlockNumber:            uint64(i),
-			TransactionHash:        "0x1234567890abcdef1234567890abcdef12345678",
-			TransactionIndex:       uint32(i % 100),
-			TransactionGas:         21000,
-			TransactionFailed:      false,
-			TransactionReturnValue: nil,
-			Index:                  uint32(i),
-			ProgramCounter:         uint32(i * 2),
-			Operation:              "SSTORE",
-			Gas:                    uint64(21000 - i),
-			GasCost:                5000,
-			Depth:                  1,
-			ReturnData:             nil,
-			Refund:                 nil,
-			Error:                  nil,
-			MetaNetworkName:        "mainnet",
-		}
+	const rowCount = 10000
+
+	for i := 0; i < rowCount; i++ {
+		cols.Append(
+			now,
+			uint64(i), // blockNumber
+			"0x1234567890abcdef1234567890abcdef12345678", // txHash
+			uint32(i%100),   // txIndex
+			uint64(21000),   // txGas
+			false,           // txFailed
+			nil,             // txReturnValue
+			uint32(i),       // index
+			uint32(i*2),     // pc
+			"SSTORE",        // op
+			uint64(21000-i), // gas
+			uint64(5000),    // gasCost
+			uint64(5000),    // gasUsed
+			uint64(5000),    // gasSelf
+			uint64(1),       // depth
+			nil,             // returnData
+			nil,             // refund
+			nil,             // error
+			nil,             // callTo
+			uint32(0),       // callFrameID
+			[]uint32{},      // callFramePath
+			"mainnet",       // network
+		)
 	}
+
+	assert.Equal(t, rowCount, cols.Rows(), "Should have correct row count")
 
 	// Test that chunking calculations work properly
 	const chunkSize = 100
 
-	expectedChunks := (len(largeStructlogs) + chunkSize - 1) / chunkSize
+	expectedChunks := (rowCount + chunkSize - 1) / chunkSize
 
 	// Verify chunking logic
 	actualChunks := 0
-	for i := 0; i < len(largeStructlogs); i += chunkSize {
+
+	for i := 0; i < rowCount; i += chunkSize {
 		actualChunks++
 
 		end := i + chunkSize
-		if end > len(largeStructlogs) {
-			end = len(largeStructlogs)
+		if end > rowCount {
+			end = rowCount
 		}
 
 		// Verify chunk size constraints
@@ -286,6 +280,10 @@ func TestMemoryManagement(t *testing.T) {
 	if actualChunks != expectedChunks {
 		t.Errorf("Expected %d chunks, got %d", expectedChunks, actualChunks)
 	}
+
+	// Reset columns to free memory
+	cols.Reset()
+	assert.Equal(t, 0, cols.Rows(), "Reset should clear all rows")
 
 	runtime.GC()
 
@@ -341,8 +339,20 @@ func TestChunkProcessing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create input data
-			structlogs := make([]transaction_structlog.Structlog, tt.inputSize)
+			// Test chunking logic using Columns
+			cols := transaction_structlog.NewColumns()
+			now := time.Now()
+
+			// Fill columns with test data
+			for i := 0; i < tt.inputSize; i++ {
+				cols.Append(
+					now, uint64(i), "0xtest", uint32(0), uint64(21000), false, nil,
+					uint32(i), uint32(i), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
+					nil, nil, nil, nil, uint32(0), []uint32{}, "test",
+				)
+			}
+
+			assert.Equal(t, tt.inputSize, cols.Rows(), "Should have correct row count")
 
 			// Calculate expected chunks
 			expectedChunks := (tt.inputSize + tt.chunkSize - 1) / tt.chunkSize
@@ -353,12 +363,13 @@ func TestChunkProcessing(t *testing.T) {
 
 			// Test that the chunking logic would work correctly
 			chunkCount := 0
-			for i := 0; i < len(structlogs); i += tt.chunkSize {
+
+			for i := 0; i < tt.inputSize; i += tt.chunkSize {
 				chunkCount++
 
 				end := i + tt.chunkSize
-				if end > len(structlogs) {
-					end = len(structlogs)
+				if end > tt.inputSize {
+					end = tt.inputSize
 				}
 				// Verify chunk boundaries
 				if end <= i {
@@ -373,6 +384,51 @@ func TestChunkProcessing(t *testing.T) {
 	}
 }
 
+func TestColumnsAppendAndReset(t *testing.T) {
+	cols := transaction_structlog.NewColumns()
+	now := time.Now()
+
+	// Initially empty
+	assert.Equal(t, 0, cols.Rows())
+
+	// Append a row
+	str := "test"
+	num := uint64(42)
+
+	cols.Append(
+		now, uint64(100), "0xabc", uint32(0), uint64(21000), false, &str,
+		uint32(0), uint32(100), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
+		nil, &num, nil, nil, uint32(0), []uint32{}, "mainnet",
+	)
+
+	assert.Equal(t, 1, cols.Rows())
+
+	// Append more rows
+	for i := 0; i < 99; i++ {
+		cols.Append(
+			now, uint64(100), "0xabc", uint32(0), uint64(21000), false, nil,
+			uint32(i+1), uint32(100), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
+			nil, nil, nil, nil, uint32(0), []uint32{}, "mainnet",
+		)
+	}
+
+	assert.Equal(t, 100, cols.Rows())
+
+	// Reset
+	cols.Reset()
+	assert.Equal(t, 0, cols.Rows())
+}
+
+func TestColumnsInput(t *testing.T) {
+	cols := transaction_structlog.NewColumns()
+	input := cols.Input()
+
+	// Verify all 22 columns are present
+	assert.Len(t, input, 22)
+	assert.Equal(t, "updated_date_time", input[0].Name)
+	assert.Equal(t, "meta_network_name", input[21].Name)
+}
+
 // Tests from tasks_test.go
 
 func TestProcessPayload(t *testing.T) {
@@ -382,7 +438,7 @@ func TestProcessPayload(t *testing.T) {
 		TransactionIndex: 5,
 		NetworkName:      "mainnet",
 		Network:          "mainnet",
-		ProcessingMode:   c.FORWARDS_MODE,
+		ProcessingMode:   tracker.FORWARDS_MODE,
 	}
 
 	// Test JSON marshaling
@@ -454,7 +510,7 @@ func TestNewProcessForwardsTask(t *testing.T) {
 		t.Errorf("expected transaction hash %s, got %s", payload.TransactionHash, unmarshaled.TransactionHash)
 	}
 
-	if unmarshaled.ProcessingMode != c.FORWARDS_MODE {
+	if unmarshaled.ProcessingMode != tracker.FORWARDS_MODE {
 		t.Errorf("expected processing mode 'forwards', got %s", unmarshaled.ProcessingMode)
 	}
 }
@@ -489,7 +545,7 @@ func TestNewProcessBackwardsTask(t *testing.T) {
 		t.Errorf("expected transaction hash %s, got %s", payload.TransactionHash, unmarshaled.TransactionHash)
 	}
 
-	if unmarshaled.ProcessingMode != c.BACKWARDS_MODE {
+	if unmarshaled.ProcessingMode != tracker.BACKWARDS_MODE {
 		t.Errorf("expected processing mode 'backwards', got %s", unmarshaled.ProcessingMode)
 	}
 }
@@ -517,7 +573,7 @@ func TestAsynqTaskCreation(t *testing.T) {
 		"transaction_index": 5,
 		"network_id":        1,
 		"network_name":      "mainnet",
-		"processing_mode":   c.FORWARDS_MODE,
+		"processing_mode":   tracker.FORWARDS_MODE,
 	}
 
 	data, err := json.Marshal(payload)

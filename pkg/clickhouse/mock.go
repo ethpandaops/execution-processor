@@ -4,21 +4,21 @@ package clickhouse
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"reflect"
+
+	"github.com/ClickHouse/ch-go"
 )
 
 // MockClient is a mock implementation of ClientInterface for testing.
 // It should only be used in test files, not in production code.
 type MockClient struct {
 	// Function fields that can be set by tests
-	QueryOneFunc   func(ctx context.Context, query string, dest interface{}) error
-	QueryManyFunc  func(ctx context.Context, query string, dest interface{}) error
-	ExecuteFunc    func(ctx context.Context, query string) error
-	BulkInsertFunc func(ctx context.Context, table string, data interface{}) error
-	StartFunc      func() error
-	StopFunc       func() error
+	ExecuteFunc           func(ctx context.Context, query string) error
+	IsStorageEmptyFunc    func(ctx context.Context, table string, conditions map[string]any) (bool, error)
+	StartFunc             func() error
+	StopFunc              func() error
+	DoFunc                func(ctx context.Context, query ch.Query) error
+	QueryUInt64Func       func(ctx context.Context, query string, columnName string) (*uint64, error)
+	QueryMinMaxUInt64Func func(ctx context.Context, query string) (minVal, maxVal *uint64, err error)
 
 	// Track calls for assertions
 	Calls []MockCall
@@ -27,23 +27,17 @@ type MockClient struct {
 // MockCall represents a method call made to the mock.
 type MockCall struct {
 	Method string
-	Args   []interface{}
+	Args   []any
 }
 
 // NewMockClient creates a new mock client with default implementations.
 func NewMockClient() *MockClient {
 	return &MockClient{
-		QueryOneFunc: func(ctx context.Context, query string, dest interface{}) error {
-			return nil
-		},
-		QueryManyFunc: func(ctx context.Context, query string, dest interface{}) error {
-			return nil
-		},
 		ExecuteFunc: func(ctx context.Context, query string) error {
 			return nil
 		},
-		BulkInsertFunc: func(ctx context.Context, table string, data interface{}) error {
-			return nil
+		IsStorageEmptyFunc: func(ctx context.Context, table string, conditions map[string]any) (bool, error) {
+			return true, nil
 		},
 		StartFunc: func() error {
 			return nil
@@ -51,43 +45,52 @@ func NewMockClient() *MockClient {
 		StopFunc: func() error {
 			return nil
 		},
+		DoFunc: func(ctx context.Context, query ch.Query) error {
+			return nil
+		},
+		QueryUInt64Func: func(ctx context.Context, query string, columnName string) (*uint64, error) {
+			return nil, nil
+		},
+		QueryMinMaxUInt64Func: func(ctx context.Context, query string) (minVal, maxVal *uint64, err error) {
+			return nil, nil, nil
+		},
 		Calls: make([]MockCall, 0),
 	}
 }
 
-// QueryOne implements ClientInterface.
-func (m *MockClient) QueryOne(ctx context.Context, query string, dest interface{}) error {
+// QueryUInt64 implements ClientInterface.
+func (m *MockClient) QueryUInt64(ctx context.Context, query string, columnName string) (*uint64, error) {
 	m.Calls = append(m.Calls, MockCall{
-		Method: "QueryOne",
-		Args:   []interface{}{ctx, query, dest},
+		Method: "QueryUInt64",
+		Args:   []any{ctx, query, columnName},
 	})
 
-	if m.QueryOneFunc != nil {
-		return m.QueryOneFunc(ctx, query, dest)
+	if m.QueryUInt64Func != nil {
+		return m.QueryUInt64Func(ctx, query, columnName)
 	}
 
-	return nil
+	return nil, nil //nolint:nilnil // valid for mock: nil means no value found
 }
 
-// QueryMany implements ClientInterface.
-func (m *MockClient) QueryMany(ctx context.Context, query string, dest interface{}) error {
+// QueryMinMaxUInt64 implements ClientInterface.
+func (m *MockClient) QueryMinMaxUInt64(ctx context.Context, query string) (minVal, maxVal *uint64, err error) {
 	m.Calls = append(m.Calls, MockCall{
-		Method: "QueryMany",
-		Args:   []interface{}{ctx, query, dest},
+		Method: "QueryMinMaxUInt64",
+		Args:   []any{ctx, query},
 	})
 
-	if m.QueryManyFunc != nil {
-		return m.QueryManyFunc(ctx, query, dest)
+	if m.QueryMinMaxUInt64Func != nil {
+		return m.QueryMinMaxUInt64Func(ctx, query)
 	}
 
-	return nil
+	return nil, nil, nil
 }
 
 // Execute implements ClientInterface.
 func (m *MockClient) Execute(ctx context.Context, query string) error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "Execute",
-		Args:   []interface{}{ctx, query},
+		Args:   []any{ctx, query},
 	})
 
 	if m.ExecuteFunc != nil {
@@ -97,25 +100,33 @@ func (m *MockClient) Execute(ctx context.Context, query string) error {
 	return nil
 }
 
-// BulkInsert implements ClientInterface.
-func (m *MockClient) BulkInsert(ctx context.Context, table string, data interface{}) error {
+// IsStorageEmpty implements ClientInterface.
+func (m *MockClient) IsStorageEmpty(ctx context.Context, table string, conditions map[string]any) (bool, error) {
 	m.Calls = append(m.Calls, MockCall{
-		Method: "BulkInsert",
-		Args:   []interface{}{ctx, table, data},
+		Method: "IsStorageEmpty",
+		Args:   []any{ctx, table, conditions},
 	})
 
-	if m.BulkInsertFunc != nil {
-		return m.BulkInsertFunc(ctx, table, data)
+	if m.IsStorageEmptyFunc != nil {
+		return m.IsStorageEmptyFunc(ctx, table, conditions)
 	}
 
-	return nil
+	return true, nil
+}
+
+// SetNetwork implements ClientInterface.
+func (m *MockClient) SetNetwork(network string) {
+	m.Calls = append(m.Calls, MockCall{
+		Method: "SetNetwork",
+		Args:   []any{network},
+	})
 }
 
 // Start implements ClientInterface.
 func (m *MockClient) Start() error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "Start",
-		Args:   []interface{}{},
+		Args:   []any{},
 	})
 
 	if m.StartFunc != nil {
@@ -129,11 +140,25 @@ func (m *MockClient) Start() error {
 func (m *MockClient) Stop() error {
 	m.Calls = append(m.Calls, MockCall{
 		Method: "Stop",
-		Args:   []interface{}{},
+		Args:   []any{},
 	})
 
 	if m.StopFunc != nil {
 		return m.StopFunc()
+	}
+
+	return nil
+}
+
+// Do implements ClientInterface.
+func (m *MockClient) Do(ctx context.Context, query ch.Query) error {
+	m.Calls = append(m.Calls, MockCall{
+		Method: "Do",
+		Args:   []any{ctx, query},
+	})
+
+	if m.DoFunc != nil {
+		return m.DoFunc(ctx, query)
 	}
 
 	return nil
@@ -164,54 +189,41 @@ func (m *MockClient) Reset() {
 
 // Helper functions for common test scenarios
 
-// SetQueryOneResponse sets up the mock to return specific data for QueryOne.
-func (m *MockClient) SetQueryOneResponse(data interface{}) {
-	m.QueryOneFunc = func(ctx context.Context, query string, dest interface{}) error {
-		// Marshal the data to JSON and then unmarshal into dest
-		jsonData, err := json.Marshal(data)
-		if err != nil {
-			return err
-		}
-
-		return json.Unmarshal(jsonData, dest)
+// SetQueryUInt64Response sets up the mock to return a specific value for QueryUInt64.
+func (m *MockClient) SetQueryUInt64Response(value *uint64) {
+	m.QueryUInt64Func = func(ctx context.Context, query string, columnName string) (*uint64, error) {
+		return value, nil
 	}
 }
 
-// SetQueryManyResponse sets up the mock to return specific data for QueryMany.
-func (m *MockClient) SetQueryManyResponse(data interface{}) {
-	m.QueryManyFunc = func(ctx context.Context, query string, dest interface{}) error {
-		// Use reflection to set the slice
-		destValue := reflect.ValueOf(dest).Elem()
-		srcValue := reflect.ValueOf(data)
-
-		if destValue.Kind() != reflect.Slice || srcValue.Kind() != reflect.Slice {
-			return fmt.Errorf("both dest and data must be slices")
-		}
-
-		destValue.Set(srcValue)
-
-		return nil
+// SetQueryMinMaxUInt64Response sets up the mock to return specific values for QueryMinMaxUInt64.
+func (m *MockClient) SetQueryMinMaxUInt64Response(minVal, maxVal *uint64) {
+	m.QueryMinMaxUInt64Func = func(ctx context.Context, query string) (*uint64, *uint64, error) {
+		return minVal, maxVal, nil
 	}
 }
 
 // SetError sets all functions to return the specified error.
 func (m *MockClient) SetError(err error) {
-	m.QueryOneFunc = func(ctx context.Context, query string, dest interface{}) error {
-		return err
-	}
-	m.QueryManyFunc = func(ctx context.Context, query string, dest interface{}) error {
-		return err
-	}
 	m.ExecuteFunc = func(ctx context.Context, query string) error {
 		return err
 	}
-	m.BulkInsertFunc = func(ctx context.Context, table string, data interface{}) error {
-		return err
+	m.IsStorageEmptyFunc = func(ctx context.Context, table string, conditions map[string]any) (bool, error) {
+		return false, err
 	}
 	m.StartFunc = func() error {
 		return err
 	}
 	m.StopFunc = func() error {
 		return err
+	}
+	m.DoFunc = func(ctx context.Context, query ch.Query) error {
+		return err
+	}
+	m.QueryUInt64Func = func(ctx context.Context, query string, columnName string) (*uint64, error) {
+		return nil, err
+	}
+	m.QueryMinMaxUInt64Func = func(ctx context.Context, query string) (*uint64, *uint64, error) {
+		return nil, nil, err
 	}
 }

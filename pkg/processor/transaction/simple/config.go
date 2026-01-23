@@ -11,6 +11,9 @@ type Config struct {
 	clickhouse.Config `yaml:",inline"`
 	Enabled           bool   `yaml:"enabled"`
 	Table             string `yaml:"table"`
+
+	// Block completion tracking
+	MaxPendingBlockRange int `yaml:"maxPendingBlockRange"` // Max distance between oldest incomplete and current block. Default: 2
 }
 
 // Validate validates the configuration.

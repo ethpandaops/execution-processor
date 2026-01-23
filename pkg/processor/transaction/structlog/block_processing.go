@@ -5,14 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"strings"
 
 	"github.com/hibiken/asynq"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
-	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
+	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
@@ -55,6 +54,15 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		return nil
 	}
 
+	// Distance-based pending block range check
+	// Only allow processing if distance between oldest incomplete and next block < maxPendingBlockRange
+	blocked, err := p.IsBlockedByIncompleteBlocks(ctx, nextBlock.Uint64(), p.processingMode)
+	if err != nil {
+		p.log.WithError(err).Warn("Failed to check incomplete blocks distance, proceeding anyway")
+	} else if blocked {
+		return nil
+	}
+
 	p.log.WithFields(logrus.Fields{
 		"block_number": nextBlock.String(),
 		"network":      p.network.Name,
@@ -87,7 +95,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	block, err := node.BlockByNumber(ctx, nextBlock)
 	if err != nil {
 		// Check if this is a "not found" error indicating we're at head
-		if isBlockNotFoundError(err) {
+		if tracker.IsBlockNotFoundError(err) {
 			// Check if we're close to chain tip to determine if this is expected
 			if latestBlock, latestErr := node.BlockNumber(ctx); latestErr == nil && latestBlock != nil {
 				chainTip := new(big.Int).SetUint64(*latestBlock)
@@ -115,37 +123,48 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		return err
 	}
 
-	// Handle empty blocks efficiently
+	// Handle empty blocks - mark complete immediately (no task tracking needed)
 	if len(block.Transactions()) == 0 {
 		p.log.WithFields(logrus.Fields{
 			"network":      p.network.Name,
 			"block_number": nextBlock,
 		}).Debug("skipping empty block")
 
-		// Mark the block as processed
-		if err := p.stateManager.MarkBlockProcessed(ctx, nextBlock.Uint64(), p.network.Name, p.Name()); err != nil {
-			p.log.WithError(err).WithFields(logrus.Fields{
+		// Mark the block as complete immediately (no tasks to track)
+		if markErr := p.stateManager.MarkBlockComplete(ctx, nextBlock.Uint64(), p.network.Name, p.Name()); markErr != nil {
+			p.log.WithError(markErr).WithFields(logrus.Fields{
 				"network":      p.network.Name,
 				"block_number": nextBlock,
-			}).Error("could not mark empty block as processed")
+			}).Error("could not mark empty block as complete")
 
-			return err
+			return markErr
 		}
 
 		return nil
 	}
 
 	// Enqueue tasks for each transaction
-	if _, err := p.EnqueueTransactionTasks(ctx, block); err != nil {
+	taskCount, err := p.EnqueueTransactionTasks(ctx, block)
+	if err != nil {
 		return fmt.Errorf("failed to enqueue transaction tasks: %w", err)
 	}
 
-	// Mark the block as processed
-	if err := p.stateManager.MarkBlockProcessed(ctx, nextBlock.Uint64(), p.network.Name, p.Name()); err != nil {
+	// Initialize block tracking in Redis
+	if err := p.pendingTracker.InitBlock(ctx, nextBlock.Uint64(), taskCount, p.network.Name, p.Name(), p.processingMode); err != nil {
 		p.log.WithError(err).WithFields(logrus.Fields{
 			"network":      p.network.Name,
 			"block_number": nextBlock,
-		}).Error("could not mark block as processed")
+		}).Error("could not init block tracking in Redis")
+
+		return err
+	}
+
+	// Mark the block as enqueued (phase 1 of two-phase completion)
+	if err := p.stateManager.MarkBlockEnqueued(ctx, nextBlock.Uint64(), taskCount, p.network.Name, p.Name()); err != nil {
+		p.log.WithError(err).WithFields(logrus.Fields{
+			"network":      p.network.Name,
+			"block_number": nextBlock,
+		}).Error("could not mark block as enqueued")
 
 		return err
 	}
@@ -154,23 +173,10 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		"network":      p.network.Name,
 		"block_number": nextBlock,
 		"tx_count":     len(block.Transactions()),
-	}).Info("processed block with transactions")
+		"task_count":   taskCount,
+	}).Info("enqueued block for processing")
 
 	return nil
-}
-
-// isBlockNotFoundError checks if an error indicates a block was not found.
-func isBlockNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	errStr := strings.ToLower(err.Error())
-
-	return strings.Contains(errStr, "not found") ||
-		strings.Contains(errStr, "unknown block") ||
-		strings.Contains(errStr, "block not found") ||
-		strings.Contains(errStr, "header not found")
 }
 
 // enqueueTransactionTasks enqueues tasks for all transactions in a block.
@@ -199,7 +205,7 @@ func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block execution
 
 		var err error
 
-		if p.processingMode == c.BACKWARDS_MODE {
+		if p.processingMode == tracker.BACKWARDS_MODE {
 			task, err = NewProcessBackwardsTask(payload)
 			queue = p.getProcessBackwardsQueue()
 			taskType = ProcessBackwardsTaskType
