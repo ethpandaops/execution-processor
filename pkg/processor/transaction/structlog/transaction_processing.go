@@ -570,12 +570,19 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 
 	if trace != nil {
 		// Check if GasUsed is pre-computed by the tracer (embedded mode).
-		// In embedded mode, skip the post-processing computation.
+		// In embedded mode, extract values from structlogs.
 		// In RPC mode, compute GasUsed from gas differences.
 		precomputedGasUsed := hasPrecomputedGasUsed(trace.Structlogs)
 
 		var gasUsed []uint64
-		if !precomputedGasUsed {
+		if precomputedGasUsed {
+			// Extract pre-computed GasUsed values from structlogs (embedded mode)
+			gasUsed = make([]uint64, len(trace.Structlogs))
+			for i := range trace.Structlogs {
+				gasUsed[i] = trace.Structlogs[i].GasUsed
+			}
+		} else {
+			// Compute GasUsed from gas differences (RPC mode)
 			gasUsed = ComputeGasUsed(trace.Structlogs)
 		}
 
