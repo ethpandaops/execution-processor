@@ -214,15 +214,22 @@ func (p *Pool) Start(ctx context.Context) {
 	p.UpdateNodeMetrics()
 
 	for _, node := range p.executionNodes {
+		// Register OnReady callbacks synchronously BEFORE spawning goroutines.
+		// This ensures callbacks are registered before Start() returns, so any
+		// subsequent call to MarkReady() (for EmbeddedNode) will find the callback.
+		// Previously, registration happened inside g.Go() which created a race
+		// condition where MarkReady() could execute before callbacks were registered.
+		node.OnReady(ctx, func(innerCtx context.Context) error {
+			p.mu.Lock()
+			p.healthyExecutionNodes[node] = true
+			p.mu.Unlock()
+
+			return nil
+		})
+
+		// Start node asynchronously - the actual initialization can be slow
+		// (e.g., RPC connection establishment), but callback registration is instant.
 		g.Go(func() error {
-			node.OnReady(ctx, func(innerCtx context.Context) error {
-				p.mu.Lock()
-				p.healthyExecutionNodes[node] = true
-				p.mu.Unlock()
-
-				return nil
-			})
-
 			return node.Start(ctx)
 		})
 	}
