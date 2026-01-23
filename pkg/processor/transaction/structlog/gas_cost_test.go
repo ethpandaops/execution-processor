@@ -33,6 +33,48 @@ func TestHasPrecomputedGasUsed_WithoutGasUsed(t *testing.T) {
 }
 
 // =============================================================================
+// hasPrecomputedCreateAddresses Tests
+// =============================================================================
+
+func TestHasPrecomputedCreateAddresses_Empty(t *testing.T) {
+	assert.False(t, hasPrecomputedCreateAddresses(nil))
+	assert.False(t, hasPrecomputedCreateAddresses([]execution.StructLog{}))
+}
+
+func TestHasPrecomputedCreateAddresses_NoCreate(t *testing.T) {
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1"},
+		{Op: "CALL"},
+	}
+	assert.False(t, hasPrecomputedCreateAddresses(structlogs))
+}
+
+func TestHasPrecomputedCreateAddresses_CreateWithAddress(t *testing.T) {
+	addr := "0x1234567890123456789012345678901234567890"
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1"},
+		{Op: "CREATE", CallToAddress: &addr},
+	}
+	assert.True(t, hasPrecomputedCreateAddresses(structlogs))
+}
+
+func TestHasPrecomputedCreateAddresses_CreateWithoutAddress(t *testing.T) {
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1"},
+		{Op: "CREATE", CallToAddress: nil},
+	}
+	assert.False(t, hasPrecomputedCreateAddresses(structlogs))
+}
+
+func TestHasPrecomputedCreateAddresses_Create2WithAddress(t *testing.T) {
+	addr := "0x1234567890123456789012345678901234567890"
+	structlogs := []execution.StructLog{
+		{Op: "CREATE2", CallToAddress: &addr},
+	}
+	assert.True(t, hasPrecomputedCreateAddresses(structlogs))
+}
+
+// =============================================================================
 // ComputeGasUsed Tests
 // =============================================================================
 

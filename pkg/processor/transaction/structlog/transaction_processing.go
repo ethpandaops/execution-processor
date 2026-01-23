@@ -171,8 +171,15 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 	// Initialize call frame tracker
 	callTracker := NewCallTracker()
 
-	// Pre-compute CREATE/CREATE2 addresses from trace stack
-	createAddresses := ComputeCreateAddresses(trace.Structlogs)
+	// Check if CREATE/CREATE2 addresses are pre-computed by the tracer (embedded mode).
+	// In embedded mode, skip the multi-pass ComputeCreateAddresses scan.
+	precomputedCreateAddresses := hasPrecomputedCreateAddresses(trace.Structlogs)
+
+	var createAddresses map[int]*string
+	if !precomputedCreateAddresses {
+		// Pre-compute CREATE/CREATE2 addresses from trace stack (RPC mode)
+		createAddresses = ComputeCreateAddresses(trace.Structlogs)
+	}
 
 	// Check if this is a big transaction and register if needed
 	if totalCount >= p.bigTxManager.GetThreshold() {
@@ -592,8 +599,14 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 		// Initialize call frame tracker
 		callTracker := NewCallTracker()
 
-		// Pre-compute CREATE/CREATE2 addresses from trace stack
-		createAddresses := ComputeCreateAddresses(trace.Structlogs)
+		// Check if CREATE/CREATE2 addresses are pre-computed by the tracer (embedded mode).
+		precomputedCreateAddresses := hasPrecomputedCreateAddresses(trace.Structlogs)
+
+		var createAddresses map[int]*string
+		if !precomputedCreateAddresses {
+			// Pre-compute CREATE/CREATE2 addresses from trace stack (RPC mode)
+			createAddresses = ComputeCreateAddresses(trace.Structlogs)
+		}
 
 		// Pre-allocate slice for better memory efficiency
 		structlogs = make([]Structlog, 0, len(trace.Structlogs))
