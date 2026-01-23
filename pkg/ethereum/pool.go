@@ -219,7 +219,9 @@ func (p *Pool) Start(ctx context.Context) {
 		// subsequent call to MarkReady() (for EmbeddedNode) will find the callback.
 		// Previously, registration happened inside g.Go() which created a race
 		// condition where MarkReady() could execute before callbacks were registered.
+		p.log.WithField("node", node.Name()).Info("Registering OnReady callback for node")
 		node.OnReady(ctx, func(innerCtx context.Context) error {
+			p.log.WithField("node", node.Name()).Info("OnReady callback executed, marking node healthy")
 			p.mu.Lock()
 			p.healthyExecutionNodes[node] = true
 			p.mu.Unlock()
