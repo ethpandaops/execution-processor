@@ -12,7 +12,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
-	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
+	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 )
 
 // ClickHouseDateTime is a time.Time wrapper that formats correctly for ClickHouse JSON.
@@ -71,7 +71,7 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 		common.TaskProcessingDuration.WithLabelValues(
 			p.network.Name,
 			ProcessorName,
-			c.ProcessForwardsQueue(ProcessorName),
+			tracker.ProcessForwardsQueue(ProcessorName),
 			task.Type(),
 		).Observe(duration.Seconds())
 	}()
@@ -81,7 +81,7 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 		common.TasksErrored.WithLabelValues(
 			p.network.Name,
 			ProcessorName,
-			c.ProcessForwardsQueue(ProcessorName),
+			tracker.ProcessForwardsQueue(ProcessorName),
 			task.Type(),
 			"unmarshal_error",
 		).Inc()
@@ -149,7 +149,7 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 			common.TasksErrored.WithLabelValues(
 				p.network.Name,
 				ProcessorName,
-				c.ProcessForwardsQueue(ProcessorName),
+				tracker.ProcessForwardsQueue(ProcessorName),
 				task.Type(),
 				"insert_error",
 			).Inc()
@@ -161,10 +161,13 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 	common.TasksProcessed.WithLabelValues(
 		p.network.Name,
 		ProcessorName,
-		c.ProcessForwardsQueue(ProcessorName),
+		tracker.ProcessForwardsQueue(ProcessorName),
 		task.Type(),
 		"success",
 	).Inc()
+
+	// Track block completion using embedded Blocker
+	p.TrackBlockCompletion(ctx, blockNumber.Uint64(), payload.ProcessingMode)
 
 	p.log.WithFields(logrus.Fields{
 		"block_number": blockNumber.Uint64(),
@@ -336,6 +339,10 @@ func (p *Processor) insertTransactions(ctx context.Context, transactions []Trans
 		return nil
 	}
 
+	// Add timeout for ClickHouse operation
+	insertCtx, cancel := context.WithTimeout(ctx, tracker.DefaultClickHouseTimeout)
+	defer cancel()
+
 	cols := NewColumns()
 	for _, tx := range transactions {
 		cols.Append(tx)
@@ -343,7 +350,7 @@ func (p *Processor) insertTransactions(ctx context.Context, transactions []Trans
 
 	input := cols.Input()
 
-	if err := p.clickhouse.Do(ctx, ch.Query{
+	if err := p.clickhouse.Do(insertCtx, ch.Query{
 		Body:  input.Into(p.config.Table),
 		Input: input,
 	}); err != nil {

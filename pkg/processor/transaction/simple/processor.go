@@ -3,18 +3,23 @@ package simple
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/hibiken/asynq"
+	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
-	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
+	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
 // ProcessorName is the name of the simple transaction processor.
 const ProcessorName = "transaction_simple"
+
+// Compile-time interface compliance check.
+var _ tracker.BlockProcessor = (*Processor)(nil)
 
 // Dependencies contains the dependencies needed for the processor.
 type Dependencies struct {
@@ -23,6 +28,7 @@ type Dependencies struct {
 	Network     *ethereum.Network
 	State       *state.Manager
 	AsynqClient *asynq.Client
+	RedisClient *redis.Client
 	RedisPrefix string
 }
 
@@ -37,6 +43,10 @@ type Processor struct {
 	asynqClient    *asynq.Client
 	processingMode string
 	redisPrefix    string
+	pendingTracker *tracker.PendingTracker
+
+	// Embedded limiter for shared blocking/completion logic
+	*tracker.Limiter
 }
 
 // New creates a new simple transaction processor.
@@ -55,16 +65,40 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 		return nil, fmt.Errorf("failed to create clickhouse client: %w", err)
 	}
 
+	// Set default for MaxPendingBlockRange
+	if config.MaxPendingBlockRange <= 0 {
+		config.MaxPendingBlockRange = tracker.DefaultMaxPendingBlockRange
+	}
+
+	log := deps.Log.WithField("processor", ProcessorName)
+	pendingTracker := tracker.NewPendingTracker(deps.RedisClient, deps.RedisPrefix, log)
+
+	// Create the limiter for shared functionality
+	limiter := tracker.NewLimiter(
+		&tracker.LimiterDeps{
+			Log:            log,
+			StateProvider:  deps.State,
+			PendingTracker: pendingTracker,
+			Network:        deps.Network.Name,
+			Processor:      ProcessorName,
+		},
+		tracker.LimiterConfig{
+			MaxPendingBlockRange: config.MaxPendingBlockRange,
+		},
+	)
+
 	return &Processor{
-		log:            deps.Log.WithField("processor", ProcessorName),
+		log:            log,
 		pool:           deps.Pool,
 		stateManager:   deps.State,
 		clickhouse:     clickhouseClient,
 		config:         config,
 		network:        deps.Network,
 		asynqClient:    deps.AsynqClient,
-		processingMode: c.FORWARDS_MODE, // Default mode
+		processingMode: tracker.FORWARDS_MODE, // Default mode
 		redisPrefix:    deps.RedisPrefix,
+		pendingTracker: pendingTracker,
+		Limiter:        limiter,
 	}, nil
 }
 
@@ -101,22 +135,24 @@ func (p *Processor) SetProcessingMode(mode string) {
 	p.log.WithField("mode", mode).Info("Processing mode updated")
 }
 
-// EnqueueTask enqueues a task to the specified queue.
+// EnqueueTask enqueues a task to the specified queue with infinite retries.
 func (p *Processor) EnqueueTask(ctx context.Context, task *asynq.Task, opts ...asynq.Option) error {
+	opts = append(opts, asynq.MaxRetry(math.MaxInt32))
+
 	_, err := p.asynqClient.EnqueueContext(ctx, task, opts...)
 
 	return err
 }
 
 // GetQueues returns the queues used by this processor.
-func (p *Processor) GetQueues() []c.QueueInfo {
-	return []c.QueueInfo{
+func (p *Processor) GetQueues() []tracker.QueueInfo {
+	return []tracker.QueueInfo{
 		{
-			Name:     c.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix),
+			Name:     tracker.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix),
 			Priority: 10,
 		},
 		{
-			Name:     c.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix),
+			Name:     tracker.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix),
 			Priority: 5,
 		},
 	}
@@ -124,10 +160,10 @@ func (p *Processor) GetQueues() []c.QueueInfo {
 
 // getProcessForwardsQueue returns the prefixed process forwards queue name.
 func (p *Processor) getProcessForwardsQueue() string {
-	return c.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix)
+	return tracker.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix)
 }
 
 // getProcessBackwardsQueue returns the prefixed process backwards queue name.
 func (p *Processor) getProcessBackwardsQueue() string {
-	return c.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
+	return tracker.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
 }

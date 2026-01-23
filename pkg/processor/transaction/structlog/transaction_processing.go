@@ -12,6 +12,7 @@ import (
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
+	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 )
 
 // ProcessTransaction processes a transaction using ch-go columnar streaming.
@@ -31,7 +32,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 
 	chunkSize := p.config.ChunkSize
 	if chunkSize == 0 {
-		chunkSize = 10_000
+		chunkSize = tracker.DefaultChunkSize
 	}
 
 	cols := NewColumns()
@@ -92,7 +93,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block *types.Block, 
 			// Log progress for large transactions
 			progressThreshold := p.config.ProgressLogThreshold
 			if progressThreshold == 0 {
-				progressThreshold = 100_000
+				progressThreshold = tracker.DefaultProgressLogThreshold
 			}
 
 			if totalCount > progressThreshold && end%progressThreshold < chunkSize {
@@ -127,7 +128,7 @@ func (p *Processor) getTransactionTrace(ctx context.Context, tx *types.Transacti
 	}
 
 	// Process transaction with timeout
-	processCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	processCtx, cancel := context.WithTimeout(ctx, tracker.DefaultTraceTimeout)
 	defer cancel()
 
 	// Get transaction trace

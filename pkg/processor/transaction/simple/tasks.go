@@ -6,7 +6,7 @@ import (
 
 	"github.com/hibiken/asynq"
 
-	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
+	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 )
 
 const (
@@ -37,7 +37,7 @@ func (p *ProcessPayload) UnmarshalBinary(data []byte) error {
 
 // NewProcessForwardsTask creates a new forwards process task.
 func NewProcessForwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
-	payload.ProcessingMode = c.FORWARDS_MODE
+	payload.ProcessingMode = tracker.FORWARDS_MODE
 
 	data, err := payload.MarshalBinary()
 	if err != nil {
@@ -49,7 +49,7 @@ func NewProcessForwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
 
 // NewProcessBackwardsTask creates a new backwards process task.
 func NewProcessBackwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
-	payload.ProcessingMode = c.BACKWARDS_MODE
+	payload.ProcessingMode = tracker.BACKWARDS_MODE
 
 	data, err := payload.MarshalBinary()
 	if err != nil {

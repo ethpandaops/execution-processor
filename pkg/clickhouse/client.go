@@ -437,6 +437,48 @@ func (c *Client) QueryMinMaxUInt64(ctx context.Context, query string) (minVal, m
 	return minVal, maxVal, nil
 }
 
+// QueryUInt64Slice executes a query and returns all UInt64 values from the specified column.
+// Returns an empty slice if no rows are found.
+func (c *Client) QueryUInt64Slice(ctx context.Context, query string, columnName string) ([]uint64, error) {
+	start := time.Now()
+	operation := "query_uint64_slice"
+	status := statusSuccess
+
+	defer func() {
+		c.recordMetrics(operation, status, time.Since(start), query)
+	}()
+
+	result := make([]uint64, 0)
+	col := new(proto.ColUInt64)
+
+	err := c.doWithRetry(ctx, operation, func(attemptCtx context.Context) error {
+		col.Reset()
+
+		result = result[:0]
+
+		return c.pool.Do(attemptCtx, ch.Query{
+			Body: query,
+			Result: proto.Results{
+				{Name: columnName, Data: col},
+			},
+			OnResult: func(ctx context.Context, block proto.Block) error {
+				for i := 0; i < col.Rows(); i++ {
+					result = append(result, col.Row(i))
+				}
+
+				return nil
+			},
+		})
+	})
+	if err != nil {
+		status = statusFailed
+
+		return nil, fmt.Errorf("query failed: %w", err)
+	}
+
+	return result, nil
+}
+
 // Execute runs a query without expecting results.
 func (c *Client) Execute(ctx context.Context, query string) error {
 	start := time.Now()

@@ -28,4 +28,7 @@ type ClientInterface interface {
 	// The query must return columns named "min" and "max".
 	// Returns nil for both values if no rows are found.
 	QueryMinMaxUInt64(ctx context.Context, query string) (minVal, maxVal *uint64, err error)
+	// QueryUInt64Slice executes a query and returns all UInt64 values from the specified column.
+	// Returns an empty slice if no rows are found.
+	QueryUInt64Slice(ctx context.Context, query string, columnName string) ([]uint64, error)
 }
