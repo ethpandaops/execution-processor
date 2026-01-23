@@ -124,6 +124,7 @@ func (n *EmbeddedNode) MarkReady(ctx context.Context) error {
 
 	for i, cb := range callbacks {
 		n.log.WithField("callback_index", i).Info("Executing OnReady callback")
+
 		if err := cb(ctx); err != nil {
 			n.log.WithError(err).Error("Failed to execute OnReady callback")
 
