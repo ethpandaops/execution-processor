@@ -2,12 +2,10 @@ package clickhouse
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -334,31 +332,35 @@ func (c *Client) Do(ctx context.Context, query ch.Query) error {
 	return c.pool.Do(ctx, query)
 }
 
-// QueryOne executes a query and returns a single result.
-func (c *Client) QueryOne(ctx context.Context, query string, dest any) error {
+// QueryUInt64 executes a query and returns a single UInt64 value from the specified column.
+// Returns nil if no rows are found.
+func (c *Client) QueryUInt64(ctx context.Context, query string, columnName string) (*uint64, error) {
 	start := time.Now()
-	operation := "query_one"
+	operation := "query_uint64"
 	status := statusSuccess
 
 	defer func() {
 		c.recordMetrics(operation, status, time.Since(start), query)
 	}()
 
-	var rows []string
+	var result *uint64
+
+	col := new(proto.ColUInt64)
 
 	err := c.doWithRetry(ctx, operation, func(attemptCtx context.Context) error {
-		// Reset rows for each retry attempt
-		rows = nil
-		colStr := new(proto.ColStr)
+		col.Reset()
+
+		result = nil
 
 		return c.pool.Do(attemptCtx, ch.Query{
-			Body: query + " FORMAT JSONEachRow",
+			Body: query,
 			Result: proto.Results{
-				{Name: "", Data: colStr},
+				{Name: columnName, Data: col},
 			},
 			OnResult: func(ctx context.Context, block proto.Block) error {
-				for i := 0; i < colStr.Rows(); i++ {
-					rows = append(rows, colStr.Row(i))
+				if col.Rows() > 0 {
+					val := col.Row(0)
+					result = &val
 				}
 
 				return nil
@@ -368,55 +370,49 @@ func (c *Client) QueryOne(ctx context.Context, query string, dest any) error {
 	if err != nil {
 		status = statusFailed
 
-		return fmt.Errorf("query execution failed: %w", err)
+		return nil, fmt.Errorf("query failed: %w", err)
 	}
 
-	if len(rows) == 0 {
-		return nil
-	}
-
-	if err := json.Unmarshal([]byte(rows[0]), dest); err != nil {
-		status = statusFailed
-
-		return fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return nil
+	return result, nil
 }
 
-// QueryMany executes a query and returns multiple results.
-func (c *Client) QueryMany(ctx context.Context, query string, dest any) error {
+// QueryMinMaxUInt64 executes a query that returns min and max UInt64 values.
+// The query must return columns named "min" and "max".
+// Returns nil for both values if no rows are found.
+func (c *Client) QueryMinMaxUInt64(ctx context.Context, query string) (minVal, maxVal *uint64, err error) {
 	start := time.Now()
-	operation := "query_many"
+	operation := "query_min_max"
 	status := statusSuccess
 
 	defer func() {
 		c.recordMetrics(operation, status, time.Since(start), query)
 	}()
 
-	// Validate that dest is a pointer to a slice
-	destValue := reflect.ValueOf(dest)
-	if destValue.Kind() != reflect.Pointer || destValue.Elem().Kind() != reflect.Slice {
-		status = statusFailed
+	colMin := new(proto.ColUInt64)
+	colMax := new(proto.ColUInt64)
 
-		return fmt.Errorf("dest must be a pointer to a slice")
-	}
+	err = c.doWithRetry(ctx, operation, func(attemptCtx context.Context) error {
+		colMin.Reset()
+		colMax.Reset()
 
-	var rows []string
-
-	err := c.doWithRetry(ctx, operation, func(attemptCtx context.Context) error {
-		// Reset rows for each retry attempt
-		rows = nil
-		colStr := new(proto.ColStr)
+		minVal = nil
+		maxVal = nil
 
 		return c.pool.Do(attemptCtx, ch.Query{
-			Body: query + " FORMAT JSONEachRow",
+			Body: query,
 			Result: proto.Results{
-				{Name: "", Data: colStr},
+				{Name: "min", Data: colMin},
+				{Name: "max", Data: colMax},
 			},
 			OnResult: func(ctx context.Context, block proto.Block) error {
-				for i := 0; i < colStr.Rows(); i++ {
-					rows = append(rows, colStr.Row(i))
+				if colMin.Rows() > 0 {
+					v := colMin.Row(0)
+					minVal = &v
+				}
+
+				if colMax.Rows() > 0 {
+					v := colMax.Row(0)
+					maxVal = &v
 				}
 
 				return nil
@@ -426,30 +422,10 @@ func (c *Client) QueryMany(ctx context.Context, query string, dest any) error {
 	if err != nil {
 		status = statusFailed
 
-		return fmt.Errorf("query execution failed: %w", err)
+		return nil, nil, fmt.Errorf("query failed: %w", err)
 	}
 
-	// Create a slice of the appropriate type
-	sliceType := destValue.Elem().Type()
-	elemType := sliceType.Elem()
-	newSlice := reflect.MakeSlice(sliceType, len(rows), len(rows))
-
-	// Unmarshal each row
-	for i, row := range rows {
-		elem := reflect.New(elemType)
-		if err := json.Unmarshal([]byte(row), elem.Interface()); err != nil {
-			status = statusFailed
-
-			return fmt.Errorf("failed to unmarshal row %d: %w", i, err)
-		}
-
-		newSlice.Index(i).Set(elem.Elem())
-	}
-
-	// Set the result
-	destValue.Elem().Set(newSlice)
-
-	return nil
+	return minVal, maxVal, nil
 }
 
 // Execute runs a query without expecting results.

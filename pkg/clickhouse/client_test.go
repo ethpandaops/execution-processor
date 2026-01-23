@@ -246,7 +246,7 @@ func TestClient_Integration_Execute(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestClient_Integration_QueryOne(t *testing.T) {
+func TestClient_Integration_QueryUInt64(t *testing.T) {
 	addr := os.Getenv("CLICKHOUSE_ADDR")
 	if addr == "" {
 		t.Skip("CLICKHOUSE_ADDR not set, skipping integration test")
@@ -267,13 +267,10 @@ func TestClient_Integration_QueryOne(t *testing.T) {
 	err = client.Start()
 	require.NoError(t, err)
 
-	var result struct {
-		Value int64 `json:"value"`
-	}
-
-	err = client.QueryOne(t.Context(), "SELECT 42 as value", &result)
+	result, err := client.QueryUInt64(t.Context(), "SELECT 42 as value", "value")
 	require.NoError(t, err)
-	assert.Equal(t, int64(42), result.Value)
+	require.NotNil(t, result)
+	assert.Equal(t, uint64(42), *result)
 }
 
 func TestClient_Integration_IsStorageEmpty(t *testing.T) {

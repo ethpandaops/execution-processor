@@ -17,19 +17,6 @@ var (
 	ErrNoMoreBlocks = errors.New("no more blocks to process")
 )
 
-// blockNumberResult is used for queries that return a single block number.
-//
-//nolint:tagliatelle // ClickHouse uses snake_case column names
-type blockNumberResult struct {
-	BlockNumber *JSONInt64 `json:"block_number"`
-}
-
-// minMaxResult is used for queries that return min and max values.
-type minMaxResult struct {
-	Min *JSONInt64 `json:"min"`
-	Max *JSONInt64 `json:"max"`
-}
-
 type Manager struct {
 	log            logrus.FieldLogger
 	storageClient  clickhouse.ClientInterface
@@ -237,15 +224,13 @@ func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, networ
 		"table":     s.storageTable,
 	}).Debug("Querying for last processed block")
 
-	var result blockNumberResult
-
-	err := s.storageClient.QueryOne(ctx, query, &result)
+	blockNumber, err := s.storageClient.QueryUInt64(ctx, query, "block_number")
 	if err != nil {
 		return nil, false, fmt.Errorf("failed to get next block from %s: %w", s.storageTable, err)
 	}
 
 	// Check if we got a result
-	if result.BlockNumber == nil {
+	if blockNumber == nil {
 		// Double-check if this is actually empty or no data
 		isEmpty, err := s.storageClient.IsStorageEmpty(ctx, s.storageTable, map[string]interface{}{
 			"processor":         processor,
@@ -277,20 +262,20 @@ func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, networ
 			}
 		}
 
-		// Block 0 was actually processed but BlockNumber is nil (shouldn't happen but be defensive)
+		// Block 0 was actually processed but blockNumber is nil (shouldn't happen but be defensive)
 		s.log.WithFields(logrus.Fields{
 			"processor": processor,
 			"network":   network,
-		}).Warn("Unexpected state: BlockNumber is nil but storage is not empty")
+		}).Warn("Unexpected state: block_number is nil but storage is not empty")
 
 		return big.NewInt(0), false, nil
 	}
 
-	nextBlock := big.NewInt(result.BlockNumber.Int64() + 1)
+	nextBlock := new(big.Int).SetUint64(*blockNumber + 1)
 	s.log.WithFields(logrus.Fields{
 		"processor":        processor,
 		"network":          network,
-		"last_processed":   result.BlockNumber.Int64(),
+		"last_processed":   *blockNumber,
 		"progressive_next": nextBlock.String(),
 	}).Debug("Found last processed block, calculated progressive next block")
 
@@ -313,15 +298,13 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 		"table":     s.storageTable,
 	}).Debug("Querying for earliest processed block (backwards mode)")
 
-	var result blockNumberResult
-
-	err := s.storageClient.QueryOne(ctx, query, &result)
+	blockNumber, err := s.storageClient.QueryUInt64(ctx, query, "block_number")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get earliest block from %s: %w", s.storageTable, err)
 	}
 
 	// Check if we got a result
-	if result.BlockNumber == nil {
+	if blockNumber == nil {
 		// No entry in table, need to start from chain tip for backwards processing
 		if chainHead != nil && chainHead.Int64() > 0 {
 			s.log.WithFields(logrus.Fields{
@@ -343,7 +326,7 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 	}
 
 	// Calculate previous block (go backwards)
-	if result.BlockNumber.Int64() <= 0 {
+	if *blockNumber == 0 {
 		// Already at genesis, no more blocks to process backwards
 		s.log.WithFields(logrus.Fields{
 			"processor": processor,
@@ -353,11 +336,11 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 		return nil, ErrNoMoreBlocks
 	}
 
-	prevBlock := big.NewInt(result.BlockNumber.Int64() - 1)
+	prevBlock := new(big.Int).SetUint64(*blockNumber - 1)
 	s.log.WithFields(logrus.Fields{
 		"processor":          processor,
 		"network":            network,
-		"earliest_processed": result.BlockNumber.Int64(),
+		"earliest_processed": *blockNumber,
 		"progressive_prev":   prevBlock.String(),
 	}).Debug("Found earliest processed block, calculated previous block for backwards processing")
 
@@ -376,15 +359,13 @@ func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.
 		"table":   s.limiterTable,
 	}).Debug("Querying for maximum execution payload block number")
 
-	var result blockNumberResult
-
-	err := s.limiterClient.QueryOne(ctx, query, &result)
+	blockNumber, err := s.limiterClient.QueryUInt64(ctx, query, "block_number")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get max execution payload block from %s: %w", s.limiterTable, err)
 	}
 
 	// Check if we got a result
-	if result.BlockNumber == nil {
+	if blockNumber == nil {
 		// No blocks in limiter table, return genesis
 		s.log.WithFields(logrus.Fields{
 			"network": network,
@@ -393,7 +374,7 @@ func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.
 		return big.NewInt(0), nil
 	}
 
-	maxBlock := big.NewInt(result.BlockNumber.Int64())
+	maxBlock := new(big.Int).SetUint64(*blockNumber)
 	s.log.WithFields(logrus.Fields{
 		"network":     network,
 		"limiter_max": maxBlock.String(),
@@ -434,15 +415,13 @@ func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor 
 		"table":     s.storageTable,
 	}).Debug("Querying for min/max stored blocks")
 
-	var result minMaxResult
-
-	err = s.storageClient.QueryOne(ctx, query, &result)
+	minResult, maxResult, err := s.storageClient.QueryMinMaxUInt64(ctx, query)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get min/max blocks: %w", err)
 	}
 
 	// Handle case where no blocks are stored
-	if result.Min == nil || result.Max == nil {
+	if minResult == nil || maxResult == nil {
 		s.log.WithFields(logrus.Fields{
 			"network":   network,
 			"processor": processor,
@@ -456,11 +435,11 @@ func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor 
 		"network":   network,
 		"processor": processor,
 		"table":     s.storageTable,
-		"min":       result.Min.Int64(),
-		"max":       result.Max.Int64(),
+		"min":       *minResult,
+		"max":       *maxResult,
 	}).Debug("Found min/max blocks")
 
-	return big.NewInt(result.Min.Int64()), big.NewInt(result.Max.Int64()), nil
+	return new(big.Int).SetUint64(*minResult), new(big.Int).SetUint64(*maxResult), nil
 }
 
 // IsBlockRecentlyProcessed checks if a block was processed within the specified number of seconds.
@@ -482,16 +461,12 @@ func (s *Manager) IsBlockRecentlyProcessed(ctx context.Context, blockNumber uint
 		"table":          s.storageTable,
 	}).Debug("Checking if block was recently processed")
 
-	var result struct {
-		Count JSONInt64 `json:"count"`
-	}
-
-	err := s.storageClient.QueryOne(ctx, query, &result)
+	count, err := s.storageClient.QueryUInt64(ctx, query, "count")
 	if err != nil {
 		return false, fmt.Errorf("failed to check recent block processing: %w", err)
 	}
 
-	return result.Count.Int64() > 0, nil
+	return count != nil && *count > 0, nil
 }
 
 // GetHeadDistance calculates the distance between current processing block and the relevant head.

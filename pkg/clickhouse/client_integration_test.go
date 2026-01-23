@@ -88,7 +88,7 @@ func TestClient_Integration_Container_Execute(t *testing.T) {
 	require.NoError(t, err)
 }
 
-func TestClient_Integration_Container_QueryOne(t *testing.T) {
+func TestClient_Integration_Container_QueryUInt64(t *testing.T) {
 	conn := testutil.NewClickHouseContainer(t)
 
 	cfg := &Config{
@@ -108,15 +108,40 @@ func TestClient_Integration_Container_QueryOne(t *testing.T) {
 	err = client.Start()
 	require.NoError(t, err)
 
-	// QueryOne expects JSON string result that gets deserialized
-	var result struct {
-		Value int64 `json:"value"`
+	// QueryUInt64 returns a single UInt64 value
+	result, err := client.QueryUInt64(t.Context(), "SELECT 42 as value", "value")
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, uint64(42), *result)
+}
+
+func TestClient_Integration_Container_QueryMinMaxUInt64(t *testing.T) {
+	conn := testutil.NewClickHouseContainer(t)
+
+	cfg := &Config{
+		Addr:        conn.Addr(),
+		Database:    conn.Database,
+		Username:    conn.Username,
+		Password:    conn.Password,
+		Compression: "lz4",
+		Network:     "test",
 	}
 
-	// The query must return a single column with JSON string
-	err = client.QueryOne(t.Context(), "SELECT '{\"value\": 42}' as json_result", &result)
+	client, err := New(context.Background(), cfg)
 	require.NoError(t, err)
-	assert.Equal(t, int64(42), result.Value)
+
+	defer func() { _ = client.Stop() }()
+
+	err = client.Start()
+	require.NoError(t, err)
+
+	// QueryMinMaxUInt64 returns min and max values
+	minVal, maxVal, err := client.QueryMinMaxUInt64(t.Context(), "SELECT 10 as min, 100 as max")
+	require.NoError(t, err)
+	require.NotNil(t, minVal)
+	require.NotNil(t, maxVal)
+	assert.Equal(t, uint64(10), *minVal)
+	assert.Equal(t, uint64(100), *maxVal)
 }
 
 func TestClient_Integration_Container_IsStorageEmpty(t *testing.T) {
