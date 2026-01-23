@@ -36,13 +36,13 @@ type Processor struct {
 }
 
 // New creates a new transaction structlog processor.
-func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, error) {
+func New(deps *Dependencies, config *Config) (*Processor, error) {
 	// Create a copy of the embedded config and set processor-specific values
 	clickhouseConfig := config.Config
 	clickhouseConfig.Network = deps.Network.Name
 	clickhouseConfig.Processor = ProcessorName
 
-	clickhouseClient, err := clickhouse.New(ctx, &clickhouseConfig)
+	clickhouseClient, err := clickhouse.New(&clickhouseConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clickhouse client for transaction_structlog: %w", err)
 	}

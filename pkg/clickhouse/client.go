@@ -28,13 +28,14 @@ const (
 
 // Client implements the ClientInterface using ch-go native protocol.
 type Client struct {
-	pool      *chpool.Pool
-	config    *Config
-	network   string
-	processor string
-	log       logrus.FieldLogger
-	lock      sync.RWMutex
-	started   atomic.Bool
+	pool        *chpool.Pool
+	config      *Config
+	compression ch.Compression
+	network     string
+	processor   string
+	log         logrus.FieldLogger
+	lock        sync.RWMutex
+	started     atomic.Bool
 
 	// Metrics collection
 	metricsDone chan struct{}
@@ -137,8 +138,11 @@ func (c *Client) doWithRetry(ctx context.Context, operation string, fn func(ctx 
 
 	for attempt := 0; attempt <= c.config.MaxRetries; attempt++ {
 		if attempt > 0 {
-			// Calculate backoff delay with exponential increase
+			// Calculate backoff delay with exponential increase, capped at RetryMaxDelay
 			delay := c.config.RetryBaseDelay * time.Duration(1<<(attempt-1))
+			if c.config.RetryMaxDelay > 0 && delay > c.config.RetryMaxDelay {
+				delay = c.config.RetryMaxDelay
+			}
 
 			c.log.WithFields(logrus.Fields{
 				"attempt":   attempt,
@@ -175,7 +179,8 @@ func (c *Client) doWithRetry(ctx context.Context, operation string, fn func(ctx 
 }
 
 // New creates a new ch-go native ClickHouse client.
-func New(ctx context.Context, cfg *Config) (ClientInterface, error) {
+// The client is not connected until Start() is called.
+func New(cfg *Config) (ClientInterface, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -193,40 +198,12 @@ func New(ctx context.Context, cfg *Config) (ClientInterface, error) {
 
 	log := logrus.WithField("component", "clickhouse-native")
 
-	// Dial with startup retry logic for transient connection failures
-	var pool *chpool.Pool
-
-	err := dialWithRetry(ctx, log, cfg, func() error {
-		var dialErr error
-
-		pool, dialErr = chpool.Dial(ctx, chpool.Options{
-			ClientOptions: ch.Options{
-				Address:     cfg.Addr,
-				Database:    cfg.Database,
-				User:        cfg.Username,
-				Password:    cfg.Password,
-				Compression: compression,
-				DialTimeout: cfg.DialTimeout,
-			},
-			MaxConns:          cfg.MaxConns,
-			MinConns:          cfg.MinConns,
-			MaxConnLifetime:   cfg.ConnMaxLifetime,
-			MaxConnIdleTime:   cfg.ConnMaxIdleTime,
-			HealthCheckPeriod: cfg.HealthCheckPeriod,
-		})
-
-		return dialErr
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial clickhouse: %w", err)
-	}
-
 	return &Client{
-		pool:      pool,
-		config:    cfg,
-		network:   cfg.Network,
-		processor: cfg.Processor,
-		log:       log,
+		config:      cfg,
+		compression: compression,
+		network:     cfg.Network,
+		processor:   cfg.Processor,
+		log:         log,
 	}, nil
 }
 
@@ -236,7 +213,11 @@ func dialWithRetry(ctx context.Context, log logrus.FieldLogger, cfg *Config, fn 
 
 	for attempt := 0; attempt <= cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
+			// Calculate backoff delay with exponential increase, capped at RetryMaxDelay
 			delay := cfg.RetryBaseDelay * time.Duration(1<<(attempt-1))
+			if cfg.RetryMaxDelay > 0 && delay > cfg.RetryMaxDelay {
+				delay = cfg.RetryMaxDelay
+			}
 
 			log.WithFields(logrus.Fields{
 				"attempt":   attempt,
@@ -268,39 +249,65 @@ func dialWithRetry(ctx context.Context, log logrus.FieldLogger, cfg *Config, fn 
 	return fmt.Errorf("max retries (%d) exceeded: %w", cfg.MaxRetries, lastErr)
 }
 
-// Start initializes the client and tests connectivity.
+// Start initializes the client by dialing ClickHouse with retry logic.
 func (c *Client) Start() error {
-	// Idempotency guard - prevent multiple Start() calls from leaking goroutines.
-	// Once Start() is called, the client is considered "started" regardless of outcome.
-	// On failure, the client is effectively dead and Stop() should be called.
-	if c.started.Swap(true) {
-		c.log.Debug("Start() already called, skipping")
+	// Idempotency guard - prevent multiple successful Start() calls from leaking goroutines.
+	// We check if pool is already set to allow retries after failures.
+	c.lock.Lock()
+
+	if c.pool != nil {
+		c.lock.Unlock()
+		c.log.Debug("Start() already completed successfully, skipping")
 
 		return nil
 	}
 
-	if c.network == "" {
-		c.log.Debug("Skipping ClickHouse connectivity test - network not yet determined")
+	c.lock.Unlock()
 
-		return nil
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Dial with startup retry logic for transient connection failures
+	ctx, cancel := context.WithTimeout(context.Background(), c.config.DialTimeout*time.Duration(c.config.MaxRetries+1))
 	defer cancel()
 
-	if err := c.pool.Ping(ctx); err != nil {
-		// Don't reset started - the client is now in a failed state.
-		// Caller should call Stop() to clean up.
-		return fmt.Errorf("failed to ping ClickHouse: %w", err)
+	var pool *chpool.Pool
+
+	err := dialWithRetry(ctx, c.log, c.config, func() error {
+		var dialErr error
+
+		pool, dialErr = chpool.Dial(ctx, chpool.Options{
+			ClientOptions: ch.Options{
+				Address:     c.config.Addr,
+				Database:    c.config.Database,
+				User:        c.config.Username,
+				Password:    c.config.Password,
+				Compression: c.compression,
+				DialTimeout: c.config.DialTimeout,
+			},
+			MaxConns:          c.config.MaxConns,
+			MinConns:          c.config.MinConns,
+			MaxConnLifetime:   c.config.ConnMaxLifetime,
+			MaxConnIdleTime:   c.config.ConnMaxIdleTime,
+			HealthCheckPeriod: c.config.HealthCheckPeriod,
+		})
+
+		return dialErr
+	})
+	if err != nil {
+		return fmt.Errorf("failed to dial clickhouse: %w", err)
 	}
+
+	c.lock.Lock()
+	c.pool = pool
+	c.lock.Unlock()
 
 	c.log.Info("Connected to ClickHouse native interface")
 
-	// Start pool metrics collection goroutine
-	c.metricsDone = make(chan struct{})
-	c.metricsWg.Add(1)
+	// Start pool metrics collection goroutine - use started flag to prevent duplicate goroutines
+	if !c.started.Swap(true) {
+		c.metricsDone = make(chan struct{})
+		c.metricsWg.Add(1)
 
-	go c.collectPoolMetrics()
+		go c.collectPoolMetrics()
+	}
 
 	return nil
 }
@@ -313,8 +320,10 @@ func (c *Client) Stop() error {
 		c.metricsWg.Wait()
 	}
 
-	c.pool.Close()
-	c.log.Info("Closed ClickHouse connection pool")
+	if c.pool != nil {
+		c.pool.Close()
+		c.log.Info("Closed ClickHouse connection pool")
+	}
 
 	return nil
 }

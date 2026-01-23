@@ -81,6 +81,7 @@ func TestConfig_SetDefaults(t *testing.T) {
 	assert.Equal(t, 10*time.Second, config.DialTimeout)
 	assert.Equal(t, "lz4", config.Compression)
 	assert.Equal(t, 60*time.Second, config.QueryTimeout)
+	assert.Equal(t, 10*time.Second, config.RetryMaxDelay)
 }
 
 func TestConfig_SetDefaults_PreservesValues(t *testing.T) {
@@ -95,6 +96,7 @@ func TestConfig_SetDefaults_PreservesValues(t *testing.T) {
 		DialTimeout:       30 * time.Second,
 		Compression:       "zstd",
 		QueryTimeout:      120 * time.Second,
+		RetryMaxDelay:     30 * time.Second,
 	}
 
 	config.SetDefaults()
@@ -109,6 +111,7 @@ func TestConfig_SetDefaults_PreservesValues(t *testing.T) {
 	assert.Equal(t, 30*time.Second, config.DialTimeout)
 	assert.Equal(t, "zstd", config.Compression)
 	assert.Equal(t, 120*time.Second, config.QueryTimeout)
+	assert.Equal(t, 30*time.Second, config.RetryMaxDelay)
 }
 
 func TestClient_withQueryTimeout(t *testing.T) {
@@ -187,7 +190,7 @@ func TestClient_Integration_New(t *testing.T) {
 		Compression: "lz4",
 	}
 
-	client, err := New(context.Background(), cfg)
+	client, err := New(cfg)
 	require.NoError(t, err)
 	require.NotNil(t, client)
 
@@ -208,10 +211,10 @@ func TestClient_Integration_StartStop(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(context.Background(), cfg)
+	client, err := New(cfg)
 	require.NoError(t, err)
 
-	// Start should ping successfully
+	// Start should dial and connect successfully
 	err = client.Start()
 	require.NoError(t, err)
 
@@ -233,7 +236,7 @@ func TestClient_Integration_Execute(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(context.Background(), cfg)
+	client, err := New(cfg)
 	require.NoError(t, err)
 
 	defer func() { _ = client.Stop() }()
@@ -259,7 +262,7 @@ func TestClient_Integration_QueryUInt64(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(context.Background(), cfg)
+	client, err := New(cfg)
 	require.NoError(t, err)
 
 	defer func() { _ = client.Stop() }()
@@ -286,7 +289,7 @@ func TestClient_Integration_IsStorageEmpty(t *testing.T) {
 		Network:     "test",
 	}
 
-	client, err := New(context.Background(), cfg)
+	client, err := New(cfg)
 	require.NoError(t, err)
 
 	defer func() { _ = client.Stop() }()

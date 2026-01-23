@@ -29,6 +29,7 @@ type Config struct {
 	// Retry settings
 	MaxRetries     int           `yaml:"max_retries"`      // Maximum retry attempts, default: 3
 	RetryBaseDelay time.Duration `yaml:"retry_base_delay"` // Base delay for exponential backoff, default: 100ms
+	RetryMaxDelay  time.Duration `yaml:"retry_max_delay"`  // Max delay between retries, default: 10s
 
 	// Timeout settings
 	QueryTimeout time.Duration `yaml:"query_timeout"` // Query timeout per attempt, default: 60s
@@ -88,6 +89,10 @@ func (c *Config) SetDefaults() {
 
 	if c.RetryBaseDelay == 0 {
 		c.RetryBaseDelay = 100 * time.Millisecond
+	}
+
+	if c.RetryMaxDelay == 0 {
+		c.RetryMaxDelay = 10 * time.Second
 	}
 
 	if c.QueryTimeout == 0 {

@@ -27,12 +27,12 @@ type Manager struct {
 	network        string
 }
 
-func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*Manager, error) {
+func NewManager(log logrus.FieldLogger, config *Config) (*Manager, error) {
 	// Create storage client
 	storageConfig := config.Storage.Config
 	storageConfig.Processor = "state"
 
-	storageClient, err := clickhouse.New(ctx, &storageConfig)
+	storageClient, err := clickhouse.New(&storageConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage clickhouse client: %w", err)
 	}
@@ -49,7 +49,7 @@ func NewManager(ctx context.Context, log logrus.FieldLogger, config *Config) (*M
 		limiterConfig := config.Limiter.Config
 		limiterConfig.Processor = "state-limiter"
 
-		limiterClient, err := clickhouse.New(ctx, &limiterConfig)
+		limiterClient, err := clickhouse.New(&limiterConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create limiter clickhouse client: %w", err)
 		}
@@ -74,17 +74,62 @@ func (s *Manager) SetNetwork(network string) {
 }
 
 func (s *Manager) Start(ctx context.Context) error {
-	if err := s.storageClient.Start(); err != nil {
+	// Start storage client with infinite retry
+	if err := s.startClientWithRetry(ctx, s.storageClient, "storage"); err != nil {
 		return fmt.Errorf("failed to start storage client: %w", err)
 	}
 
+	// Start limiter client with infinite retry if enabled
 	if s.limiterEnabled && s.limiterClient != nil {
-		if err := s.limiterClient.Start(); err != nil {
+		if err := s.startClientWithRetry(ctx, s.limiterClient, "limiter"); err != nil {
 			return fmt.Errorf("failed to start limiter client: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// startClientWithRetry starts a ClickHouse client with infinite retry and capped exponential backoff.
+// This ensures the state manager can wait for ClickHouse to become available at startup.
+func (s *Manager) startClientWithRetry(ctx context.Context, client clickhouse.ClientInterface, name string) error {
+	const (
+		baseDelay = 100 * time.Millisecond
+		maxDelay  = 10 * time.Second
+	)
+
+	attempt := 0
+
+	for {
+		err := client.Start()
+		if err == nil {
+			if attempt > 0 {
+				s.log.WithField("client", name).Info("Successfully connected after retries")
+			}
+
+			return nil
+		}
+
+		// Calculate delay with exponential backoff, capped at maxDelay
+		delay := baseDelay * time.Duration(1<<attempt)
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+
+		s.log.WithFields(logrus.Fields{
+			"client":  name,
+			"attempt": attempt + 1,
+			"delay":   delay,
+			"error":   err,
+		}).Warn("Failed to start client, retrying...")
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+
+		attempt++
+	}
 }
 
 func (s *Manager) Stop(ctx context.Context) error {

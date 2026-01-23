@@ -78,7 +78,7 @@ func TestManager_Creation(t *testing.T) {
 			Enabled: false,
 		},
 	}
-	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
+	stateManager, err := state.NewManager(log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
 	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
@@ -129,7 +129,7 @@ func TestManager_StartStop(t *testing.T) {
 			Enabled: false,
 		},
 	}
-	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
+	stateManager, err := state.NewManager(log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
 	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
@@ -207,7 +207,7 @@ func TestManager_MultipleStops(t *testing.T) {
 			Enabled: false,
 		},
 	}
-	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
+	stateManager, err := state.NewManager(log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
 	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
@@ -293,7 +293,7 @@ func TestManager_ModeSpecificLeaderElection(t *testing.T) {
 					Enabled: false,
 				},
 			}
-			stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
+			stateManager, err := state.NewManager(log.WithField("component", "state"), stateConfig)
 			require.NoError(t, err)
 
 			redisClient := newTestRedis(t)
@@ -366,7 +366,7 @@ func TestManager_ConcurrentModes(t *testing.T) {
 			Enabled: false,
 		},
 	}
-	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
+	stateManager, err := state.NewManager(log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
 	// Each miniredis instance is isolated, simulating separate Redis servers
@@ -421,7 +421,7 @@ func TestManager_LeaderElectionDisabled(t *testing.T) {
 			Enabled: false,
 		},
 	}
-	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
+	stateManager, err := state.NewManager(log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
 	redisClient := newTestRedis(t)
@@ -477,7 +477,7 @@ func TestManager_RaceConditions(t *testing.T) {
 			Enabled: false,
 		},
 	}
-	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
+	stateManager, err := state.NewManager(log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
 	redisClient := newTestRedis(t)
@@ -558,7 +558,7 @@ func TestManager_ConcurrentConfiguration(t *testing.T) {
 			Enabled: false,
 		},
 	}
-	stateManager, err := state.NewManager(context.Background(), log.WithField("component", "state"), stateConfig)
+	stateManager, err := state.NewManager(log.WithField("component", "state"), stateConfig)
 	require.NoError(t, err)
 
 	redisClient := newTestRedis(t)

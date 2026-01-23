@@ -40,7 +40,7 @@ type Processor struct {
 }
 
 // New creates a new simple transaction processor.
-func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, error) {
+func New(deps *Dependencies, config *Config) (*Processor, error) {
 	if err := config.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
@@ -50,7 +50,7 @@ func New(ctx context.Context, deps *Dependencies, config *Config) (*Processor, e
 	clickhouseConfig.Network = deps.Network.Name
 	clickhouseConfig.Processor = ProcessorName
 
-	clickhouseClient, err := clickhouse.New(ctx, &clickhouseConfig)
+	clickhouseClient, err := clickhouse.New(&clickhouseConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create clickhouse client: %w", err)
 	}
