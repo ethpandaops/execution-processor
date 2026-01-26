@@ -66,6 +66,26 @@ func hasPrecomputedGasUsed(structlogs []execution.StructLog) bool {
 	return structlogs[0].GasUsed > 0
 }
 
+// hasPrecomputedCreateAddresses detects whether CREATE/CREATE2 addresses are pre-computed.
+//
+// In embedded mode, the tracer resolves CREATE addresses inline when the constructor
+// returns, populating CallToAddress. In RPC mode, CallToAddress is nil for CREATE
+// opcodes and must be computed post-hoc using ComputeCreateAddresses().
+//
+// Returns true if any CREATE/CREATE2 opcode has CallToAddress pre-populated.
+func hasPrecomputedCreateAddresses(structlogs []execution.StructLog) bool {
+	for i := range structlogs {
+		op := structlogs[i].Op
+		if op == OpcodeCREATE || op == OpcodeCREATE2 {
+			// If any CREATE has CallToAddress populated, tracer pre-computed.
+			return structlogs[i].CallToAddress != nil
+		}
+	}
+
+	// No CREATE/CREATE2 opcodes found - doesn't matter, return false to use standard path.
+	return false
+}
+
 // ComputeGasUsed calculates the actual gas consumed for each structlog using
 // the difference between consecutive gas values at the same depth level.
 //

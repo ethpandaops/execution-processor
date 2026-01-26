@@ -29,7 +29,6 @@ type Columns struct {
 	TransactionFailed      proto.ColBool
 	TransactionReturnValue *proto.ColNullable[string]
 	Index                  proto.ColUInt32
-	ProgramCounter         proto.ColUInt32
 	Operation              proto.ColStr
 	Gas                    proto.ColUInt64
 	GasCost                proto.ColUInt64
@@ -67,7 +66,6 @@ func (c *Columns) Append(
 	txFailed bool,
 	txReturnValue *string,
 	index uint32,
-	pc uint32,
 	op string,
 	gas uint64,
 	gasCost uint64,
@@ -90,7 +88,6 @@ func (c *Columns) Append(
 	c.TransactionFailed.Append(txFailed)
 	c.TransactionReturnValue.Append(nullableStr(txReturnValue))
 	c.Index.Append(index)
-	c.ProgramCounter.Append(pc)
 	c.Operation.Append(op)
 	c.Gas.Append(gas)
 	c.GasCost.Append(gasCost)
@@ -116,7 +113,6 @@ func (c *Columns) Reset() {
 	c.TransactionFailed.Reset()
 	c.TransactionReturnValue.Reset()
 	c.Index.Reset()
-	c.ProgramCounter.Reset()
 	c.Operation.Reset()
 	c.Gas.Reset()
 	c.GasCost.Reset()
@@ -143,7 +139,6 @@ func (c *Columns) Input() proto.Input {
 		{Name: "transaction_failed", Data: &c.TransactionFailed},
 		{Name: "transaction_return_value", Data: c.TransactionReturnValue},
 		{Name: "index", Data: &c.Index},
-		{Name: "program_counter", Data: &c.ProgramCounter},
 		{Name: "operation", Data: &c.Operation},
 		{Name: "gas", Data: &c.Gas},
 		{Name: "gas_cost", Data: &c.GasCost},

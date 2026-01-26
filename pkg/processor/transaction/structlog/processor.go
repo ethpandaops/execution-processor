@@ -197,7 +197,6 @@ func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog
 			sl.TransactionFailed,
 			sl.TransactionReturnValue,
 			sl.Index,
-			sl.ProgramCounter,
 			sl.Operation,
 			sl.Gas,
 			sl.GasCost,

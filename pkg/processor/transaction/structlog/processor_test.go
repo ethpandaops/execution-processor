@@ -150,7 +150,6 @@ func TestStructlogCountReturn(t *testing.T) {
 			mockTrace.Failed,      // txFailed
 			mockTrace.ReturnValue, // txReturnValue
 			uint32(i),             // index
-			structLog.PC,          // pc
 			structLog.Op,          // op
 			structLog.Gas,         // gas
 			structLog.GasCost,     // gasCost
@@ -235,7 +234,6 @@ func TestMemoryManagement(t *testing.T) {
 			false,           // txFailed
 			nil,             // txReturnValue
 			uint32(i),       // index
-			uint32(i*2),     // pc
 			"SSTORE",        // op
 			uint64(21000-i), // gas
 			uint64(5000),    // gasCost
@@ -347,7 +345,7 @@ func TestChunkProcessing(t *testing.T) {
 			for i := 0; i < tt.inputSize; i++ {
 				cols.Append(
 					now, uint64(i), "0xtest", uint32(0), uint64(21000), false, nil,
-					uint32(i), uint32(i), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
+					uint32(i), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
 					nil, nil, nil, nil, uint32(0), []uint32{}, "test",
 				)
 			}
@@ -397,7 +395,7 @@ func TestColumnsAppendAndReset(t *testing.T) {
 
 	cols.Append(
 		now, uint64(100), "0xabc", uint32(0), uint64(21000), false, &str,
-		uint32(0), uint32(100), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
+		uint32(0), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
 		nil, &num, nil, nil, uint32(0), []uint32{}, "mainnet",
 	)
 
@@ -407,7 +405,7 @@ func TestColumnsAppendAndReset(t *testing.T) {
 	for i := 0; i < 99; i++ {
 		cols.Append(
 			now, uint64(100), "0xabc", uint32(0), uint64(21000), false, nil,
-			uint32(i+1), uint32(100), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
+			uint32(i+1), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
 			nil, nil, nil, nil, uint32(0), []uint32{}, "mainnet",
 		)
 	}
@@ -423,10 +421,10 @@ func TestColumnsInput(t *testing.T) {
 	cols := transaction_structlog.NewColumns()
 	input := cols.Input()
 
-	// Verify all 22 columns are present
-	assert.Len(t, input, 22)
+	// Verify all 21 columns are present
+	assert.Len(t, input, 21)
 	assert.Equal(t, "updated_date_time", input[0].Name)
-	assert.Equal(t, "meta_network_name", input[21].Name)
+	assert.Equal(t, "meta_network_name", input[20].Name)
 }
 
 // Tests from tasks_test.go

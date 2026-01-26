@@ -28,7 +28,6 @@ type Structlog struct {
 	TransactionFailed      bool           `json:"transaction_failed"`
 	TransactionReturnValue *string        `json:"transaction_return_value"`
 	Index                  uint32         `json:"index"`
-	ProgramCounter         uint32         `json:"program_counter"`
 	Operation              string         `json:"operation"`
 
 	// Gas is the remaining gas before this opcode executes.
@@ -183,8 +182,15 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 	// Initialize call frame tracker
 	callTracker := NewCallTracker()
 
-	// Pre-compute CREATE/CREATE2 addresses from trace stack
-	createAddresses := ComputeCreateAddresses(trace.Structlogs)
+	// Check if CREATE/CREATE2 addresses are pre-computed by the tracer (embedded mode).
+	// In embedded mode, skip the multi-pass ComputeCreateAddresses scan.
+	precomputedCreateAddresses := hasPrecomputedCreateAddresses(trace.Structlogs)
+
+	var createAddresses map[int]*string
+	if !precomputedCreateAddresses {
+		// Pre-compute CREATE/CREATE2 addresses from trace stack (RPC mode)
+		createAddresses = ComputeCreateAddresses(trace.Structlogs)
+	}
 
 	chunkSize := p.config.ChunkSize
 	if chunkSize == 0 {
@@ -235,7 +241,6 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 					trace.Failed,
 					trace.ReturnValue,
 					uint32(i), //nolint:gosec // index is bounded by structlogs length
-					sl.PC,
 					sl.Op,
 					sl.Gas,
 					sl.GasCost,
@@ -277,7 +282,6 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 							trace.Failed,
 							trace.ReturnValue,
 							uint32(i),  //nolint:gosec // Same index as parent CALL
-							uint32(0),  // No PC for EOA
 							"",         // Empty = synthetic EOA frame
 							uint64(0),  // Gas
 							uint64(0),  // GasCost
@@ -542,8 +546,14 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 		// Initialize call frame tracker
 		callTracker := NewCallTracker()
 
-		// Pre-compute CREATE/CREATE2 addresses from trace stack
-		createAddresses := ComputeCreateAddresses(trace.Structlogs)
+		// Check if CREATE/CREATE2 addresses are pre-computed by the tracer (embedded mode).
+		precomputedCreateAddresses := hasPrecomputedCreateAddresses(trace.Structlogs)
+
+		var createAddresses map[int]*string
+		if !precomputedCreateAddresses {
+			// Pre-compute CREATE/CREATE2 addresses from trace stack (RPC mode)
+			createAddresses = ComputeCreateAddresses(trace.Structlogs)
+		}
 
 		// Pre-allocate slice for better memory efficiency
 		structlogs = make([]Structlog, 0, len(trace.Structlogs))
@@ -571,7 +581,6 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 				TransactionFailed:      trace.Failed,
 				TransactionReturnValue: trace.ReturnValue,
 				Index:                  uint32(i), //nolint:gosec // index is bounded by structlogs length
-				ProgramCounter:         structLog.PC,
 				Operation:              structLog.Op,
 				Gas:                    structLog.Gas,
 				GasCost:                structLog.GasCost,
@@ -621,7 +630,6 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 						TransactionFailed:      trace.Failed,
 						TransactionReturnValue: trace.ReturnValue,
 						Index:                  uint32(i), //nolint:gosec // Same index as parent CALL
-						ProgramCounter:         0,         // No PC for EOA
 						Operation:              "",        // Empty = synthetic EOA frame
 						Gas:                    0,
 						GasCost:                0,
