@@ -49,7 +49,7 @@ func NewServer(ctx context.Context, log logrus.FieldLogger, namespace string, co
 
 	pool := ethereum.NewPool(log.WithField("component", "ethereum"), namespace, &config.Ethereum)
 
-	stateManager, err := state.NewManager(ctx, log.WithField("component", "state"), &config.StateManager)
+	stateManager, err := state.NewManager(log.WithField("component", "state"), &config.StateManager)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create state manager: %w", err)
 	}
@@ -145,20 +145,32 @@ func (s *Server) Start(ctx context.Context) error {
 		return nil
 	})
 
+	// Channel to signal when state manager is ready
+	stateReady := make(chan struct{})
+
 	g.Go(func() error {
 		if err := s.state.Start(ctx); err != nil {
 			s.log.WithError(err).Error("State manager start failed")
+			close(stateReady) // Signal even on failure so processor doesn't hang
 
 			return err
 		}
 
+		close(stateReady) // Signal that state manager is ready
 		<-ctx.Done()
 
 		return nil
 	})
 
-	// Start processor
+	// Start processor - must wait for state manager to be ready
 	g.Go(func() error {
+		// Wait for state manager to be ready before starting processor
+		select {
+		case <-stateReady:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+
 		return s.processor.Start(ctx)
 	})
 

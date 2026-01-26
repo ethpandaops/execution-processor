@@ -1,3 +1,26 @@
+// Package processor coordinates block processing across multiple processor types.
+//
+// # Architecture Overview
+//
+// The Manager is the central coordinator that:
+//   - Discovers new blocks from execution nodes
+//   - Dispatches processing tasks to registered processors
+//   - Manages distributed task queues via Redis/Asynq
+//   - Implements leader election for multi-instance deployments
+//   - Provides backpressure control via queue monitoring
+//
+// # Processing Flow
+//
+//  1. Manager.Start() initializes processors and begins the processing loop
+//  2. processBlocks() is called on each interval (default 10s)
+//  3. Each processor's ProcessNextBlock() discovers and enqueues tasks
+//  4. Asynq workers (potentially distributed) process the tasks
+//  5. Completion tracking marks blocks done when all tasks finish
+//
+// # Leader Election
+//
+// When multiple instances run, only the leader performs block discovery.
+// All instances can process tasks as Asynq workers.
 package processor
 
 import (
@@ -11,7 +34,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/leaderelection"
-	c "github.com/ethpandaops/execution-processor/pkg/processor/common"
+	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	transaction_simple "github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 	s "github.com/ethpandaops/execution-processor/pkg/state"
@@ -20,13 +43,33 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// retryDelayFunc returns an exponential backoff delay capped at 10 minutes.
+// Delays: 5s, 10s, 20s, 40s, 80s, 160s, 320s, 600s (max).
+func retryDelayFunc(n int, _ error, _ *asynq.Task) time.Duration {
+	delay := time.Duration(5<<n) * time.Second // 5s * 2^n
+
+	maxDelay := 10 * time.Minute
+	if delay > maxDelay {
+		return maxDelay
+	}
+
+	return delay
+}
+
 // Manager coordinates multiple processors with distributed task processing.
+//
+// It manages the complete lifecycle:
+//   - Processor initialization and startup
+//   - Block discovery loop (when leader)
+//   - Asynq server for task processing (always)
+//   - Queue monitoring and backpressure
+//   - Graceful shutdown with goroutine cleanup
 type Manager struct {
 	log        logrus.FieldLogger
 	config     *Config
 	pool       *ethereum.Pool
 	state      *s.Manager
-	processors map[string]c.BlockProcessor
+	processors map[string]tracker.BlockProcessor
 
 	// Redis/Asynq for distributed processing
 	redisClient *r.Client
@@ -80,10 +123,11 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 	queues := make(map[string]int)
 
 	asynqServer = asynq.NewServer(asynqRedisOpt, asynq.Config{
-		Concurrency: config.Concurrency,
-		Queues:      queues,
-		LogLevel:    asynq.InfoLevel,
-		Logger:      log,
+		Concurrency:    config.Concurrency,
+		Queues:         queues,
+		LogLevel:       asynq.InfoLevel,
+		Logger:         log,
+		RetryDelayFunc: retryDelayFunc,
 	})
 
 	return &Manager{
@@ -91,7 +135,7 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 		config:              config,
 		pool:                pool,
 		state:               state,
-		processors:          make(map[string]c.BlockProcessor),
+		processors:          make(map[string]tracker.BlockProcessor),
 		redisClient:         redis,
 		redisPrefix:         redisPrefix,
 		asynqClient:         asynqClient,
@@ -171,14 +215,26 @@ func (m *Manager) Start(ctx context.Context) error {
 		}
 
 		// Monitor leadership changes
-		go m.monitorLeadership(ctx)
+		m.wg.Add(1)
+
+		go func() {
+			defer m.wg.Done()
+
+			m.monitorLeadership(ctx)
+		}()
 
 		m.log.Debug("Leader election started, monitoring for leadership changes")
 	} else {
 		// If leader election is disabled, always act as leader
 		m.isLeader = true
 
-		go m.runBlockProcessing(ctx)
+		m.wg.Add(1)
+
+		go func() {
+			defer m.wg.Done()
+
+			m.runBlockProcessing(ctx)
+		}()
 
 		m.log.Info("Leader election disabled - running as standalone processor")
 	}
@@ -302,6 +358,10 @@ func (m *Manager) Stop(ctx context.Context) error {
 		}
 	}
 
+	// Wait for all goroutines to complete
+	m.wg.Wait()
+	m.log.Info("All goroutines stopped")
+
 	return nil
 }
 
@@ -312,11 +372,12 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 	if m.config.TransactionStructlog.Enabled {
 		m.log.Debug("Transaction structlog processor is enabled, initializing...")
 
-		processor, err := transaction_structlog.New(ctx, &transaction_structlog.Dependencies{
+		processor, err := transaction_structlog.New(&transaction_structlog.Dependencies{
 			Log:         m.log.WithField("processor", "transaction_structlog"),
 			Pool:        m.pool,
 			State:       m.state,
 			AsynqClient: m.asynqClient,
+			RedisClient: m.redisClient,
 			Network:     m.network,
 			RedisPrefix: m.redisPrefix,
 		}, &m.config.TransactionStructlog)
@@ -331,7 +392,7 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 
 		m.log.WithField("processor", "transaction_structlog").Info("Initialized processor")
 
-		if err := processor.Start(ctx); err != nil {
+		if err := m.startProcessorWithRetry(ctx, processor, "transaction_structlog"); err != nil {
 			return fmt.Errorf("failed to start transaction_structlog processor: %w", err)
 		}
 	} else {
@@ -342,11 +403,12 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 	if m.config.TransactionSimple.Enabled {
 		m.log.Debug("Transaction simple processor is enabled, initializing...")
 
-		processor, err := transaction_simple.New(ctx, &transaction_simple.Dependencies{
+		processor, err := transaction_simple.New(&transaction_simple.Dependencies{
 			Log:         m.log.WithField("processor", "transaction_simple"),
 			Pool:        m.pool,
 			State:       m.state,
 			AsynqClient: m.asynqClient,
+			RedisClient: m.redisClient,
 			Network:     m.network,
 			RedisPrefix: m.redisPrefix,
 		}, &m.config.TransactionSimple)
@@ -361,7 +423,7 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 
 		m.log.WithField("processor", "transaction_simple").Info("Initialized processor")
 
-		if err := processor.Start(ctx); err != nil {
+		if err := m.startProcessorWithRetry(ctx, processor, "transaction_simple"); err != nil {
 			return fmt.Errorf("failed to start transaction_simple processor: %w", err)
 		}
 	} else {
@@ -371,6 +433,49 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 	m.log.WithField("total_processors", len(m.processors)).Info("Completed processor initialization")
 
 	return nil
+}
+
+// startProcessorWithRetry starts a processor with infinite retry and capped exponential backoff.
+// This ensures processors can wait for their dependencies (like ClickHouse) to become available.
+func (m *Manager) startProcessorWithRetry(ctx context.Context, processor tracker.BlockProcessor, name string) error {
+	const (
+		baseDelay = 100 * time.Millisecond
+		maxDelay  = 10 * time.Second
+	)
+
+	attempt := 0
+
+	for {
+		err := processor.Start(ctx)
+		if err == nil {
+			if attempt > 0 {
+				m.log.WithField("processor", name).Info("Processor started successfully after retries")
+			}
+
+			return nil
+		}
+
+		// Calculate delay with exponential backoff, capped at maxDelay
+		delay := baseDelay * time.Duration(1<<attempt)
+		if delay > maxDelay {
+			delay = maxDelay
+		}
+
+		m.log.WithFields(logrus.Fields{
+			"processor": name,
+			"attempt":   attempt + 1,
+			"delay":     delay,
+			"error":     err,
+		}).Warn("Failed to start processor, retrying...")
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
+		}
+
+		attempt++
+	}
 }
 
 func (m *Manager) processBlocks(ctx context.Context) {
@@ -521,7 +626,11 @@ func (m *Manager) handleLeadershipGain(ctx context.Context) {
 	// Start block processing loop
 	m.log.Debug("Starting runBlockProcessing goroutine")
 
+	m.wg.Add(1)
+
 	go func() {
+		defer m.wg.Done()
+
 		m.log.Debug("runBlockProcessing goroutine started")
 		m.runBlockProcessing(ctx)
 	}()
@@ -675,9 +784,9 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 			shouldMonitor := false
 
 			switch m.config.Mode {
-			case c.FORWARDS_MODE:
+			case tracker.FORWARDS_MODE:
 				shouldMonitor = strings.Contains(queue.Name, "forwards")
-			case c.BACKWARDS_MODE:
+			case tracker.BACKWARDS_MODE:
 				shouldMonitor = strings.Contains(queue.Name, "backwards")
 			}
 
@@ -752,7 +861,10 @@ func (m *Manager) startQueueMonitoring(ctx context.Context) {
 	m.monitorCancel = cancel
 	m.isMonitoring = true
 
+	m.wg.Add(1)
+
 	go func() {
+		defer m.wg.Done()
 		defer func() {
 			// Recovery from panics to prevent goroutine leaks
 			if recovered := recover(); recovered != nil {
@@ -794,9 +906,9 @@ func (m *Manager) updateAsynqQueues() error {
 			shouldInclude := false
 
 			switch m.config.Mode {
-			case c.FORWARDS_MODE:
+			case tracker.FORWARDS_MODE:
 				shouldInclude = strings.Contains(queue.Name, "forwards")
-			case c.BACKWARDS_MODE:
+			case tracker.BACKWARDS_MODE:
 				shouldInclude = strings.Contains(queue.Name, "backwards")
 			}
 
@@ -831,10 +943,11 @@ func (m *Manager) updateAsynqQueues() error {
 	}
 
 	m.asynqServer = asynq.NewServer(asynqRedisOpt, asynq.Config{
-		Concurrency: m.config.Concurrency,
-		Queues:      queues,
-		LogLevel:    asynq.InfoLevel,
-		Logger:      m.log,
+		Concurrency:    m.config.Concurrency,
+		Queues:         queues,
+		LogLevel:       asynq.InfoLevel,
+		Logger:         m.log,
+		RetryDelayFunc: retryDelayFunc,
 	})
 
 	return nil
@@ -855,6 +968,13 @@ func isWaitingForBlockError(err error) bool {
 
 // shouldSkipBlockProcessing checks if block processing should be skipped due to queue backpressure.
 func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) {
+	// Check for context cancellation early
+	select {
+	case <-ctx.Done():
+		return true, "context cancelled"
+	default:
+	}
+
 	// Get Redis options for Asynq Inspector
 	redisOpt := m.redisClient.Options()
 	asynqRedisOpt := asynq.RedisClientOpt{
@@ -875,15 +995,21 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 	shouldSkip := false
 
 	for name := range m.processors {
+		// Check for context cancellation between processors
+		select {
+		case <-ctx.Done():
+			return true, "context cancelled"
+		default:
+		}
 		// Check all queues based on mode
 		var queuesToCheck []string
-		if m.config.Mode == c.FORWARDS_MODE {
+		if m.config.Mode == tracker.FORWARDS_MODE {
 			queuesToCheck = []string{
-				c.PrefixedProcessForwardsQueue(name, m.redisPrefix),
+				tracker.PrefixedProcessForwardsQueue(name, m.redisPrefix),
 			}
 		} else {
 			queuesToCheck = []string{
-				c.PrefixedProcessBackwardsQueue(name, m.redisPrefix),
+				tracker.PrefixedProcessBackwardsQueue(name, m.redisPrefix),
 			}
 		}
 
@@ -945,11 +1071,11 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 func (m *Manager) GetQueueName() string {
 	// For now we only have one processor
 	processorName := "transaction_structlog"
-	if m.config.Mode == c.BACKWARDS_MODE {
-		return c.PrefixedProcessBackwardsQueue(processorName, m.redisPrefix)
+	if m.config.Mode == tracker.BACKWARDS_MODE {
+		return tracker.PrefixedProcessBackwardsQueue(processorName, m.redisPrefix)
 	}
 
-	return c.PrefixedProcessForwardsQueue(processorName, m.redisPrefix)
+	return tracker.PrefixedProcessForwardsQueue(processorName, m.redisPrefix)
 }
 
 // QueueBlockManually allows manual queuing of a specific block for processing.
@@ -1024,12 +1150,12 @@ func (m *Manager) enqueueSimpleBlockTask(ctx context.Context, p *transaction_sim
 
 	var err error
 
-	if m.config.Mode == c.BACKWARDS_MODE {
+	if m.config.Mode == tracker.BACKWARDS_MODE {
 		task, err = transaction_simple.NewProcessBackwardsTask(payload)
-		queue = c.PrefixedProcessBackwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
+		queue = tracker.PrefixedProcessBackwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
 	} else {
 		task, err = transaction_simple.NewProcessForwardsTask(payload)
-		queue = c.PrefixedProcessForwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
+		queue = tracker.PrefixedProcessForwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
 	}
 
 	if err != nil {

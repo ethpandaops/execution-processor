@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/ethpandaops/execution-processor/pkg/processor/common"
+	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 )
@@ -55,28 +55,28 @@ type WorkerConfig struct {
 
 func (c *Config) Validate() error {
 	if c.Interval == 0 {
-		c.Interval = 10 * time.Second
+		c.Interval = DefaultInterval
 	}
 
 	if c.Mode == "" {
-		c.Mode = common.FORWARDS_MODE
+		c.Mode = tracker.FORWARDS_MODE
 	}
 
-	if c.Mode != common.FORWARDS_MODE && c.Mode != common.BACKWARDS_MODE {
-		return fmt.Errorf("invalid mode %s, must be '%s' or '%s'", c.Mode, common.FORWARDS_MODE, common.BACKWARDS_MODE)
+	if c.Mode != tracker.FORWARDS_MODE && c.Mode != tracker.BACKWARDS_MODE {
+		return fmt.Errorf("invalid mode %s, must be '%s' or '%s'", c.Mode, tracker.FORWARDS_MODE, tracker.BACKWARDS_MODE)
 	}
 
 	if c.Concurrency == 0 {
-		c.Concurrency = 20
+		c.Concurrency = DefaultConcurrency
 	}
 
 	// Queue control defaults
 	if c.MaxProcessQueueSize == 0 {
-		c.MaxProcessQueueSize = 1000
+		c.MaxProcessQueueSize = DefaultMaxProcessQueue
 	}
 
 	if c.BackpressureHysteresis == 0 {
-		c.BackpressureHysteresis = 0.8
+		c.BackpressureHysteresis = DefaultBackpressureHysteresis
 	}
 
 	// Set leader election defaults
@@ -86,11 +86,11 @@ func (c *Config) Validate() error {
 	}
 
 	if c.LeaderElection.TTL == 0 {
-		c.LeaderElection.TTL = 10 * time.Second
+		c.LeaderElection.TTL = DefaultLeaderTTL
 	}
 
 	if c.LeaderElection.RenewalInterval == 0 {
-		c.LeaderElection.RenewalInterval = 3 * time.Second
+		c.LeaderElection.RenewalInterval = DefaultLeaderRenewalInterval
 	}
 
 	// Validate leader election settings
@@ -99,8 +99,8 @@ func (c *Config) Validate() error {
 	}
 
 	if c.TransactionStructlog.Enabled {
-		if c.TransactionStructlog.URL == "" {
-			return fmt.Errorf("transaction structlog URL is required when enabled")
+		if c.TransactionStructlog.Addr == "" {
+			return fmt.Errorf("transaction structlog addr is required when enabled")
 		}
 
 		if c.TransactionStructlog.Table == "" {
