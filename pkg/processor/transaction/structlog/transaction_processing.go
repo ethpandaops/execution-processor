@@ -25,7 +25,6 @@ type Structlog struct {
 	TransactionFailed      bool           `json:"transaction_failed"`
 	TransactionReturnValue *string        `json:"transaction_return_value"`
 	Index                  uint32         `json:"index"`
-	ProgramCounter         uint32         `json:"program_counter"`
 	Operation              string         `json:"operation"`
 
 	// Gas is the remaining gas before this opcode executes.
@@ -280,7 +279,6 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 			TransactionFailed:      trace.Failed,
 			TransactionReturnValue: trace.ReturnValue,
 			Index:                  uint32(i), //nolint:gosec // index is bounded by structlogs length
-			ProgramCounter:         structLog.PC,
 			Operation:              structLog.Op,
 			Gas:                    structLog.Gas,
 			GasCost:                structLog.GasCost,
@@ -328,7 +326,6 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 					TransactionFailed:      trace.Failed,
 					TransactionReturnValue: trace.ReturnValue,
 					Index:                  uint32(i), //nolint:gosec // Same index as parent CALL
-					ProgramCounter:         0,         // No PC for EOA
 					Operation:              "",        // Empty = synthetic EOA frame
 					Gas:                    0,
 					GasCost:                0,
@@ -634,7 +631,6 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 				TransactionFailed:      trace.Failed,
 				TransactionReturnValue: trace.ReturnValue,
 				Index:                  uint32(i), //nolint:gosec // index is bounded by structlogs length
-				ProgramCounter:         structLog.PC,
 				Operation:              structLog.Op,
 				Gas:                    structLog.Gas,
 				GasCost:                structLog.GasCost,
@@ -684,7 +680,6 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 						TransactionFailed:      trace.Failed,
 						TransactionReturnValue: trace.ReturnValue,
 						Index:                  uint32(i), //nolint:gosec // Same index as parent CALL
-						ProgramCounter:         0,         // No PC for EOA
 						Operation:              "",        // Empty = synthetic EOA frame
 						Gas:                    0,
 						GasCost:                0,
