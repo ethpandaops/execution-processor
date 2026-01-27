@@ -5,9 +5,9 @@ import (
 	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
-	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/call_frame"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
+	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog_agg"
 )
 
 // Config holds the unified processor configuration.
@@ -29,9 +29,9 @@ type Config struct {
 	BackpressureHysteresis float64 `yaml:"backpressureHysteresis"`
 
 	// Processor configurations
-	TransactionStructlog structlog.Config  `yaml:"transactionStructlog"`
-	TransactionSimple    simple.Config     `yaml:"transactionSimple"`
-	TransactionCallFrame call_frame.Config `yaml:"transactionCallFrame"`
+	TransactionStructlog    structlog.Config     `yaml:"transactionStructlog"`
+	TransactionSimple       simple.Config        `yaml:"transactionSimple"`
+	TransactionStructlogAgg structlog_agg.Config `yaml:"transactionStructlogAgg"`
 }
 
 // LeaderElectionConfig holds configuration for leader election.
@@ -114,8 +114,8 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("transaction simple config validation failed: %w", err)
 	}
 
-	if err := c.TransactionCallFrame.Validate(); err != nil {
-		return fmt.Errorf("transaction call_frame config validation failed: %w", err)
+	if err := c.TransactionStructlogAgg.Validate(); err != nil {
+		return fmt.Errorf("transaction structlog_agg config validation failed: %w", err)
 	}
 
 	return nil

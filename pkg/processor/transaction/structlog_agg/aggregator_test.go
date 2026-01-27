@@ -1,4 +1,4 @@
-package call_frame
+package structlog_agg
 
 import (
 	"testing"
@@ -8,6 +8,41 @@ import (
 
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
+
+// getSummaryRow returns the summary row (Operation == "") for a given frame ID.
+func getSummaryRow(rows []CallFrameRow, frameID uint32) *CallFrameRow {
+	for i := range rows {
+		if rows[i].Operation == "" && rows[i].CallFrameID == frameID {
+			return &rows[i]
+		}
+	}
+
+	return nil
+}
+
+// getOpcodeRow returns the per-opcode row for a given frame ID and operation.
+func getOpcodeRow(rows []CallFrameRow, frameID uint32, operation string) *CallFrameRow {
+	for i := range rows {
+		if rows[i].Operation == operation && rows[i].CallFrameID == frameID {
+			return &rows[i]
+		}
+	}
+
+	return nil
+}
+
+// countSummaryRows counts the number of summary rows (Operation == "").
+func countSummaryRows(rows []CallFrameRow) int {
+	count := 0
+
+	for _, row := range rows {
+		if row.Operation == "" {
+			count++
+		}
+	}
+
+	return count
+}
 
 func TestFrameAggregator_SingleFrame(t *testing.T) {
 	aggregator := NewFrameAggregator()
@@ -44,7 +79,8 @@ func TestFrameAggregator_SingleFrame(t *testing.T) {
 			}
 		}
 
-		aggregator.ProcessStructlog(execSl, i, 0, framePath, sl.gasUsed, nil, prevSl)
+		// For simple opcodes, gasSelf == gasUsed
+		aggregator.ProcessStructlog(execSl, i, 0, framePath, sl.gasUsed, sl.gasUsed, nil, prevSl)
 	}
 
 	trace := &execution.TraceTransaction{
@@ -54,13 +90,28 @@ func TestFrameAggregator_SingleFrame(t *testing.T) {
 
 	frames := aggregator.Finalize(trace, 100)
 
-	require.Len(t, frames, 1)
-	assert.Equal(t, uint32(0), frames[0].CallFrameID)
-	assert.Nil(t, frames[0].ParentCallFrameID)
-	assert.Equal(t, uint32(0), frames[0].Depth)
-	assert.Equal(t, uint64(4), frames[0].OpcodeCount)
-	assert.Equal(t, uint64(0), frames[0].ErrorCount)
-	assert.Equal(t, "", frames[0].CallType)
+	// Should have 1 summary row + 3 per-opcode rows (PUSH1, ADD, STOP)
+	assert.Equal(t, 1, countSummaryRows(frames))
+
+	// Check summary row
+	summaryRow := getSummaryRow(frames, 0)
+	require.NotNil(t, summaryRow)
+	assert.Equal(t, uint32(0), summaryRow.CallFrameID)
+	assert.Nil(t, summaryRow.ParentCallFrameID)
+	assert.Equal(t, uint32(0), summaryRow.Depth)
+	assert.Equal(t, uint64(4), summaryRow.OpcodeCount)
+	assert.Equal(t, uint64(0), summaryRow.ErrorCount)
+	assert.Equal(t, "", summaryRow.CallType)
+	assert.Equal(t, "", summaryRow.Operation)
+
+	// Check per-opcode rows
+	push1Row := getOpcodeRow(frames, 0, "PUSH1")
+	require.NotNil(t, push1Row)
+	assert.Equal(t, uint64(2), push1Row.OpcodeCount) // 2x PUSH1
+
+	addRow := getOpcodeRow(frames, 0, "ADD")
+	require.NotNil(t, addRow)
+	assert.Equal(t, uint64(1), addRow.OpcodeCount)
 }
 
 func TestFrameAggregator_NestedCalls(t *testing.T) {
@@ -74,13 +125,14 @@ func TestFrameAggregator_NestedCalls(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
 
+	// CALL opcode: gasUsed includes child gas, gasSelf is just the CALL overhead
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 5000, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 5000, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
 
 	// Frame 1 (child) - depth 2
 	callAddr := "0x1234567890123456789012345678901234567890"
@@ -89,20 +141,20 @@ func TestFrameAggregator_NestedCalls(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 2,
 		Gas:   5000,
-	}, 2, 1, []uint32{0, 1}, 3, &callAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 2, 1, []uint32{0, 1}, 3, 3, &callAddr, &execution.StructLog{Op: "CALL", Depth: 1})
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "RETURN",
 		Depth: 2,
 		Gas:   4997,
-	}, 3, 1, []uint32{0, 1}, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 2})
+	}, 3, 1, []uint32{0, 1}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 2})
 
 	// Back to root frame
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   4997,
-	}, 4, 0, []uint32{0}, 0, nil, &execution.StructLog{Op: "RETURN", Depth: 2})
+	}, 4, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "RETURN", Depth: 2})
 
 	trace := &execution.TraceTransaction{
 		Gas:    10000,
@@ -111,19 +163,12 @@ func TestFrameAggregator_NestedCalls(t *testing.T) {
 
 	frames := aggregator.Finalize(trace, 500)
 
-	require.Len(t, frames, 2)
+	// Should have 2 summary rows (root + child) + per-opcode rows
+	assert.Equal(t, 2, countSummaryRows(frames))
 
-	// Find root and child frames
-	var rootFrame, childFrame *CallFrameRow
-
-	for i := range frames {
-		switch frames[i].CallFrameID {
-		case 0:
-			rootFrame = &frames[i]
-		case 1:
-			childFrame = &frames[i]
-		}
-	}
+	// Get summary rows for root and child frames
+	rootFrame := getSummaryRow(frames, 0)
+	childFrame := getSummaryRow(frames, 1)
 
 	require.NotNil(t, rootFrame, "root frame should exist")
 	require.NotNil(t, childFrame, "child frame should exist")
@@ -153,14 +198,14 @@ func TestFrameAggregator_ErrorCounting(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   1000,
-	}, 0, 0, []uint32{0}, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "REVERT",
 		Depth: 1,
 		Gas:   997,
 		Error: &errMsg,
-	}, 1, 0, []uint32{0}, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
 
 	trace := &execution.TraceTransaction{
 		Gas:    1000,
@@ -169,8 +214,16 @@ func TestFrameAggregator_ErrorCounting(t *testing.T) {
 
 	frames := aggregator.Finalize(trace, 100)
 
-	require.Len(t, frames, 1)
-	assert.Equal(t, uint64(1), frames[0].ErrorCount)
+	assert.Equal(t, 1, countSummaryRows(frames))
+
+	summaryRow := getSummaryRow(frames, 0)
+	require.NotNil(t, summaryRow)
+	assert.Equal(t, uint64(1), summaryRow.ErrorCount)
+
+	// Check that REVERT opcode row also has error count
+	revertRow := getOpcodeRow(frames, 0, "REVERT")
+	require.NotNil(t, revertRow)
+	assert.Equal(t, uint64(1), revertRow.ErrorCount)
 }
 
 func TestComputeIntrinsicGas_Uncapped(t *testing.T) {
@@ -260,13 +313,13 @@ func TestFrameAggregator_EOAFrame(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 100, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
 
 	// Synthetic EOA frame (operation = "", depth = 2)
 	eoaAddr := "0xEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAE"
@@ -275,14 +328,14 @@ func TestFrameAggregator_EOAFrame(t *testing.T) {
 		Op:    "", // Empty = synthetic EOA row
 		Depth: 2,
 		Gas:   0,
-	}, 1, 1, []uint32{0, 1}, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, 0, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1})
 
 	// Back to root frame
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   9897,
-	}, 2, 0, []uint32{0}, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
 
 	trace := &execution.TraceTransaction{
 		Gas:    10000,
@@ -291,19 +344,12 @@ func TestFrameAggregator_EOAFrame(t *testing.T) {
 
 	frames := aggregator.Finalize(trace, 500)
 
-	require.Len(t, frames, 2)
+	// Should have 2 summary rows (root + EOA)
+	assert.Equal(t, 2, countSummaryRows(frames))
 
-	// Find root and EOA frames
-	var rootFrame, eoaFrame *CallFrameRow
-
-	for i := range frames {
-		switch frames[i].CallFrameID {
-		case 0:
-			rootFrame = &frames[i]
-		case 1:
-			eoaFrame = &frames[i]
-		}
-	}
+	// Get summary rows for root and EOA frames
+	rootFrame := getSummaryRow(frames, 0)
+	eoaFrame := getSummaryRow(frames, 1)
 
 	require.NotNil(t, rootFrame, "root frame should exist")
 	require.NotNil(t, eoaFrame, "EOA frame should exist")
@@ -326,7 +372,7 @@ func TestFrameAggregator_SetRootTargetAddress(t *testing.T) {
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   1000,
-	}, 0, 0, []uint32{0}, 0, nil, nil)
+	}, 0, 0, []uint32{0}, 0, 0, nil, nil)
 
 	// Set root target address (simulating tx.To())
 	rootAddr := "0x1234567890123456789012345678901234567890"
@@ -339,9 +385,12 @@ func TestFrameAggregator_SetRootTargetAddress(t *testing.T) {
 
 	frames := aggregator.Finalize(trace, 100)
 
-	require.Len(t, frames, 1)
-	require.NotNil(t, frames[0].TargetAddress)
-	assert.Equal(t, rootAddr, *frames[0].TargetAddress)
+	assert.Equal(t, 1, countSummaryRows(frames))
+
+	summaryRow := getSummaryRow(frames, 0)
+	require.NotNil(t, summaryRow)
+	require.NotNil(t, summaryRow.TargetAddress)
+	assert.Equal(t, rootAddr, *summaryRow.TargetAddress)
 }
 
 func TestMapOpcodeToCallType(t *testing.T) {

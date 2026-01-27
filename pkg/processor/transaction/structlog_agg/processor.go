@@ -1,4 +1,4 @@
-package call_frame
+package structlog_agg
 
 import (
 	"context"
@@ -197,13 +197,17 @@ func (p *Processor) insertCallFrames(ctx context.Context, frames []CallFrameRow,
 			txIndex,
 			frame.CallFrameID,
 			frame.ParentCallFrameID,
+			frame.CallFramePath,
 			frame.Depth,
 			frame.TargetAddress,
 			frame.CallType,
+			frame.Operation,
 			frame.OpcodeCount,
 			frame.ErrorCount,
 			frame.Gas,
 			frame.GasCumulative,
+			frame.MinDepth,
+			frame.MaxDepth,
 			frame.GasRefund,
 			frame.IntrinsicGas,
 			p.network.Name,

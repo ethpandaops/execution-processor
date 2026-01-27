@@ -1,23 +1,40 @@
-package call_frame
+package structlog_agg
 
 import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
-// CallFrameRow represents aggregated data for a single call frame.
+// CallFrameRow represents aggregated data for a single call frame or per-opcode aggregation.
 // This is the output format that gets inserted into ClickHouse.
+// Two types of rows:
+//   - Summary row: Operation="" contains frame-level metadata (call_type, target_address, etc.)
+//   - Per-opcode row: Operation="SSTORE" etc. contains gas/count for that specific opcode
 type CallFrameRow struct {
 	CallFrameID       uint32
-	ParentCallFrameID *uint32 // nil for root frame
+	ParentCallFrameID *uint32  // nil for root frame
+	CallFramePath     []uint32 // Path from root to this frame
 	Depth             uint32
 	TargetAddress     *string
 	CallType          string // CALL/DELEGATECALL/STATICCALL/CALLCODE/CREATE/CREATE2 (empty for root)
+	Operation         string // Empty for summary row, opcode name for per-opcode rows
 	OpcodeCount       uint64
 	ErrorCount        uint64
-	Gas               uint64  // Self gas (excludes children)
-	GasCumulative     uint64  // Self + all descendants
+	Gas               uint64  // SUM(gas_self) - excludes child frame gas
+	GasCumulative     uint64  // For summary: frame gas_cumulative; for per-opcode: SUM(gas_used)
+	MinDepth          uint32  // Per-opcode: MIN(depth); summary: same as Depth
+	MaxDepth          uint32  // Per-opcode: MAX(depth); summary: same as Depth
 	GasRefund         *uint64 // Root frame only (max refund from trace)
 	IntrinsicGas      *uint64 // Root frame only (computed)
+}
+
+// OpcodeStats tracks gas and count for a specific opcode within a frame.
+type OpcodeStats struct {
+	Count         uint64
+	Gas           uint64 // SUM(gas_self) - excludes child frame gas
+	GasCumulative uint64 // SUM(gas_used) - includes child frame gas for CALL/CREATE
+	ErrorCount    uint64
+	MinDepth      uint32
+	MaxDepth      uint32
 }
 
 // FrameAccumulator tracks data for a single frame during processing.
@@ -34,6 +51,9 @@ type FrameAccumulator struct {
 	TargetAddress    *string
 	CallType         string
 	Depth            uint32
+
+	// Per-opcode tracking
+	OpcodeStats map[string]*OpcodeStats // opcode -> stats
 }
 
 // FrameAggregator aggregates structlog data into call frame rows.
@@ -56,7 +76,8 @@ func NewFrameAggregator() *FrameAggregator {
 //   - index: Index of this structlog in the trace
 //   - frameID: The call frame ID for this structlog
 //   - framePath: The path from root to current frame
-//   - gasUsed: Pre-computed gas used for this opcode
+//   - gasUsed: Pre-computed gas used for this opcode (includes child frame gas for CALL/CREATE)
+//   - gasSelf: Pre-computed gas used excluding child frame gas
 //   - callToAddr: Target address for CALL/CREATE opcodes (nil otherwise)
 //   - prevStructlog: Previous structlog (for detecting frame entry via CALL/CREATE)
 func (fa *FrameAggregator) ProcessStructlog(
@@ -65,6 +86,7 @@ func (fa *FrameAggregator) ProcessStructlog(
 	frameID uint32,
 	framePath []uint32,
 	gasUsed uint64,
+	gasSelf uint64,
 	callToAddr *string,
 	prevStructlog *execution.StructLog,
 ) {
@@ -77,6 +99,7 @@ func (fa *FrameAggregator) ProcessStructlog(
 			FirstOpcodeIndex: uint32(index), //nolint:gosec // index is bounded
 			FirstGas:         sl.Gas,
 			Depth:            uint32(sl.Depth), //nolint:gosec // depth is bounded by EVM
+			OpcodeStats:      make(map[string]*OpcodeStats),
 		}
 
 		// Determine call type and target address from the initiating opcode (previous structlog)
@@ -102,12 +125,42 @@ func (fa *FrameAggregator) ProcessStructlog(
 	// Only count real opcodes, not synthetic EOA rows (operation = '')
 	if sl.Op != "" {
 		acc.OpcodeCount++
+
+		depth := uint32(sl.Depth) //nolint:gosec // depth is bounded by EVM
+
+		// Track per-opcode stats
+		stats, ok := acc.OpcodeStats[sl.Op]
+		if !ok {
+			stats = &OpcodeStats{
+				MinDepth: depth,
+				MaxDepth: depth,
+			}
+			acc.OpcodeStats[sl.Op] = stats
+		}
+
+		stats.Count++
+		stats.Gas += gasSelf           // SUM(gas_self) - excludes child frame gas
+		stats.GasCumulative += gasUsed // SUM(gas_used) - includes child frame gas
+
+		// Track min/max depth
+		if depth < stats.MinDepth {
+			stats.MinDepth = depth
+		}
+
+		if depth > stats.MaxDepth {
+			stats.MaxDepth = depth
+		}
+
+		// Track errors per opcode
+		if sl.Error != nil && *sl.Error != "" {
+			stats.ErrorCount++
+		}
 	}
 
 	acc.LastGas = sl.Gas
 	acc.LastGasUsed = gasUsed
 
-	// Track errors
+	// Track errors (for frame total)
 	if sl.Error != nil && *sl.Error != "" {
 		acc.ErrorCount++
 	}
@@ -126,12 +179,16 @@ func (fa *FrameAggregator) ProcessStructlog(
 
 // Finalize computes final call frame rows from the accumulated data.
 // Returns the call frame rows ready for insertion.
+// Emits two types of rows per frame:
+//   - Summary row: Operation="" with frame-level metadata and totals
+//   - Per-opcode rows: Operation="SSTORE" etc. with gas/count for that opcode
 func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGas uint64) []CallFrameRow {
 	if len(fa.frames) == 0 {
 		return nil
 	}
 
-	rows := make([]CallFrameRow, 0, len(fa.frames))
+	// Estimate capacity: 1 summary row per frame + average ~10 unique opcodes per frame
+	rows := make([]CallFrameRow, 0, len(fa.frames)*11)
 
 	// First pass: compute gas_cumulative for each frame
 	gasCumulative := make(map[uint32]uint64, len(fa.frames))
@@ -147,7 +204,7 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 		}
 	}
 
-	// Second pass: compute gas (self) for each frame by subtracting children's gas_cumulative
+	// Second pass: compute gas (self) for each frame and emit rows
 	for _, frameID := range fa.frameList {
 		acc := fa.frames[frameID]
 
@@ -181,22 +238,31 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 			parentFrameID = &parent
 		}
 
-		row := CallFrameRow{
+		depth := acc.Depth - 1 // Convert from EVM depth (1-based) to 0-based
+		if frameID == 0 {
+			depth = 0 // Ensure root is depth 0
+		}
+
+		// Emit summary row (Operation="")
+		summaryRow := CallFrameRow{
 			CallFrameID:       frameID,
 			ParentCallFrameID: parentFrameID,
-			Depth:             acc.Depth - 1, // Convert from EVM depth (1-based) to 0-based
+			CallFramePath:     acc.CallFramePath,
+			Depth:             depth,
 			TargetAddress:     acc.TargetAddress,
 			CallType:          acc.CallType,
+			Operation:         "", // Empty for summary row
 			OpcodeCount:       acc.OpcodeCount,
 			ErrorCount:        acc.ErrorCount,
 			Gas:               gasSelf,
 			GasCumulative:     gasCumulative[frameID],
+			MinDepth:          depth, // For summary row, min/max depth = frame depth
+			MaxDepth:          depth,
 		}
 
 		// Root frame gets gas refund and intrinsic gas
 		if frameID == 0 {
-			row.GasRefund = &acc.MaxRefund
-			row.Depth = 0 // Ensure root is depth 0
+			summaryRow.GasRefund = &acc.MaxRefund
 
 			// Compute intrinsic gas for root frame
 			// Formula from int_transaction_call_frame.sql
@@ -204,12 +270,34 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 			if acc.ErrorCount == 0 {
 				intrinsicGas := computeIntrinsicGas(gasCumulative[0], acc.MaxRefund, receiptGas)
 				if intrinsicGas > 0 {
-					row.IntrinsicGas = &intrinsicGas
+					summaryRow.IntrinsicGas = &intrinsicGas
 				}
 			}
 		}
 
-		rows = append(rows, row)
+		rows = append(rows, summaryRow)
+
+		// Emit per-opcode rows
+		for opcode, stats := range acc.OpcodeStats {
+			opcodeRow := CallFrameRow{
+				CallFrameID:       frameID,
+				ParentCallFrameID: parentFrameID,
+				CallFramePath:     acc.CallFramePath,
+				Depth:             depth,
+				TargetAddress:     acc.TargetAddress,
+				CallType:          acc.CallType,
+				Operation:         opcode,
+				OpcodeCount:       stats.Count,
+				ErrorCount:        stats.ErrorCount,
+				Gas:               stats.Gas,
+				GasCumulative:     stats.GasCumulative, // SUM(gas_used) for per-opcode rows
+				MinDepth:          stats.MinDepth,
+				MaxDepth:          stats.MaxDepth,
+				GasRefund:         nil,
+				IntrinsicGas:      nil,
+			}
+			rows = append(rows, opcodeRow)
+		}
 	}
 
 	return rows

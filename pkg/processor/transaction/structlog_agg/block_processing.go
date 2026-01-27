@@ -1,4 +1,4 @@
-package call_frame
+package structlog_agg
 
 import (
 	"context"

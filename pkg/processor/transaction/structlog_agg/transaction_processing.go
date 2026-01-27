@@ -1,4 +1,4 @@
-package call_frame
+package structlog_agg
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	pcommon "github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
+	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 )
 
 // Opcode constants for call and create operations.
@@ -43,11 +44,15 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		// We still emit a root frame for consistency, matching SQL simple_transfer_frames logic
 		rootFrame := CallFrameRow{
 			CallFrameID:   0,
+			CallFramePath: []uint32{0},
 			Depth:         0,
 			CallType:      "", // Root frame has no initiating CALL opcode
+			Operation:     "", // Summary row
 			OpcodeCount:   0,
 			Gas:           0,
 			GasCumulative: 0,
+			MinDepth:      0,
+			MaxDepth:      0,
 		}
 
 		// Set target_address from transaction's to_address
@@ -93,6 +98,9 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		}
 	}
 
+	// Compute gasSelf: gas excluding child frame gas (for CALL/CREATE opcodes)
+	gasSelf := structlog.ComputeGasSelf(trace.Structlogs, gasUsed)
+
 	// Check if CREATE/CREATE2 addresses are pre-computed by the tracer
 	precomputedCreateAddresses := hasPrecomputedCreateAddresses(trace.Structlogs)
 
@@ -120,7 +128,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		callToAddr := p.extractCallAddressWithCreate(sl, i, createAddresses)
 
 		// Process this structlog into the aggregator
-		aggregator.ProcessStructlog(sl, i, frameID, framePath, gasUsed[i], callToAddr, prevStructlog)
+		aggregator.ProcessStructlog(sl, i, frameID, framePath, gasUsed[i], gasSelf[i], callToAddr, prevStructlog)
 
 		// Check for EOA call: CALL-type opcode where depth stays the same (immediate return)
 		// and target is not a precompile
@@ -133,7 +141,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 					aggregator.ProcessStructlog(&execution.StructLog{
 						Op:    "",
 						Depth: sl.Depth + 1,
-					}, i, eoaFrameID, eoaFramePath, 0, callToAddr, sl)
+					}, i, eoaFrameID, eoaFramePath, 0, 0, callToAddr, sl)
 				}
 			}
 		}

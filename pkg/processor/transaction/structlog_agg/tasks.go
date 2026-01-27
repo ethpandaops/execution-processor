@@ -1,4 +1,4 @@
-package call_frame
+package structlog_agg
 
 import (
 	"encoding/json"
@@ -10,9 +10,9 @@ import (
 )
 
 const (
-	ProcessorName            = "transaction_call_frame"
-	ProcessForwardsTaskType  = "transaction_call_frame_process_forwards"
-	ProcessBackwardsTaskType = "transaction_call_frame_process_backwards"
+	ProcessorName            = "transaction_structlog_agg"
+	ProcessForwardsTaskType  = "transaction_structlog_agg_process_forwards"
+	ProcessBackwardsTaskType = "transaction_structlog_agg_process_backwards"
 )
 
 // ProcessPayload represents the payload for processing a transaction.
