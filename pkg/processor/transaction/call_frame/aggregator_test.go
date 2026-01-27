@@ -251,6 +251,99 @@ func TestIsParentOf(t *testing.T) {
 	}
 }
 
+func TestFrameAggregator_EOAFrame(t *testing.T) {
+	// Test that EOA frames (synthetic rows with operation="") have opcode_count=0
+	aggregator := NewFrameAggregator()
+
+	// Root frame with CALL to EOA
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "PUSH1",
+		Depth: 1,
+		Gas:   10000,
+	}, 0, 0, []uint32{0}, 3, nil, nil)
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "CALL",
+		Depth: 1,
+		Gas:   9997,
+	}, 1, 0, []uint32{0}, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+
+	// Synthetic EOA frame (operation = "", depth = 2)
+	eoaAddr := "0xEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAE"
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "", // Empty = synthetic EOA row
+		Depth: 2,
+		Gas:   0,
+	}, 1, 1, []uint32{0, 1}, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+
+	// Back to root frame
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "STOP",
+		Depth: 1,
+		Gas:   9897,
+	}, 2, 0, []uint32{0}, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+
+	trace := &execution.TraceTransaction{
+		Gas:    10000,
+		Failed: false,
+	}
+
+	frames := aggregator.Finalize(trace, 500)
+
+	require.Len(t, frames, 2)
+
+	// Find root and EOA frames
+	var rootFrame, eoaFrame *CallFrameRow
+
+	for i := range frames {
+		switch frames[i].CallFrameID {
+		case 0:
+			rootFrame = &frames[i]
+		case 1:
+			eoaFrame = &frames[i]
+		}
+	}
+
+	require.NotNil(t, rootFrame, "root frame should exist")
+	require.NotNil(t, eoaFrame, "EOA frame should exist")
+
+	// Root frame: 3 real opcodes (PUSH1, CALL, STOP)
+	assert.Equal(t, uint64(3), rootFrame.OpcodeCount)
+
+	// EOA frame: 0 opcodes (only synthetic row with op="")
+	assert.Equal(t, uint64(0), eoaFrame.OpcodeCount)
+	assert.Equal(t, "CALL", eoaFrame.CallType)
+	require.NotNil(t, eoaFrame.TargetAddress)
+	assert.Equal(t, eoaAddr, *eoaFrame.TargetAddress)
+}
+
+func TestFrameAggregator_SetRootTargetAddress(t *testing.T) {
+	aggregator := NewFrameAggregator()
+
+	// Process a simple root frame
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "STOP",
+		Depth: 1,
+		Gas:   1000,
+	}, 0, 0, []uint32{0}, 0, nil, nil)
+
+	// Set root target address (simulating tx.To())
+	rootAddr := "0x1234567890123456789012345678901234567890"
+	aggregator.SetRootTargetAddress(&rootAddr)
+
+	trace := &execution.TraceTransaction{
+		Gas:    1000,
+		Failed: false,
+	}
+
+	frames := aggregator.Finalize(trace, 100)
+
+	require.Len(t, frames, 1)
+	require.NotNil(t, frames[0].TargetAddress)
+	assert.Equal(t, rootAddr, *frames[0].TargetAddress)
+}
+
 func TestMapOpcodeToCallType(t *testing.T) {
 	tests := []struct {
 		opcode   string

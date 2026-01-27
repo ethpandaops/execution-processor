@@ -40,16 +40,33 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 
 	if len(trace.Structlogs) == 0 {
 		// No structlogs means no EVM execution (e.g., simple ETH transfer)
-		// We still emit a root frame for consistency
+		// We still emit a root frame for consistency, matching SQL simple_transfer_frames logic
 		rootFrame := CallFrameRow{
 			CallFrameID:   0,
 			Depth:         0,
 			CallType:      "", // Root frame has no initiating CALL opcode
 			OpcodeCount:   0,
-			ErrorCount:    0,
 			Gas:           0,
 			GasCumulative: 0,
 		}
+
+		// Set target_address from transaction's to_address
+		if tx.To() != nil {
+			addr := tx.To().Hex()
+			rootFrame.TargetAddress = &addr
+		}
+
+		// Set error_count: 1 if transaction failed, 0 otherwise
+		if trace.Failed {
+			rootFrame.ErrorCount = 1
+		} else {
+			rootFrame.ErrorCount = 0
+			// For simple transfers, all gas is intrinsic (only if success)
+			intrinsicGas := trace.Gas
+			rootFrame.IntrinsicGas = &intrinsicGas
+		}
+
+		// gas_refund is NULL for simple transfers (no SSTORE operations)
 
 		if err := p.insertCallFrames(ctx, []CallFrameRow{rootFrame}, block.Number().Uint64(), tx.Hash().String(), uint32(index), time.Now()); err != nil { //nolint:gosec // index is bounded by block.Transactions() length
 			pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "call_frame", "failed").Inc()
@@ -122,6 +139,13 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		}
 
 		prevStructlog = sl
+	}
+
+	// Set root frame's target address from transaction's to_address
+	// (root frame has no initiating CALL, so target comes from tx.To())
+	if tx.To() != nil {
+		addr := tx.To().Hex()
+		aggregator.SetRootTargetAddress(&addr)
 	}
 
 	// Get receipt gas for intrinsic gas calculation

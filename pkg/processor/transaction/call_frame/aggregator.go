@@ -99,7 +99,11 @@ func (fa *FrameAggregator) ProcessStructlog(
 	}
 
 	// Update accumulator with this opcode's data
-	acc.OpcodeCount++
+	// Only count real opcodes, not synthetic EOA rows (operation = '')
+	if sl.Op != "" {
+		acc.OpcodeCount++
+	}
+
 	acc.LastGas = sl.Gas
 	acc.LastGasUsed = gasUsed
 
@@ -196,7 +200,8 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 
 			// Compute intrinsic gas for root frame
 			// Formula from int_transaction_call_frame.sql
-			if trace != nil && !trace.Failed {
+			// Only computed when error_count = 0 (successful transaction)
+			if acc.ErrorCount == 0 {
 				intrinsicGas := computeIntrinsicGas(gasCumulative[0], acc.MaxRefund, receiptGas)
 				if intrinsicGas > 0 {
 					row.IntrinsicGas = &intrinsicGas
@@ -281,6 +286,15 @@ func computeIntrinsicGas(gasCumulative, gasRefund, receiptGas uint64) uint64 {
 	}
 
 	return intrinsic
+}
+
+// SetRootTargetAddress sets the target address for the root frame (frame ID 0).
+// This should be called after processing all structlogs, as the root frame's
+// target address comes from the transaction's to_address, not from an initiating CALL.
+func (fa *FrameAggregator) SetRootTargetAddress(addr *string) {
+	if acc, exists := fa.frames[0]; exists {
+		acc.TargetAddress = addr
+	}
 }
 
 // Reset clears the aggregator for reuse.
