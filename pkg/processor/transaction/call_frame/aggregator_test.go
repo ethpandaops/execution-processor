@@ -60,7 +60,7 @@ func TestFrameAggregator_SingleFrame(t *testing.T) {
 	assert.Equal(t, uint32(0), frames[0].Depth)
 	assert.Equal(t, uint64(4), frames[0].OpcodeCount)
 	assert.Equal(t, uint64(0), frames[0].ErrorCount)
-	assert.Equal(t, "ROOT", frames[0].CallType)
+	assert.Equal(t, "", frames[0].CallType)
 }
 
 func TestFrameAggregator_NestedCalls(t *testing.T) {
@@ -133,7 +133,7 @@ func TestFrameAggregator_NestedCalls(t *testing.T) {
 	assert.Nil(t, rootFrame.ParentCallFrameID)
 	assert.Equal(t, uint32(0), rootFrame.Depth)
 	assert.Equal(t, uint64(3), rootFrame.OpcodeCount) // PUSH1, CALL, STOP
-	assert.Equal(t, "ROOT", rootFrame.CallType)
+	assert.Equal(t, "", rootFrame.CallType)
 
 	// Verify child frame
 	assert.Equal(t, uint32(1), childFrame.CallFrameID)

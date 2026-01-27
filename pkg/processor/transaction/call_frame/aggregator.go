@@ -11,7 +11,7 @@ type CallFrameRow struct {
 	ParentCallFrameID *uint32 // nil for root frame
 	Depth             uint32
 	TargetAddress     *string
-	CallType          string // CALL/DELEGATECALL/STATICCALL/CALLCODE/CREATE/CREATE2/ROOT
+	CallType          string // CALL/DELEGATECALL/STATICCALL/CALLCODE/CREATE/CREATE2 (empty for root)
 	OpcodeCount       uint64
 	ErrorCount        uint64
 	Gas               uint64  // Self gas (excludes children)
@@ -81,8 +81,8 @@ func (fa *FrameAggregator) ProcessStructlog(
 
 		// Determine call type and target address from the initiating opcode (previous structlog)
 		if frameID == 0 {
-			// Root frame - special case
-			acc.CallType = "ROOT"
+			// Root frame - no initiating CALL opcode, use empty string
+			acc.CallType = ""
 		} else if prevStructlog != nil {
 			// Frame was entered via the previous opcode
 			acc.CallType = mapOpcodeToCallType(prevStructlog.Op)
@@ -114,9 +114,9 @@ func (fa *FrameAggregator) ProcessStructlog(
 	}
 
 	// If this is an empty operation (synthetic EOA frame), capture the target address
+	// Note: CallType is already set from the initiating CALL opcode (prevStructlog)
 	if sl.Op == "" && callToAddr != nil {
 		acc.TargetAddress = callToAddr
-		acc.CallType = "EOA" // Synthetic EOA frame
 	}
 }
 

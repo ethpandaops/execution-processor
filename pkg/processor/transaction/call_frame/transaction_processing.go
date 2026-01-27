@@ -44,7 +44,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		rootFrame := CallFrameRow{
 			CallFrameID:   0,
 			Depth:         0,
-			CallType:      "ROOT",
+			CallType:      "", // Root frame has no initiating CALL opcode
 			OpcodeCount:   0,
 			ErrorCount:    0,
 			Gas:           0,
