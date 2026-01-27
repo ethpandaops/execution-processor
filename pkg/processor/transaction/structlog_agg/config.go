@@ -6,7 +6,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
 )
 
-// Config holds configuration for transaction call_frame processor.
+// Config holds configuration for transaction structlog_agg processor.
 type Config struct {
 	clickhouse.Config `yaml:",inline"`
 	Enabled           bool   `yaml:"enabled"`
@@ -32,7 +32,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.Table == "" {
-		return fmt.Errorf("transaction call_frame table is required when enabled")
+		return fmt.Errorf("transaction structlog_agg table is required when enabled")
 	}
 
 	return nil

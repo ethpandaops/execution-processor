@@ -31,7 +31,7 @@ type Dependencies struct {
 	RedisPrefix string
 }
 
-// Processor handles transaction call_frame processing.
+// Processor handles transaction structlog_agg processing.
 type Processor struct {
 	log            logrus.FieldLogger
 	pool           *ethereum.Pool
@@ -48,7 +48,7 @@ type Processor struct {
 	*tracker.Limiter
 }
 
-// New creates a new transaction call_frame processor.
+// New creates a new transaction structlog_agg processor.
 func New(deps *Dependencies, config *Config) (*Processor, error) {
 	// Create a copy of the embedded config and set processor-specific values
 	clickhouseConfig := config.Config
@@ -57,7 +57,7 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 
 	clickhouseClient, err := clickhouse.New(&clickhouseConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create clickhouse client for transaction_call_frame: %w", err)
+		return nil, fmt.Errorf("failed to create clickhouse client for transaction_structlog_agg: %w", err)
 	}
 
 	// Set default for MaxPendingBlockRange
@@ -112,14 +112,14 @@ func (p *Processor) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
 	}
 
-	p.log.Info("Transaction call_frame processor ready")
+	p.log.Info("Transaction structlog_agg processor ready")
 
 	return nil
 }
 
 // Stop stops the processor.
 func (p *Processor) Stop(ctx context.Context) error {
-	p.log.Info("Stopping transaction call_frame processor")
+	p.log.Info("Stopping transaction structlog_agg processor")
 
 	// Stop the ClickHouse client
 	return p.clickhouse.Stop()

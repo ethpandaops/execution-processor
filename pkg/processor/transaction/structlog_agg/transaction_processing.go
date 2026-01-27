@@ -30,7 +30,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 
 	defer func() {
 		duration := time.Since(start)
-		pcommon.TransactionProcessingDuration.WithLabelValues(p.network.Name, "call_frame").Observe(duration.Seconds())
+		pcommon.TransactionProcessingDuration.WithLabelValues(p.network.Name, "structlog_agg").Observe(duration.Seconds())
 	}()
 
 	// Get trace from execution node
@@ -74,12 +74,12 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		// gas_refund is NULL for simple transfers (no SSTORE operations)
 
 		if err := p.insertCallFrames(ctx, []CallFrameRow{rootFrame}, block.Number().Uint64(), tx.Hash().String(), uint32(index), time.Now()); err != nil { //nolint:gosec // index is bounded by block.Transactions() length
-			pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "call_frame", "failed").Inc()
+			pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "failed").Inc()
 
 			return 0, fmt.Errorf("failed to insert call frames: %w", err)
 		}
 
-		pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "call_frame", "success").Inc()
+		pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "success").Inc()
 
 		return 1, nil
 	}
@@ -169,13 +169,13 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 
 	// Insert call frames to ClickHouse
 	if err := p.insertCallFrames(ctx, frames, block.Number().Uint64(), tx.Hash().String(), uint32(index), time.Now()); err != nil { //nolint:gosec // index is bounded by block.Transactions() length
-		pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "call_frame", "failed").Inc()
+		pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "failed").Inc()
 
 		return 0, fmt.Errorf("failed to insert call frames: %w", err)
 	}
 
 	// Record success metrics
-	pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "call_frame", "success").Inc()
+	pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "success").Inc()
 	pcommon.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "success", "").Add(float64(len(frames)))
 
 	// Log progress for transactions with many frames
