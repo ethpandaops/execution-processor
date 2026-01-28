@@ -14,35 +14,56 @@ import (
 
 type Pool struct {
 	log            logrus.FieldLogger
-	executionNodes []*execution.Node
+	executionNodes []execution.Node
 	metrics        *Metrics
 	config         *Config
 
 	mu sync.RWMutex
 
-	healthyExecutionNodes map[*execution.Node]bool
+	healthyExecutionNodes map[execution.Node]bool
 
 	// Goroutine management
 	wg     sync.WaitGroup
 	cancel context.CancelFunc
 }
 
-func NewPool(log logrus.FieldLogger, namespace string, config *Config) *Pool {
+// NewPoolWithNodes creates a pool with pre-created Node implementations.
+// Use this when embedding execution-processor as a library where the host
+// provides custom Node implementations (e.g., EmbeddedNode with DataSource).
+//
+// Parameters:
+//   - log: Logger for pool operations
+//   - namespace: Metrics namespace prefix (will have "_ethereum" appended)
+//   - nodes: Pre-created Node implementations
+//   - config: Optional configuration (nil creates empty config with defaults)
+//
+// Example:
+//
+//	// Create embedded node with custom data source
+//	dataSource := &MyDataSource{client: myClient}
+//	node := execution.NewEmbeddedNode(log, "my-node", dataSource)
+//
+//	// Create pool with the embedded node
+//	pool := ethereum.NewPoolWithNodes(log, "processor", []execution.Node{node}, nil)
+//	pool.Start(ctx)
+//
+//	// Mark ready when data source is ready
+//	node.MarkReady(ctx)
+func NewPoolWithNodes(log logrus.FieldLogger, namespace string, nodes []execution.Node, config *Config) *Pool {
 	namespace = fmt.Sprintf("%s_ethereum", namespace)
-	p := &Pool{
+
+	// If config is nil, create an empty config
+	if config == nil {
+		config = &Config{}
+	}
+
+	return &Pool{
 		log:                   log,
-		executionNodes:        make([]*execution.Node, 0),
-		healthyExecutionNodes: make(map[*execution.Node]bool),
+		executionNodes:        nodes,
+		healthyExecutionNodes: make(map[execution.Node]bool, len(nodes)),
 		metrics:               GetMetricsInstance(namespace),
 		config:                config,
 	}
-
-	for _, execCfg := range config.Execution {
-		node := execution.NewNode(log, execCfg)
-		p.executionNodes = append(p.executionNodes, node)
-	}
-
-	return p
 }
 
 func (p *Pool) HasExecutionNodes() bool {
@@ -62,11 +83,11 @@ func (p *Pool) HasHealthyExecutionNodes() bool {
 	return false
 }
 
-func (p *Pool) GetHealthyExecutionNodes() []*execution.Node {
+func (p *Pool) GetHealthyExecutionNodes() []execution.Node {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	var healthyNodes []*execution.Node
+	healthyNodes := make([]execution.Node, 0, len(p.healthyExecutionNodes))
 
 	for node, healthy := range p.healthyExecutionNodes {
 		if healthy {
@@ -77,11 +98,11 @@ func (p *Pool) GetHealthyExecutionNodes() []*execution.Node {
 	return healthyNodes
 }
 
-func (p *Pool) GetHealthyExecutionNode() *execution.Node {
+func (p *Pool) GetHealthyExecutionNode() execution.Node {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
-	var healthyNodes []*execution.Node
+	healthyNodes := make([]execution.Node, 0, len(p.healthyExecutionNodes))
 
 	for node, healthy := range p.healthyExecutionNodes {
 		if healthy {
@@ -97,7 +118,7 @@ func (p *Pool) GetHealthyExecutionNode() *execution.Node {
 	return healthyNodes[rand.IntN(len(healthyNodes))]
 }
 
-func (p *Pool) WaitForHealthyExecutionNode(ctx context.Context) (*execution.Node, error) {
+func (p *Pool) WaitForHealthyExecutionNode(ctx context.Context) (execution.Node, error) {
 	// Check if we have any execution nodes configured
 	if len(p.executionNodes) == 0 {
 		return nil, fmt.Errorf("no execution nodes configured")
@@ -193,15 +214,24 @@ func (p *Pool) Start(ctx context.Context) {
 	p.UpdateNodeMetrics()
 
 	for _, node := range p.executionNodes {
+		// Register OnReady callbacks synchronously BEFORE spawning goroutines.
+		// This ensures callbacks are registered before Start() returns, so any
+		// subsequent call to MarkReady() (for EmbeddedNode) will find the callback.
+		// Previously, registration happened inside g.Go() which created a race
+		// condition where MarkReady() could execute before callbacks were registered.
+		p.log.WithField("node", node.Name()).Info("Registering OnReady callback for node")
+		node.OnReady(ctx, func(innerCtx context.Context) error {
+			p.log.WithField("node", node.Name()).Info("OnReady callback executed, marking node healthy")
+			p.mu.Lock()
+			p.healthyExecutionNodes[node] = true
+			p.mu.Unlock()
+
+			return nil
+		})
+
+		// Start node asynchronously - the actual initialization can be slow
+		// (e.g., RPC connection establishment), but callback registration is instant.
 		g.Go(func() error {
-			node.OnReady(ctx, func(innerCtx context.Context) error {
-				p.mu.Lock()
-				p.healthyExecutionNodes[node] = true
-				p.mu.Unlock()
-
-				return nil
-			})
-
 			return node.Start(ctx)
 		})
 	}

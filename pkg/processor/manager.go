@@ -37,6 +37,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	transaction_simple "github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
+	transaction_structlog_agg "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog_agg"
 	s "github.com/ethpandaops/execution-processor/pkg/state"
 	"github.com/hibiken/asynq"
 	r "github.com/redis/go-redis/v9"
@@ -160,7 +161,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("no healthy execution node available")
 	}
 
-	m.network, err = m.pool.GetNetworkByChainID(node.Metadata().ChainID())
+	m.network, err = m.pool.GetNetworkByChainID(node.ChainID())
 	if err != nil {
 		return fmt.Errorf("failed to get network by chain ID: %w", err)
 	}
@@ -428,6 +429,37 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 		}
 	} else {
 		m.log.Debug("Transaction simple processor is disabled")
+	}
+
+	// Initialize transaction structlog_agg processor if enabled
+	if m.config.TransactionStructlogAgg.Enabled {
+		m.log.Debug("Transaction structlog_agg processor is enabled, initializing...")
+
+		processor, err := transaction_structlog_agg.New(&transaction_structlog_agg.Dependencies{
+			Log:         m.log.WithField("processor", "transaction_structlog_agg"),
+			Pool:        m.pool,
+			State:       m.state,
+			AsynqClient: m.asynqClient,
+			RedisClient: m.redisClient,
+			Network:     m.network,
+			RedisPrefix: m.redisPrefix,
+		}, &m.config.TransactionStructlogAgg)
+		if err != nil {
+			return fmt.Errorf("failed to create transaction_structlog_agg processor: %w", err)
+		}
+
+		m.processors["transaction_structlog_agg"] = processor
+
+		// Set processing mode from config
+		processor.SetProcessingMode(m.config.Mode)
+
+		m.log.WithField("processor", "transaction_structlog_agg").Info("Initialized processor")
+
+		if err := m.startProcessorWithRetry(ctx, processor, "transaction_structlog_agg"); err != nil {
+			return fmt.Errorf("failed to start transaction_structlog_agg processor: %w", err)
+		}
+	} else {
+		m.log.Debug("Transaction structlog_agg processor is disabled")
 	}
 
 	m.log.WithField("total_processors", len(m.processors)).Info("Completed processor initialization")
@@ -1070,7 +1102,7 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 // GetQueueName returns the current queue name based on processing mode.
 func (m *Manager) GetQueueName() string {
 	// For now we only have one processor
-	processorName := "transaction-structlog"
+	processorName := "transaction_structlog"
 	if m.config.Mode == tracker.BACKWARDS_MODE {
 		return tracker.PrefixedProcessBackwardsQueue(processorName, m.redisPrefix)
 	}
@@ -1120,6 +1152,13 @@ func (m *Manager) QueueBlockManually(ctx context.Context, processorName string, 
 		tasksCreated, err = m.enqueueSimpleBlockTask(ctx, p, blockNumber)
 		if err != nil {
 			return nil, fmt.Errorf("failed to enqueue block task for block %d: %w", blockNumber, err)
+		}
+
+	case *transaction_structlog_agg.Processor:
+		// Enqueue transaction tasks using the processor's method
+		tasksCreated, err = p.EnqueueTransactionTasks(ctx, block)
+		if err != nil {
+			return nil, fmt.Errorf("failed to enqueue tasks for block %d: %w", blockNumber, err)
 		}
 
 	default:

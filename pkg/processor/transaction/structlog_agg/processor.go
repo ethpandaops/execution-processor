@@ -1,9 +1,10 @@
-package structlog
+package structlog_agg
 
 import (
 	"context"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/ClickHouse/ch-go"
 	"github.com/hibiken/asynq"
@@ -30,7 +31,7 @@ type Dependencies struct {
 	RedisPrefix string
 }
 
-// Processor handles transaction structlog processing.
+// Processor handles transaction structlog_agg processing.
 type Processor struct {
 	log            logrus.FieldLogger
 	pool           *ethereum.Pool
@@ -47,7 +48,7 @@ type Processor struct {
 	*tracker.Limiter
 }
 
-// New creates a new transaction structlog processor.
+// New creates a new transaction structlog_agg processor.
 func New(deps *Dependencies, config *Config) (*Processor, error) {
 	// Create a copy of the embedded config and set processor-specific values
 	clickhouseConfig := config.Config
@@ -56,7 +57,7 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 
 	clickhouseClient, err := clickhouse.New(&clickhouseConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create clickhouse client for transaction_structlog: %w", err)
+		return nil, fmt.Errorf("failed to create clickhouse client for transaction_structlog_agg: %w", err)
 	}
 
 	// Set default for MaxPendingBlockRange
@@ -111,14 +112,14 @@ func (p *Processor) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
 	}
 
-	p.log.Info("Transaction structlog processor ready")
+	p.log.Info("Transaction structlog_agg processor ready")
 
 	return nil
 }
 
 // Stop stops the processor.
 func (p *Processor) Stop(ctx context.Context) error {
-	p.log.Info("Stopping transaction structlog processor")
+	p.log.Info("Stopping transaction structlog_agg processor")
 
 	// Stop the ClickHouse client
 	return p.clickhouse.Stop()
@@ -176,9 +177,9 @@ func (p *Processor) getProcessBackwardsQueue() string {
 	return tracker.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// insertStructlogs inserts structlogs into ClickHouse using columnar protocol.
-func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog) error {
-	if len(structlogs) == 0 {
+// insertCallFrames inserts call frames into ClickHouse using columnar protocol.
+func (p *Processor) insertCallFrames(ctx context.Context, frames []CallFrameRow, blockNumber uint64, txHash string, txIndex uint32, now time.Time) error {
+	if len(frames) == 0 {
 		return nil
 	}
 
@@ -187,29 +188,29 @@ func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog
 	defer cancel()
 
 	cols := NewColumns()
-	for _, sl := range structlogs {
+
+	for _, frame := range frames {
 		cols.Append(
-			sl.UpdatedDateTime.Time(),
-			sl.BlockNumber,
-			sl.TransactionHash,
-			sl.TransactionIndex,
-			sl.TransactionGas,
-			sl.TransactionFailed,
-			sl.TransactionReturnValue,
-			sl.Index,
-			sl.Operation,
-			sl.Gas,
-			sl.GasCost,
-			sl.GasUsed,
-			sl.GasSelf,
-			sl.Depth,
-			sl.ReturnData,
-			sl.Refund,
-			sl.Error,
-			sl.CallToAddress,
-			sl.CallFrameID,
-			sl.CallFramePath,
-			sl.MetaNetworkName,
+			now,
+			blockNumber,
+			txHash,
+			txIndex,
+			frame.CallFrameID,
+			frame.ParentCallFrameID,
+			frame.CallFramePath,
+			frame.Depth,
+			frame.TargetAddress,
+			frame.CallType,
+			frame.Operation,
+			frame.OpcodeCount,
+			frame.ErrorCount,
+			frame.Gas,
+			frame.GasCumulative,
+			frame.MinDepth,
+			frame.MaxDepth,
+			frame.GasRefund,
+			frame.IntrinsicGas,
+			p.network.Name,
 		)
 	}
 
@@ -219,7 +220,7 @@ func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog
 		Body:  input.Into(p.config.Table),
 		Input: input,
 	}); err != nil {
-		return fmt.Errorf("failed to insert structlogs: %w", err)
+		return fmt.Errorf("failed to insert call frames: %w", err)
 	}
 
 	return nil

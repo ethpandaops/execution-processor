@@ -9,6 +9,75 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
+// =============================================================================
+// hasPrecomputedGasUsed Tests
+// =============================================================================
+
+func TestHasPrecomputedGasUsed_Empty(t *testing.T) {
+	assert.False(t, hasPrecomputedGasUsed(nil))
+	assert.False(t, hasPrecomputedGasUsed([]execution.StructLog{}))
+}
+
+func TestHasPrecomputedGasUsed_WithGasUsed(t *testing.T) {
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1", GasUsed: 3},
+	}
+	assert.True(t, hasPrecomputedGasUsed(structlogs))
+}
+
+func TestHasPrecomputedGasUsed_WithoutGasUsed(t *testing.T) {
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1", GasUsed: 0},
+	}
+	assert.False(t, hasPrecomputedGasUsed(structlogs))
+}
+
+// =============================================================================
+// hasPrecomputedCreateAddresses Tests
+// =============================================================================
+
+func TestHasPrecomputedCreateAddresses_Empty(t *testing.T) {
+	assert.False(t, hasPrecomputedCreateAddresses(nil))
+	assert.False(t, hasPrecomputedCreateAddresses([]execution.StructLog{}))
+}
+
+func TestHasPrecomputedCreateAddresses_NoCreate(t *testing.T) {
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1"},
+		{Op: "CALL"},
+	}
+	assert.False(t, hasPrecomputedCreateAddresses(structlogs))
+}
+
+func TestHasPrecomputedCreateAddresses_CreateWithAddress(t *testing.T) {
+	addr := "0x1234567890123456789012345678901234567890"
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1"},
+		{Op: "CREATE", CallToAddress: &addr},
+	}
+	assert.True(t, hasPrecomputedCreateAddresses(structlogs))
+}
+
+func TestHasPrecomputedCreateAddresses_CreateWithoutAddress(t *testing.T) {
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1"},
+		{Op: "CREATE", CallToAddress: nil},
+	}
+	assert.False(t, hasPrecomputedCreateAddresses(structlogs))
+}
+
+func TestHasPrecomputedCreateAddresses_Create2WithAddress(t *testing.T) {
+	addr := "0x1234567890123456789012345678901234567890"
+	structlogs := []execution.StructLog{
+		{Op: "CREATE2", CallToAddress: &addr},
+	}
+	assert.True(t, hasPrecomputedCreateAddresses(structlogs))
+}
+
+// =============================================================================
+// ComputeGasUsed Tests
+// =============================================================================
+
 func TestComputeGasUsed_EmptyLogs(t *testing.T) {
 	result := ComputeGasUsed(nil)
 	assert.Nil(t, result)
@@ -312,4 +381,338 @@ func TestComputeGasUsed_LargeDepth(t *testing.T) {
 	assert.Equal(t, uint64(2), result[7])
 	assert.Equal(t, uint64(2), result[8])
 	assert.Equal(t, uint64(2), result[9])
+}
+
+func TestComputeGasUsed_NoUnderflow_CorruptedGasValues(t *testing.T) {
+	// Test that corrupted/out-of-order gas values don't cause uint64 underflow.
+	// In valid traces, gas[i] < gas[i-1] (gas decreases). But if a trace has
+	// corrupted data where gas[i] > gas[i-1], we should NOT underflow.
+	//
+	// Without the fix, this would produce values like 18,446,744,073,709,551,613
+	// (near uint64 max) instead of falling back to GasCost.
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1", Gas: 100000, GasCost: 3, Depth: 1},
+		{Op: "ADD", Gas: 200000, GasCost: 3, Depth: 1}, // CORRUPTED: gas increased!
+		{Op: "STOP", Gas: 199997, GasCost: 0, Depth: 1},
+	}
+
+	result := ComputeGasUsed(structlogs)
+
+	require.Len(t, result, 3)
+
+	// PUSH1: gas[0]=100000, gas[1]=200000, so 100000 - 200000 would underflow!
+	// The fix should fall back to GasCost (3) instead.
+	assert.Equal(t, uint64(3), result[0], "should fall back to GasCost, not underflow")
+
+	// Verify it's NOT a huge underflow value
+	assert.Less(t, result[0], uint64(1000000), "result should be reasonable, not an underflow")
+
+	// ADD: 200000 - 199997 = 3 (normal case, no underflow)
+	assert.Equal(t, uint64(3), result[1])
+
+	// STOP: keeps pre-calculated (last opcode)
+	assert.Equal(t, uint64(0), result[2])
+}
+
+func TestComputeGasUsed_NoUnderflow_AllCorrupted(t *testing.T) {
+	// Test where all gas values are corrupted (increasing instead of decreasing)
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1", Gas: 100000, GasCost: 3, Depth: 1},
+		{Op: "PUSH1", Gas: 110000, GasCost: 3, Depth: 1}, // CORRUPTED
+		{Op: "ADD", Gas: 120000, GasCost: 3, Depth: 1},   // CORRUPTED
+		{Op: "STOP", Gas: 130000, GasCost: 0, Depth: 1},  // CORRUPTED
+	}
+
+	result := ComputeGasUsed(structlogs)
+
+	require.Len(t, result, 4)
+
+	// All should fall back to GasCost since all would underflow
+	for i, r := range result {
+		assert.Less(t, r, uint64(1000000),
+			"result[%d] should be reasonable, not an underflow", i)
+	}
+}
+
+// =============================================================================
+// ComputeGasSelf Tests
+// =============================================================================
+
+func TestComputeGasSelf_EmptyLogs(t *testing.T) {
+	result := ComputeGasSelf(nil, nil)
+	assert.Nil(t, result)
+
+	result = ComputeGasSelf([]execution.StructLog{}, []uint64{})
+	assert.Nil(t, result)
+}
+
+func TestComputeGasSelf_NonCallOpcodes(t *testing.T) {
+	// For non-CALL opcodes, gas_self should equal gas_used
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1", Gas: 100000, GasCost: 3, Depth: 1},
+		{Op: "SLOAD", Gas: 99997, GasCost: 2100, Depth: 1},
+		{Op: "ADD", Gas: 97897, GasCost: 3, Depth: 1},
+	}
+
+	gasUsed := []uint64{3, 2100, 3}
+
+	result := ComputeGasSelf(structlogs, gasUsed)
+
+	require.Len(t, result, 3)
+	assert.Equal(t, uint64(3), result[0], "PUSH1 gas_self should equal gas_used")
+	assert.Equal(t, uint64(2100), result[1], "SLOAD gas_self should equal gas_used")
+	assert.Equal(t, uint64(3), result[2], "ADD gas_self should equal gas_used")
+}
+
+func TestComputeGasSelf_SimpleCall(t *testing.T) {
+	// CALL at depth 1 with child opcodes at depth 2
+	// gas_self for CALL should be gas_used minus sum of direct children's gas_used
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1", Gas: 100000, GasCost: 3, Depth: 1}, // index 0
+		{Op: "CALL", Gas: 99997, GasCost: 100, Depth: 1}, // index 1: CALL
+		{Op: "PUSH1", Gas: 63000, GasCost: 3, Depth: 2},  // index 2: child
+		{Op: "ADD", Gas: 62000, GasCost: 3, Depth: 2},    // index 3: child
+		{Op: "STOP", Gas: 61000, GasCost: 0, Depth: 2},   // index 4: child
+		{Op: "POP", Gas: 97000, GasCost: 2, Depth: 1},    // index 5: back to parent
+	}
+
+	// gas_used values (computed by ComputeGasUsed logic):
+	// PUSH1[0]: 100000 - 99997 = 3
+	// CALL[1]: 99997 - 97000 = 2997 (includes child execution)
+	// PUSH1[2]: 63000 - 62000 = 1000
+	// ADD[3]: 62000 - 61000 = 1000
+	// STOP[4]: 0 (pre-calculated, last at depth 2)
+	// POP[5]: 2 (pre-calculated, last opcode)
+	gasUsed := []uint64{3, 2997, 1000, 1000, 0, 2}
+
+	result := ComputeGasSelf(structlogs, gasUsed)
+
+	require.Len(t, result, 6)
+
+	// Non-CALL opcodes: gas_self == gas_used
+	assert.Equal(t, uint64(3), result[0], "PUSH1 gas_self")
+	assert.Equal(t, uint64(1000), result[2], "child PUSH1 gas_self")
+	assert.Equal(t, uint64(1000), result[3], "child ADD gas_self")
+	assert.Equal(t, uint64(0), result[4], "child STOP gas_self")
+	assert.Equal(t, uint64(2), result[5], "POP gas_self")
+
+	// CALL: gas_self = gas_used - sum(direct children)
+	// direct children at depth 2: indices 2, 3, 4
+	// sum = 1000 + 1000 + 0 = 2000
+	// gas_self = 2997 - 2000 = 997
+	assert.Equal(t, uint64(997), result[1], "CALL gas_self should be overhead only")
+}
+
+func TestComputeGasSelf_NestedCalls(t *testing.T) {
+	// This is the critical test: nested CALLs where we must only sum direct children.
+	// If we sum ALL descendants, we double count and get incorrect (often 0) values.
+	//
+	// Structure:
+	// CALL A (depth 1) -> child frame at depth 2
+	//   ├─ PUSH (depth 2)
+	//   ├─ CALL B (depth 2) -> grandchild frame at depth 3
+	//   │    ├─ ADD (depth 3)
+	//   │    └─ STOP (depth 3)
+	//   └─ STOP (depth 2)
+	structlogs := []execution.StructLog{
+		{Op: "CALL", Gas: 100000, GasCost: 100, Depth: 1}, // index 0: CALL A
+		{Op: "PUSH1", Gas: 80000, GasCost: 3, Depth: 2},   // index 1: direct child of A
+		{Op: "CALL", Gas: 79000, GasCost: 100, Depth: 2},  // index 2: CALL B (direct child of A)
+		{Op: "ADD", Gas: 50000, GasCost: 3, Depth: 3},     // index 3: direct child of B
+		{Op: "STOP", Gas: 49000, GasCost: 0, Depth: 3},    // index 4: direct child of B
+		{Op: "STOP", Gas: 75000, GasCost: 0, Depth: 2},    // index 5: direct child of A
+		{Op: "POP", Gas: 90000, GasCost: 2, Depth: 1},     // index 6: back to depth 1
+	}
+
+	// gas_used values:
+	// CALL A[0]: 100000 - 90000 = 10000 (includes all nested)
+	// PUSH[1]: 80000 - 79000 = 1000
+	// CALL B[2]: 79000 - 75000 = 4000 (includes grandchild)
+	// ADD[3]: 50000 - 49000 = 1000
+	// STOP[4]: 0 (pre-calculated)
+	// STOP[5]: 0 (pre-calculated)
+	// POP[6]: 2 (pre-calculated)
+	gasUsed := []uint64{10000, 1000, 4000, 1000, 0, 0, 2}
+
+	result := ComputeGasSelf(structlogs, gasUsed)
+
+	require.Len(t, result, 7)
+
+	// CALL A: direct children at depth 2 are indices 1, 2, 5
+	// sum of direct children = 1000 + 4000 + 0 = 5000
+	// gas_self = 10000 - 5000 = 5000
+	// Note: We do NOT include indices 3, 4 (depth 3) because they're grandchildren,
+	// and CALL B's gas_used (4000) already includes them.
+	assert.Equal(t, uint64(5000), result[0], "CALL A gas_self should exclude nested CALL's children")
+
+	// CALL B: direct children at depth 3 are indices 3, 4
+	// sum of direct children = 1000 + 0 = 1000
+	// gas_self = 4000 - 1000 = 3000
+	assert.Equal(t, uint64(3000), result[2], "CALL B gas_self should be its overhead")
+
+	// Non-CALL opcodes: gas_self == gas_used
+	assert.Equal(t, uint64(1000), result[1], "PUSH gas_self")
+	assert.Equal(t, uint64(1000), result[3], "ADD gas_self")
+	assert.Equal(t, uint64(0), result[4], "STOP depth 3 gas_self")
+	assert.Equal(t, uint64(0), result[5], "STOP depth 2 gas_self")
+	assert.Equal(t, uint64(2), result[6], "POP gas_self")
+}
+
+func TestComputeGasSelf_SiblingCalls(t *testing.T) {
+	// Two sibling CALLs at the same depth, each with their own children
+	structlogs := []execution.StructLog{
+		{Op: "CALL", Gas: 100000, GasCost: 100, Depth: 1}, // index 0: first CALL
+		{Op: "ADD", Gas: 60000, GasCost: 3, Depth: 2},     // index 1: child of first CALL
+		{Op: "STOP", Gas: 59000, GasCost: 0, Depth: 2},    // index 2: child of first CALL
+		{Op: "CALL", Gas: 90000, GasCost: 100, Depth: 1},  // index 3: second CALL
+		{Op: "MUL", Gas: 50000, GasCost: 5, Depth: 2},     // index 4: child of second CALL
+		{Op: "STOP", Gas: 49000, GasCost: 0, Depth: 2},    // index 5: child of second CALL
+		{Op: "POP", Gas: 80000, GasCost: 2, Depth: 1},     // index 6
+	}
+
+	// gas_used:
+	// CALL[0]: 100000 - 90000 = 10000
+	// ADD[1]: 60000 - 59000 = 1000
+	// STOP[2]: 0
+	// CALL[3]: 90000 - 80000 = 10000
+	// MUL[4]: 50000 - 49000 = 1000
+	// STOP[5]: 0
+	// POP[6]: 2
+	gasUsed := []uint64{10000, 1000, 0, 10000, 1000, 0, 2}
+
+	result := ComputeGasSelf(structlogs, gasUsed)
+
+	require.Len(t, result, 7)
+
+	// First CALL: direct children = indices 1, 2
+	// gas_self = 10000 - (1000 + 0) = 9000
+	assert.Equal(t, uint64(9000), result[0], "first CALL gas_self")
+
+	// Second CALL: direct children = indices 4, 5
+	// gas_self = 10000 - (1000 + 0) = 9000
+	assert.Equal(t, uint64(9000), result[3], "second CALL gas_self")
+}
+
+func TestComputeGasSelf_CreateOpcode(t *testing.T) {
+	// CREATE should be handled the same as CALL
+	structlogs := []execution.StructLog{
+		{Op: "CREATE", Gas: 100000, GasCost: 32000, Depth: 1}, // index 0
+		{Op: "PUSH1", Gas: 70000, GasCost: 3, Depth: 2},       // index 1: constructor
+		{Op: "RETURN", Gas: 69000, GasCost: 0, Depth: 2},      // index 2: constructor
+		{Op: "POP", Gas: 80000, GasCost: 2, Depth: 1},         // index 3
+	}
+
+	// gas_used:
+	// CREATE[0]: 100000 - 80000 = 20000
+	// PUSH[1]: 70000 - 69000 = 1000
+	// RETURN[2]: 0
+	// POP[3]: 2
+	gasUsed := []uint64{20000, 1000, 0, 2}
+
+	result := ComputeGasSelf(structlogs, gasUsed)
+
+	require.Len(t, result, 4)
+
+	// CREATE: direct children = indices 1, 2
+	// gas_self = 20000 - (1000 + 0) = 19000
+	assert.Equal(t, uint64(19000), result[0], "CREATE gas_self should be overhead only")
+	assert.Equal(t, uint64(1000), result[1], "PUSH gas_self")
+	assert.Equal(t, uint64(0), result[2], "RETURN gas_self")
+	assert.Equal(t, uint64(2), result[3], "POP gas_self")
+}
+
+func TestComputeGasSelf_DelegateCallAndStaticCall(t *testing.T) {
+	// DELEGATECALL and STATICCALL should also be handled
+	structlogs := []execution.StructLog{
+		{Op: "DELEGATECALL", Gas: 100000, GasCost: 100, Depth: 1},
+		{Op: "ADD", Gas: 60000, GasCost: 3, Depth: 2},
+		{Op: "STOP", Gas: 59000, GasCost: 0, Depth: 2},
+		{Op: "STATICCALL", Gas: 90000, GasCost: 100, Depth: 1},
+		{Op: "MUL", Gas: 50000, GasCost: 5, Depth: 2},
+		{Op: "STOP", Gas: 49000, GasCost: 0, Depth: 2},
+		{Op: "POP", Gas: 80000, GasCost: 2, Depth: 1},
+	}
+
+	gasUsed := []uint64{10000, 1000, 0, 10000, 1000, 0, 2}
+
+	result := ComputeGasSelf(structlogs, gasUsed)
+
+	require.Len(t, result, 7)
+
+	// DELEGATECALL: gas_self = 10000 - 1000 = 9000
+	assert.Equal(t, uint64(9000), result[0], "DELEGATECALL gas_self")
+
+	// STATICCALL: gas_self = 10000 - 1000 = 9000
+	assert.Equal(t, uint64(9000), result[3], "STATICCALL gas_self")
+}
+
+func TestComputeGasSelf_CallWithNoChildren(t *testing.T) {
+	// CALL to precompile or empty contract - no child opcodes
+	// In this case, gas_self should equal gas_used
+	structlogs := []execution.StructLog{
+		{Op: "CALL", Gas: 100000, GasCost: 100, Depth: 1},
+		{Op: "POP", Gas: 97400, GasCost: 2, Depth: 1}, // immediately back at depth 1
+	}
+
+	// gas_used:
+	// CALL: 100000 - 97400 = 2600 (just the CALL overhead, no child execution)
+	// POP: 2
+	gasUsed := []uint64{2600, 2}
+
+	result := ComputeGasSelf(structlogs, gasUsed)
+
+	require.Len(t, result, 2)
+
+	// No children, so gas_self = gas_used
+	assert.Equal(t, uint64(2600), result[0], "CALL with no children: gas_self == gas_used")
+	assert.Equal(t, uint64(2), result[1], "POP gas_self")
+}
+
+func TestComputeGasSelf_DeeplyNestedCalls(t *testing.T) {
+	// Test 4 levels of nesting to ensure correct handling
+	structlogs := []execution.StructLog{
+		{Op: "CALL", Gas: 100000, GasCost: 100, Depth: 1}, // index 0: A
+		{Op: "CALL", Gas: 90000, GasCost: 100, Depth: 2},  // index 1: B
+		{Op: "CALL", Gas: 80000, GasCost: 100, Depth: 3},  // index 2: C
+		{Op: "CALL", Gas: 70000, GasCost: 100, Depth: 4},  // index 3: D
+		{Op: "ADD", Gas: 60000, GasCost: 3, Depth: 5},     // index 4: innermost
+		{Op: "STOP", Gas: 59000, GasCost: 0, Depth: 5},    // index 5
+		{Op: "STOP", Gas: 65000, GasCost: 0, Depth: 4},    // index 6
+		{Op: "STOP", Gas: 74000, GasCost: 0, Depth: 3},    // index 7
+		{Op: "STOP", Gas: 83000, GasCost: 0, Depth: 2},    // index 8
+		{Op: "POP", Gas: 92000, GasCost: 2, Depth: 1},     // index 9
+	}
+
+	// gas_used:
+	// A[0]: 100000 - 92000 = 8000
+	// B[1]: 90000 - 83000 = 7000
+	// C[2]: 80000 - 74000 = 6000
+	// D[3]: 70000 - 65000 = 5000
+	// ADD[4]: 60000 - 59000 = 1000
+	// STOP[5]: 0
+	// STOP[6]: 0
+	// STOP[7]: 0
+	// STOP[8]: 0
+	// POP[9]: 2
+	gasUsed := []uint64{8000, 7000, 6000, 5000, 1000, 0, 0, 0, 0, 2}
+
+	result := ComputeGasSelf(structlogs, gasUsed)
+
+	require.Len(t, result, 10)
+
+	// CALL A: direct children at depth 2 = [B, STOP] = indices 1, 8
+	// gas_self = 8000 - (7000 + 0) = 1000
+	assert.Equal(t, uint64(1000), result[0], "CALL A gas_self")
+
+	// CALL B: direct children at depth 3 = [C, STOP] = indices 2, 7
+	// gas_self = 7000 - (6000 + 0) = 1000
+	assert.Equal(t, uint64(1000), result[1], "CALL B gas_self")
+
+	// CALL C: direct children at depth 4 = [D, STOP] = indices 3, 6
+	// gas_self = 6000 - (5000 + 0) = 1000
+	assert.Equal(t, uint64(1000), result[2], "CALL C gas_self")
+
+	// CALL D: direct children at depth 5 = [ADD, STOP] = indices 4, 5
+	// gas_self = 5000 - (1000 + 0) = 4000
+	assert.Equal(t, uint64(4000), result[3], "CALL D gas_self")
 }

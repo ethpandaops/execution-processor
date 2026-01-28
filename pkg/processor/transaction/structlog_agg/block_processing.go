@@ -1,4 +1,4 @@
-package structlog
+package structlog_agg
 
 import (
 	"context"
@@ -179,7 +179,6 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	return nil
 }
 
-// enqueueTransactionTasks enqueues tasks for all transactions in a block.
 // EnqueueTransactionTasks enqueues transaction processing tasks for a given block.
 func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block execution.Block) (int, error) {
 	var enqueuedCount int

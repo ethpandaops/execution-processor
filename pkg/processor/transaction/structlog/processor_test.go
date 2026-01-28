@@ -150,16 +150,18 @@ func TestStructlogCountReturn(t *testing.T) {
 			mockTrace.Failed,      // txFailed
 			mockTrace.ReturnValue, // txReturnValue
 			uint32(i),             // index
-			structLog.PC,          // pc
 			structLog.Op,          // op
 			structLog.Gas,         // gas
 			structLog.GasCost,     // gasCost
 			structLog.GasCost,     // gasUsed (simplified)
+			structLog.GasCost,     // gasSelf (simplified)
 			structLog.Depth,       // depth
 			structLog.ReturnData,  // returnData
 			structLog.Refund,      // refund
 			structLog.Error,       // error
 			nil,                   // callTo
+			uint32(0),             // callFrameID
+			[]uint32{},            // callFramePath
 			"test",                // network
 		)
 	}
@@ -228,20 +230,22 @@ func TestMemoryManagement(t *testing.T) {
 			uint64(i), // blockNumber
 			"0x1234567890abcdef1234567890abcdef12345678", // txHash
 			uint32(i%100),   // txIndex
-			21000,           // txGas
+			uint64(21000),   // txGas
 			false,           // txFailed
 			nil,             // txReturnValue
 			uint32(i),       // index
-			uint32(i*2),     // pc
 			"SSTORE",        // op
 			uint64(21000-i), // gas
-			5000,            // gasCost
-			5000,            // gasUsed
-			1,               // depth
+			uint64(5000),    // gasCost
+			uint64(5000),    // gasUsed
+			uint64(5000),    // gasSelf
+			uint64(1),       // depth
 			nil,             // returnData
 			nil,             // refund
 			nil,             // error
 			nil,             // callTo
+			uint32(0),       // callFrameID
+			[]uint32{},      // callFramePath
 			"mainnet",       // network
 		)
 	}
@@ -340,9 +344,9 @@ func TestChunkProcessing(t *testing.T) {
 			// Fill columns with test data
 			for i := 0; i < tt.inputSize; i++ {
 				cols.Append(
-					now, uint64(i), "0xtest", 0, 21000, false, nil,
-					uint32(i), uint32(i), "PUSH1", 20000, 3, 3, 1,
-					nil, nil, nil, nil, "test",
+					now, uint64(i), "0xtest", uint32(0), uint64(21000), false, nil,
+					uint32(i), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
+					nil, nil, nil, nil, uint32(0), []uint32{}, "test",
 				)
 			}
 
@@ -390,9 +394,9 @@ func TestColumnsAppendAndReset(t *testing.T) {
 	num := uint64(42)
 
 	cols.Append(
-		now, 100, "0xabc", 0, 21000, false, &str,
-		0, 100, "PUSH1", 20000, 3, 3, 1,
-		nil, &num, nil, nil, "mainnet",
+		now, uint64(100), "0xabc", uint32(0), uint64(21000), false, &str,
+		uint32(0), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
+		nil, &num, nil, nil, uint32(0), []uint32{}, "mainnet",
 	)
 
 	assert.Equal(t, 1, cols.Rows())
@@ -400,9 +404,9 @@ func TestColumnsAppendAndReset(t *testing.T) {
 	// Append more rows
 	for i := 0; i < 99; i++ {
 		cols.Append(
-			now, 100, "0xabc", 0, 21000, false, nil,
-			uint32(i+1), 100, "PUSH1", 20000, 3, 3, 1,
-			nil, nil, nil, nil, "mainnet",
+			now, uint64(100), "0xabc", uint32(0), uint64(21000), false, nil,
+			uint32(i+1), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
+			nil, nil, nil, nil, uint32(0), []uint32{}, "mainnet",
 		)
 	}
 
@@ -417,10 +421,10 @@ func TestColumnsInput(t *testing.T) {
 	cols := transaction_structlog.NewColumns()
 	input := cols.Input()
 
-	// Verify all 19 columns are present
-	assert.Len(t, input, 19)
+	// Verify all 21 columns are present
+	assert.Len(t, input, 21)
 	assert.Equal(t, "updated_date_time", input[0].Name)
-	assert.Equal(t, "meta_network_name", input[18].Name)
+	assert.Equal(t, "meta_network_name", input[20].Name)
 }
 
 // Tests from tasks_test.go
