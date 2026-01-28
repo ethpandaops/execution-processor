@@ -260,18 +260,17 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 			MaxDepth:          depth,
 		}
 
-		// Root frame gets gas refund and intrinsic gas
-		if frameID == 0 {
+		// Root frame gets gas refund and intrinsic gas only for successful transactions.
+		// For failed transactions, refunds are accumulated during execution but NOT applied
+		// to the final gas calculation (all gas is consumed), so we set them to nil.
+		if frameID == 0 && acc.ErrorCount == 0 {
 			summaryRow.GasRefund = &acc.MaxRefund
 
 			// Compute intrinsic gas for root frame
 			// Formula from int_transaction_call_frame.sql
-			// Only computed when error_count = 0 (successful transaction)
-			if acc.ErrorCount == 0 {
-				intrinsicGas := computeIntrinsicGas(gasCumulative[0], acc.MaxRefund, receiptGas)
-				if intrinsicGas > 0 {
-					summaryRow.IntrinsicGas = &intrinsicGas
-				}
+			intrinsicGas := computeIntrinsicGas(gasCumulative[0], acc.MaxRefund, receiptGas)
+			if intrinsicGas > 0 {
+				summaryRow.IntrinsicGas = &intrinsicGas
 			}
 		}
 

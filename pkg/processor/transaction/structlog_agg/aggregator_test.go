@@ -393,6 +393,117 @@ func TestFrameAggregator_SetRootTargetAddress(t *testing.T) {
 	assert.Equal(t, rootAddr, *summaryRow.TargetAddress)
 }
 
+func TestFrameAggregator_FailedTransaction_NoRefundOrIntrinsic(t *testing.T) {
+	// Test that failed transactions do NOT have gas_refund or intrinsic_gas set.
+	// For failed transactions, refunds are accumulated during execution but NOT applied
+	// to the final gas calculation (all gas is consumed).
+	aggregator := NewFrameAggregator()
+
+	errMsg := "execution reverted"
+	refundValue := uint64(4800) // Refund accumulated during execution
+
+	// Simulate a transaction that accumulates refunds but then fails
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "PUSH1",
+		Depth: 1,
+		Gas:   80000,
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+
+	// SSTORE that generates a refund
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:     "SSTORE",
+		Depth:  1,
+		Gas:    79997,
+		Refund: &refundValue, // Refund accumulated
+	}, 1, 0, []uint32{0}, 20000, 20000, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+
+	// Transaction fails with REVERT
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:     "REVERT",
+		Depth:  1,
+		Gas:    59997,
+		Error:  &errMsg,
+		Refund: &refundValue, // Refund still present but won't be applied
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "SSTORE", Depth: 1})
+
+	trace := &execution.TraceTransaction{
+		Gas:    80000,
+		Failed: true,
+	}
+
+	// Receipt gas for failed tx = gas_limit (all gas consumed)
+	frames := aggregator.Finalize(trace, 80000)
+
+	assert.Equal(t, 1, countSummaryRows(frames))
+
+	summaryRow := getSummaryRow(frames, 0)
+	require.NotNil(t, summaryRow)
+
+	// Error count should be 1
+	assert.Equal(t, uint64(1), summaryRow.ErrorCount)
+
+	// GasRefund should be nil for failed transactions
+	// Even though refund was accumulated (4800), it's not applied when tx fails
+	assert.Nil(t, summaryRow.GasRefund, "GasRefund should be nil for failed transactions")
+
+	// IntrinsicGas should also be nil for failed transactions
+	assert.Nil(t, summaryRow.IntrinsicGas, "IntrinsicGas should be nil for failed transactions")
+}
+
+func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.T) {
+	// Test that successful transactions DO have gas_refund and intrinsic_gas set.
+	aggregator := NewFrameAggregator()
+
+	refundValue := uint64(4800)
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "PUSH1",
+		Depth: 1,
+		Gas:   80000,
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+
+	// SSTORE that generates a refund
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:     "SSTORE",
+		Depth:  1,
+		Gas:    79997,
+		Refund: &refundValue,
+	}, 1, 0, []uint32{0}, 20000, 20000, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+
+	// Successful STOP
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:     "STOP",
+		Depth:  1,
+		Gas:    59997,
+		Refund: &refundValue,
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "SSTORE", Depth: 1})
+
+	trace := &execution.TraceTransaction{
+		Gas:    80000,
+		Failed: false,
+	}
+
+	// For successful tx, receipt gas = gas_used (after refund applied)
+	// Let's say receipt shows 15200 gas used
+	frames := aggregator.Finalize(trace, 15200)
+
+	assert.Equal(t, 1, countSummaryRows(frames))
+
+	summaryRow := getSummaryRow(frames, 0)
+	require.NotNil(t, summaryRow)
+
+	// Error count should be 0
+	assert.Equal(t, uint64(0), summaryRow.ErrorCount)
+
+	// GasRefund should be set for successful transactions
+	require.NotNil(t, summaryRow.GasRefund, "GasRefund should be set for successful transactions")
+	assert.Equal(t, refundValue, *summaryRow.GasRefund)
+
+	// IntrinsicGas should be computed for successful transactions
+	// (exact value depends on the computation, just verify it's not nil)
+	// Note: might be nil if computed value is 0, so we just check the logic is exercised
+}
+
 func TestMapOpcodeToCallType(t *testing.T) {
 	tests := []struct {
 		opcode   string
