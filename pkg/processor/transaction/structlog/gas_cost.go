@@ -133,7 +133,12 @@ func ComputeGasUsed(structlogs []execution.StructLog) []uint64 {
 
 		// Update gasUsed for pending log at current depth
 		if prevIdx := pendingIdx[depth]; prevIdx >= 0 && prevIdx < len(structlogs) {
-			gasUsed[prevIdx] = structlogs[prevIdx].Gas - structlogs[i].Gas
+			// Guard against underflow: if gas values are corrupted or out of order,
+			// fall back to the pre-calculated GasCost instead of underflowing
+			if structlogs[prevIdx].Gas >= structlogs[i].Gas {
+				gasUsed[prevIdx] = structlogs[prevIdx].Gas - structlogs[i].Gas
+			}
+			// else: keep the fallback GasCost value set during initialization
 		}
 
 		// Store current log's index as pending at this depth
