@@ -260,15 +260,24 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 			MaxDepth:          depth,
 		}
 
-		// Root frame gets gas refund and intrinsic gas only for successful transactions.
-		// For failed transactions, refunds are accumulated during execution but NOT applied
-		// to the final gas calculation (all gas is consumed), so we set them to nil.
-		if frameID == 0 && acc.ErrorCount == 0 {
-			summaryRow.GasRefund = &acc.MaxRefund
+		// Root frame: compute gas refund and intrinsic gas
+		if frameID == 0 {
+			// For successful transactions, refunds are applied to the final gas calculation.
+			// For failed transactions, refunds are accumulated during execution but NOT applied
+			// (all gas up to failure is consumed), so we set refund to nil.
+			if acc.ErrorCount == 0 {
+				summaryRow.GasRefund = &acc.MaxRefund
+			}
 
-			// Compute intrinsic gas for root frame
-			// Formula from int_transaction_call_frame.sql
-			intrinsicGas := computeIntrinsicGas(gasCumulative[0], acc.MaxRefund, receiptGas)
+			// Intrinsic gas is ALWAYS charged (before EVM execution begins), regardless of
+			// whether the transaction succeeds or fails. For failed txs, use refund=0 in
+			// the formula since refunds aren't applied.
+			refundForCalc := acc.MaxRefund
+			if acc.ErrorCount > 0 {
+				refundForCalc = 0
+			}
+
+			intrinsicGas := computeIntrinsicGas(gasCumulative[0], refundForCalc, receiptGas)
 			if intrinsicGas > 0 {
 				summaryRow.IntrinsicGas = &intrinsicGas
 			}
@@ -367,8 +376,15 @@ func computeIntrinsicGas(gasCumulative, gasRefund, receiptGas uint64) uint64 {
 		// Uncapped case: full refund was applied
 		// receipt_gas = intrinsic + gas_cumulative - gas_refund
 		// => intrinsic = receipt_gas - gas_cumulative + gas_refund
+		//
+		// IMPORTANT: We must avoid underflow when receiptGas < gasCumulative.
+		// The guard condition (receiptGas + gasRefund >= gasCumulative) can pass
+		// even when receiptGas < gasCumulative, so we reorder the arithmetic
+		// to ensure we never subtract a larger value from a smaller one.
 		if receiptGas+gasRefund >= gasCumulative {
-			intrinsic = receiptGas - gasCumulative + gasRefund
+			// Reorder to: (receiptGas + gasRefund) - gasCumulative
+			// This is safe because the guard ensures the sum >= gasCumulative
+			intrinsic = (receiptGas + gasRefund) - gasCumulative
 		}
 	}
 

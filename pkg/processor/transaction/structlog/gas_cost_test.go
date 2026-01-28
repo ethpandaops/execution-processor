@@ -383,6 +383,57 @@ func TestComputeGasUsed_LargeDepth(t *testing.T) {
 	assert.Equal(t, uint64(2), result[9])
 }
 
+func TestComputeGasUsed_NoUnderflow_CorruptedGasValues(t *testing.T) {
+	// Test that corrupted/out-of-order gas values don't cause uint64 underflow.
+	// In valid traces, gas[i] < gas[i-1] (gas decreases). But if a trace has
+	// corrupted data where gas[i] > gas[i-1], we should NOT underflow.
+	//
+	// Without the fix, this would produce values like 18,446,744,073,709,551,613
+	// (near uint64 max) instead of falling back to GasCost.
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1", Gas: 100000, GasCost: 3, Depth: 1},
+		{Op: "ADD", Gas: 200000, GasCost: 3, Depth: 1}, // CORRUPTED: gas increased!
+		{Op: "STOP", Gas: 199997, GasCost: 0, Depth: 1},
+	}
+
+	result := ComputeGasUsed(structlogs)
+
+	require.Len(t, result, 3)
+
+	// PUSH1: gas[0]=100000, gas[1]=200000, so 100000 - 200000 would underflow!
+	// The fix should fall back to GasCost (3) instead.
+	assert.Equal(t, uint64(3), result[0], "should fall back to GasCost, not underflow")
+
+	// Verify it's NOT a huge underflow value
+	assert.Less(t, result[0], uint64(1000000), "result should be reasonable, not an underflow")
+
+	// ADD: 200000 - 199997 = 3 (normal case, no underflow)
+	assert.Equal(t, uint64(3), result[1])
+
+	// STOP: keeps pre-calculated (last opcode)
+	assert.Equal(t, uint64(0), result[2])
+}
+
+func TestComputeGasUsed_NoUnderflow_AllCorrupted(t *testing.T) {
+	// Test where all gas values are corrupted (increasing instead of decreasing)
+	structlogs := []execution.StructLog{
+		{Op: "PUSH1", Gas: 100000, GasCost: 3, Depth: 1},
+		{Op: "PUSH1", Gas: 110000, GasCost: 3, Depth: 1}, // CORRUPTED
+		{Op: "ADD", Gas: 120000, GasCost: 3, Depth: 1},   // CORRUPTED
+		{Op: "STOP", Gas: 130000, GasCost: 0, Depth: 1},  // CORRUPTED
+	}
+
+	result := ComputeGasUsed(structlogs)
+
+	require.Len(t, result, 4)
+
+	// All should fall back to GasCost since all would underflow
+	for i, r := range result {
+		assert.Less(t, r, uint64(1000000),
+			"result[%d] should be reasonable, not an underflow", i)
+	}
+}
+
 // =============================================================================
 // ComputeGasSelf Tests
 // =============================================================================

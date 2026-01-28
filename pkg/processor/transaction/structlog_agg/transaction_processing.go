@@ -66,10 +66,12 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 			rootFrame.ErrorCount = 1
 		} else {
 			rootFrame.ErrorCount = 0
-			// For simple transfers, all gas is intrinsic (only if success)
-			intrinsicGas := trace.Gas
-			rootFrame.IntrinsicGas = &intrinsicGas
 		}
+
+		// For simple transfers (no EVM execution), all gas is intrinsic.
+		// This is true for both successful and failed transactions.
+		intrinsicGas := trace.Gas
+		rootFrame.IntrinsicGas = &intrinsicGas
 
 		// gas_refund is NULL for simple transfers (no SSTORE operations)
 
@@ -352,7 +354,12 @@ func computeGasUsed(structlogs []execution.StructLog) []uint64 {
 
 		// Update gasUsed for pending log at current depth
 		if prevIdx := pendingIdx[depth]; prevIdx >= 0 && prevIdx < len(structlogs) {
-			gasUsed[prevIdx] = structlogs[prevIdx].Gas - structlogs[i].Gas
+			// Guard against underflow: if gas values are corrupted or out of order,
+			// fall back to the pre-calculated GasCost instead of underflowing
+			if structlogs[prevIdx].Gas >= structlogs[i].Gas {
+				gasUsed[prevIdx] = structlogs[prevIdx].Gas - structlogs[i].Gas
+			}
+			// else: keep the fallback GasCost value set during initialization
 		}
 
 		pendingIdx[depth] = i
