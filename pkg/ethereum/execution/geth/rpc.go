@@ -118,7 +118,7 @@ func (n *RPCNode) traceTransactionErigon(ctx context.Context, hash string, optio
 		Gas:         rsp.Gas,
 		Failed:      rsp.Failed,
 		ReturnValue: returnValue,
-		Structlogs:  []execution.StructLog{},
+		Structlogs:  make([]execution.StructLog, 0, len(rsp.StructLogs)),
 	}
 
 	// Empty array on transfer
@@ -142,6 +142,9 @@ func (n *RPCNode) traceTransactionErigon(ctx context.Context, hash string, optio
 			Stack:      log.Stack,
 		})
 	}
+
+	// Sanitize gasCost values to fix Erigon's unsigned integer underflow bug.
+	execution.SanitizeStructLogs(result.Structlogs)
 
 	return result, nil
 }

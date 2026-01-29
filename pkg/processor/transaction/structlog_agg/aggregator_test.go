@@ -575,6 +575,54 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 	// Note: might be nil if computed value is 0, so we just check the logic is exercised
 }
 
+func TestFrameAggregator_RevertWithoutOpcodeError(t *testing.T) {
+	// Test that REVERT transactions are correctly detected as failed even when
+	// the REVERT opcode itself has no error field set.
+	//
+	// REVERT is a successful opcode execution that causes transaction failure.
+	// Unlike "out of gas" errors where the opcode has an error field, REVERT
+	// executes successfully but reverts state changes. The failure is indicated
+	// by trace.Failed = true, NOT by individual opcode errors.
+	aggregator := NewFrameAggregator()
+
+	// Simulate a transaction that reverts: PUSH1 -> REVERT
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "PUSH1",
+		Depth: 1,
+		Gas:   50000,
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+
+	// REVERT opcode with NO error field (realistic behavior)
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "REVERT",
+		Depth: 1,
+		Gas:   49997,
+		// Note: NO Error field set - REVERT executes successfully
+	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+
+	// trace.Failed is true because the transaction reverted
+	trace := &execution.TraceTransaction{
+		Gas:    50000,
+		Failed: true, // This is how REVERT is indicated
+	}
+
+	frames := aggregator.Finalize(trace, 30000)
+
+	assert.Equal(t, 1, countSummaryRows(frames))
+
+	summaryRow := getSummaryRow(frames, 0)
+	require.NotNil(t, summaryRow)
+
+	// Error count MUST be 1 even though no opcode had an error field
+	// This is the key assertion: trace.Failed should set error_count = 1
+	assert.Equal(t, uint64(1), summaryRow.ErrorCount,
+		"ErrorCount should be 1 for REVERT transactions even without opcode errors")
+
+	// GasRefund should be nil for failed transactions
+	assert.Nil(t, summaryRow.GasRefund,
+		"GasRefund should be nil for reverted transactions")
+}
+
 func TestMapOpcodeToCallType(t *testing.T) {
 	tests := []struct {
 		opcode   string

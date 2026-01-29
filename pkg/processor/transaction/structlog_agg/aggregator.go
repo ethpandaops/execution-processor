@@ -262,10 +262,17 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 
 		// Root frame: compute gas refund and intrinsic gas
 		if frameID == 0 {
+			// Check trace.Failed to detect transaction failure from REVERT opcodes.
+			// REVERT executes successfully (no opcode error), but causes transaction failure.
+			// Individual opcode errors (like "out of gas") are already counted via acc.ErrorCount.
+			if trace.Failed && summaryRow.ErrorCount == 0 {
+				summaryRow.ErrorCount = 1
+			}
+
 			// For successful transactions, refunds are applied to the final gas calculation.
 			// For failed transactions, refunds are accumulated during execution but NOT applied
 			// (all gas up to failure is consumed), so we set refund to nil.
-			if acc.ErrorCount == 0 {
+			if summaryRow.ErrorCount == 0 {
 				summaryRow.GasRefund = &acc.MaxRefund
 			}
 
@@ -273,7 +280,7 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 			// whether the transaction succeeds or fails. For failed txs, use refund=0 in
 			// the formula since refunds aren't applied.
 			refundForCalc := acc.MaxRefund
-			if acc.ErrorCount > 0 {
+			if summaryRow.ErrorCount > 0 {
 				refundForCalc = 0
 			}
 
