@@ -28,6 +28,10 @@ type RedisElector struct {
 	leadershipStartTime time.Time
 	stopped             bool
 
+	// Callback-based notification (guaranteed delivery)
+	callbacksMu sync.RWMutex
+	callbacks   []LeadershipCallback
+
 	leadershipChan chan bool
 	stopChan       chan struct{}
 	wg             sync.WaitGroup
@@ -154,6 +158,29 @@ func (e *RedisElector) GetLeaderID() (string, error) {
 	return val, nil
 }
 
+// OnLeadershipChange registers a callback for guaranteed leadership notification.
+// The callback is invoked synchronously when leadership status changes.
+// Multiple callbacks can be registered and will be invoked in registration order.
+func (e *RedisElector) OnLeadershipChange(callback LeadershipCallback) {
+	e.callbacksMu.Lock()
+	defer e.callbacksMu.Unlock()
+
+	e.callbacks = append(e.callbacks, callback)
+}
+
+// notifyLeadershipChange invokes all registered callbacks with the leadership status.
+// Callbacks are invoked synchronously in registration order.
+func (e *RedisElector) notifyLeadershipChange(ctx context.Context, isLeader bool) {
+	e.callbacksMu.RLock()
+	callbacks := make([]LeadershipCallback, len(e.callbacks))
+	copy(callbacks, e.callbacks)
+	e.callbacksMu.RUnlock()
+
+	for _, callback := range callbacks {
+		callback(ctx, isLeader)
+	}
+}
+
 // run is the main election loop.
 func (e *RedisElector) run(ctx context.Context) {
 	defer e.wg.Done()
@@ -163,7 +190,7 @@ func (e *RedisElector) run(ctx context.Context) {
 
 	// Try to acquire leadership immediately
 	if e.tryAcquireLeadership(ctx) {
-		e.handleLeadershipGain()
+		e.handleLeadershipGain(ctx)
 	}
 
 	for {
@@ -176,12 +203,12 @@ func (e *RedisElector) run(ctx context.Context) {
 			if e.IsLeader() {
 				// Try to renew leadership
 				if !e.renewLeadership(ctx) {
-					e.handleLeadershipLoss()
+					e.handleLeadershipLoss(ctx)
 				}
 			} else {
 				// Try to acquire leadership
 				if e.tryAcquireLeadership(ctx) {
-					e.handleLeadershipGain()
+					e.handleLeadershipGain(ctx)
 				}
 			}
 		}
@@ -304,9 +331,13 @@ func (e *RedisElector) releaseLeadership(ctx context.Context) error {
 }
 
 // handleLeadershipGain is called when leadership is acquired.
-func (e *RedisElector) handleLeadershipGain() {
+func (e *RedisElector) handleLeadershipGain(ctx context.Context) {
 	e.log.Info("Gained leadership")
 
+	// Notify callbacks first (guaranteed delivery)
+	e.notifyLeadershipChange(ctx, true)
+
+	// Send to channel for backward compatibility (best-effort)
 	select {
 	case e.leadershipChan <- true:
 	default:
@@ -315,7 +346,7 @@ func (e *RedisElector) handleLeadershipGain() {
 }
 
 // handleLeadershipLoss is called when leadership is lost.
-func (e *RedisElector) handleLeadershipLoss() {
+func (e *RedisElector) handleLeadershipLoss(ctx context.Context) {
 	e.mu.Lock()
 	wasLeader := e.isLeader
 	e.isLeader = false
@@ -330,6 +361,10 @@ func (e *RedisElector) handleLeadershipLoss() {
 
 	e.log.Info("Lost leadership")
 
+	// Notify callbacks first (guaranteed delivery)
+	e.notifyLeadershipChange(ctx, false)
+
+	// Send to channel for backward compatibility (best-effort)
 	select {
 	case e.leadershipChan <- false:
 	default:

@@ -3,6 +3,7 @@ package processor_test
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -586,4 +587,373 @@ func TestManager_ConcurrentConfiguration(t *testing.T) {
 	}
 
 	wg.Wait()
+}
+
+// =====================================
+// LEADERSHIP TRANSITION RACE CONDITION TESTS
+// =====================================
+
+const testLeaderKey = "test-prefix:leader:test:forwards"
+
+// createTestManager is a helper to create a manager for leadership tests.
+func createTestManager(t *testing.T, leaderEnabled bool) (*processor.Manager, *redis.Client) {
+	t.Helper()
+
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	config := &processor.Config{
+		Interval:    50 * time.Millisecond,
+		Mode:        "forwards",
+		Concurrency: 2,
+		LeaderElection: processor.LeaderElectionConfig{
+			Enabled:         leaderEnabled,
+			TTL:             500 * time.Millisecond,
+			RenewalInterval: 100 * time.Millisecond,
+			NodeID:          "race-test-node",
+		},
+		TransactionStructlog: structlog.Config{
+			Enabled: false,
+		},
+	}
+
+	redisClient := newTestRedis(t)
+
+	poolConfig := &ethereum.Config{
+		Execution: []*execution.Config{
+			{
+				Name:        "test-node",
+				NodeAddress: "http://localhost:8545",
+			},
+		},
+	}
+	pool := ethereum.NewPool(log.WithField("component", "pool"), "test", poolConfig)
+
+	stateConfig := &state.Config{
+		Storage: state.StorageConfig{
+			Config: clickhouse.Config{
+				Addr: "localhost:9000",
+			},
+			Table: "test_leadership_race_blocks",
+		},
+		Limiter: state.LimiterConfig{
+			Enabled: false,
+		},
+	}
+
+	stateManager, err := state.NewManager(log.WithField("component", "state"), stateConfig)
+	require.NoError(t, err)
+
+	manager, err := processor.NewManager(log, config, pool, stateManager, redisClient, "test-prefix")
+	require.NoError(t, err)
+
+	return manager, redisClient
+}
+
+// TestManager_ConcurrentStopAndLeadershipLoss tests that Stop() and leadership loss
+// don't race to close the same blockProcessStop channel.
+//
+// This test should expose a potential panic if both paths try to close the same channel.
+// The bug is in manager.go where both Stop() and handleLeadershipLoss() have:
+//
+//	if m.blockProcessStop != nil {
+//	    select {
+//	    case <-m.blockProcessStop:
+//	    default:
+//	        close(m.blockProcessStop)
+//	    }
+//	}
+//
+// If they race, one can close while the other is checking, causing a panic.
+func TestManager_ConcurrentStopAndLeadershipLoss(t *testing.T) {
+	// Run multiple times to increase chance of hitting the race
+	for iteration := range 20 {
+		t.Run("iteration", func(t *testing.T) {
+			manager, redisClient := createTestManager(t, true)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+
+			// Track panics
+			var panicCount atomic.Int32
+
+			// Start the manager
+			startDone := make(chan struct{})
+
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						panicCount.Add(1)
+						t.Logf("Iteration %d: PANIC in Start: %v", iteration, r)
+					}
+
+					close(startDone)
+				}()
+
+				_ = manager.Start(ctx)
+			}()
+
+			// Wait for manager to start and potentially gain leadership
+			time.Sleep(200 * time.Millisecond)
+
+			// Now trigger concurrent stop and leadership loss
+			var wg sync.WaitGroup
+
+			// Goroutine 1: Call Stop()
+			wg.Add(1)
+
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						panicCount.Add(1)
+						t.Logf("Iteration %d: PANIC in Stop: %v", iteration, r)
+					}
+
+					wg.Done()
+				}()
+
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
+				defer stopCancel()
+
+				_ = manager.Stop(stopCtx)
+			}()
+
+			// Goroutine 2: Simulate leadership loss by deleting the Redis key
+			wg.Add(1)
+
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						panicCount.Add(1)
+						t.Logf("Iteration %d: PANIC in leadership loss: %v", iteration, r)
+					}
+
+					wg.Done()
+				}()
+
+				// Delete leader key to trigger leadership loss
+				redisClient.Del(context.Background(), "test-prefix:leader:test:forwards")
+			}()
+
+			wg.Wait()
+			<-startDone
+
+			// Check for panics
+			if panicCount.Load() > 0 {
+				t.Fatalf("Iteration %d: Detected %d panic(s) during concurrent stop/leadership loss",
+					iteration, panicCount.Load())
+			}
+		})
+	}
+}
+
+// TestManager_RapidLeadershipFlipping tests that rapid leadership gain/loss cycles
+// don't cause orphaned goroutines or channel leaks.
+//
+// The bug: handleLeadershipGain() creates a new blockProcessStop channel each time.
+// If leadership flips rapidly, old runBlockProcessing goroutines may be orphaned
+// because they're waiting on the old channel that's now unreachable.
+func TestManager_RapidLeadershipFlipping(t *testing.T) {
+	manager, redisClient := createTestManager(t, true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Start the manager
+	startDone := make(chan struct{})
+
+	go func() {
+		defer close(startDone)
+
+		_ = manager.Start(ctx)
+	}()
+
+	// Wait for initial startup
+	time.Sleep(200 * time.Millisecond)
+
+	// Rapidly flip leadership 20 times
+	for i := range 20 {
+		// Delete key to force leadership loss
+		redisClient.Del(context.Background(), testLeaderKey)
+		time.Sleep(30 * time.Millisecond)
+
+		// The manager should re-acquire leadership automatically
+		// (since it's the only instance)
+		time.Sleep(150 * time.Millisecond)
+
+		t.Logf("Flip %d complete", i)
+	}
+
+	// Now stop - this should NOT hang if goroutines are properly managed
+	stopDone := make(chan struct{})
+
+	go func() {
+		defer close(stopDone)
+
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer stopCancel()
+
+		err := manager.Stop(stopCtx)
+		if err != nil {
+			t.Logf("Stop error: %v", err)
+		}
+	}()
+
+	// Wait for stop with timeout - if it hangs, goroutines are orphaned
+	select {
+	case <-stopDone:
+		t.Log("Manager stopped successfully")
+	case <-time.After(5 * time.Second):
+		t.Fatal("CRITICAL: Manager.Stop() hung - likely orphaned goroutines waiting on unreachable channels")
+	}
+
+	cancel()
+	<-startDone
+}
+
+// TestManager_StopDuringLeadershipTransition tests stopping the manager
+// while a leadership transition is in progress.
+//
+// This can expose races where Stop() tries to close blockProcessStop
+// while handleLeadershipGain() is creating a new one.
+func TestManager_StopDuringLeadershipTransition(t *testing.T) {
+	for iteration := range 10 {
+		t.Run("iteration", func(t *testing.T) {
+			manager, redisClient := createTestManager(t, true)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			var panicCount atomic.Int32
+
+			// Start manager
+			startDone := make(chan struct{})
+
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						panicCount.Add(1)
+						t.Logf("Iteration %d: PANIC in Start: %v", iteration, r)
+					}
+
+					close(startDone)
+				}()
+
+				_ = manager.Start(ctx)
+			}()
+
+			// Wait for startup
+			time.Sleep(150 * time.Millisecond)
+
+			// Start rapid leadership flipping in background
+			flipDone := make(chan struct{})
+
+			go func() {
+				defer close(flipDone)
+
+				for i := 0; i < 10; i++ {
+					redisClient.Del(context.Background(), testLeaderKey)
+					time.Sleep(20 * time.Millisecond)
+				}
+			}()
+
+			// While flipping, call Stop
+			time.Sleep(50 * time.Millisecond)
+
+			stopDone := make(chan struct{})
+
+			go func() {
+				defer func() {
+					if r := recover(); r != nil {
+						panicCount.Add(1)
+						t.Logf("Iteration %d: PANIC in Stop: %v", iteration, r)
+					}
+
+					close(stopDone)
+				}()
+
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer stopCancel()
+
+				_ = manager.Stop(stopCtx)
+			}()
+
+			// Wait for everything
+			<-flipDone
+
+			select {
+			case <-stopDone:
+				// Good
+			case <-time.After(3 * time.Second):
+				t.Fatalf("Iteration %d: Stop hung during leadership transition", iteration)
+			}
+
+			cancel()
+			<-startDone
+
+			if panicCount.Load() > 0 {
+				t.Fatalf("Iteration %d: Detected %d panic(s)", iteration, panicCount.Load())
+			}
+		})
+	}
+}
+
+// TestManager_WaitGroupLeakOnRapidTransitions verifies that the WaitGroup
+// count stays balanced during rapid leadership transitions.
+//
+// The bug: handleLeadershipGain() calls wg.Add(1) and spawns a goroutine.
+// If the goroutine doesn't properly exit (e.g., stuck on old channel),
+// wg.Wait() in Stop() will hang forever.
+func TestManager_WaitGroupLeakOnRapidTransitions(t *testing.T) {
+	manager, redisClient := createTestManager(t, true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	startDone := make(chan struct{})
+
+	go func() {
+		defer close(startDone)
+
+		_ = manager.Start(ctx)
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// Do many rapid transitions
+	for i := range 30 {
+		redisClient.Del(context.Background(), testLeaderKey)
+		time.Sleep(20 * time.Millisecond)
+
+		// Let it re-acquire
+		time.Sleep(120 * time.Millisecond)
+
+		if i%10 == 0 {
+			t.Logf("Completed %d transitions", i)
+		}
+	}
+
+	// Stop with a strict timeout
+	stopComplete := make(chan error, 1)
+
+	go func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer stopCancel()
+
+		stopComplete <- manager.Stop(stopCtx)
+	}()
+
+	select {
+	case err := <-stopComplete:
+		if err != nil {
+			t.Logf("Stop returned error: %v", err)
+		}
+
+		t.Log("Stop completed - WaitGroup balanced correctly")
+	case <-time.After(5 * time.Second):
+		t.Fatal("CRITICAL: Stop hung - WaitGroup leak detected (orphaned goroutines)")
+	}
+
+	cancel()
+	<-startDone
 }

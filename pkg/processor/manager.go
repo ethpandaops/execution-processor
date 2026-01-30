@@ -81,9 +81,8 @@ type Manager struct {
 	network *ethereum.Network
 
 	// Leader election
-	leaderElector    leaderelection.Elector
-	isLeader         bool
-	leadershipChange chan bool
+	leaderElector leaderelection.Elector
+	isLeader      bool
 
 	stopChan         chan struct{}
 	blockProcessStop chan struct{}
@@ -141,7 +140,6 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 		redisPrefix:         redisPrefix,
 		asynqClient:         asynqClient,
 		asynqServer:         asynqServer,
-		leadershipChange:    make(chan bool, 1),
 		stopChan:            make(chan struct{}),
 		blockProcessStop:    make(chan struct{}),
 		queueHighWaterMarks: make(map[string]int),
@@ -217,21 +215,21 @@ func (m *Manager) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to create leader elector: %w", err)
 		}
 
+		// Register callback for guaranteed leadership notification
+		m.leaderElector.OnLeadershipChange(func(ctx context.Context, isLeader bool) {
+			if isLeader {
+				m.handleLeadershipGain(ctx)
+			} else {
+				m.handleLeadershipLoss()
+			}
+		})
+
 		// Start leader election
 		if err := m.leaderElector.Start(ctx); err != nil {
 			return fmt.Errorf("failed to start leader election: %w", err)
 		}
 
-		// Monitor leadership changes
-		m.wg.Add(1)
-
-		go func() {
-			defer m.wg.Done()
-
-			m.monitorLeadership(ctx)
-		}()
-
-		m.log.Debug("Leader election started, monitoring for leadership changes")
+		m.log.Debug("Leader election started with callback-based notification")
 	} else {
 		// If leader election is disabled, always act as leader
 		m.isLeader = true
@@ -614,35 +612,6 @@ func (m *Manager) setupWorkerHandlers() (*asynq.ServeMux, error) {
 	}
 
 	return mux, nil
-}
-
-func (m *Manager) monitorLeadership(ctx context.Context) {
-	m.log.Debug("Started monitoring leadership changes")
-
-	leadershipChan := m.leaderElector.LeadershipChannel()
-
-	for {
-		select {
-		case <-ctx.Done():
-			m.log.Debug("Context cancelled in monitorLeadership")
-
-			return
-		case isLeader, ok := <-leadershipChan:
-			if !ok {
-				m.log.Debug("Leadership channel closed")
-
-				return
-			}
-
-			m.log.WithField("isLeader", isLeader).Debug("Received leadership change event")
-
-			if isLeader {
-				m.handleLeadershipGain(ctx)
-			} else {
-				m.handleLeadershipLoss()
-			}
-		}
-	}
 }
 
 func (m *Manager) handleLeadershipGain(ctx context.Context) {
