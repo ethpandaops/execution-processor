@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
@@ -36,14 +37,33 @@ func (t *PendingTracker) blockKey(blockNumber uint64, network, processor, mode s
 	return fmt.Sprintf("%s:block:%s:%s:%s:%d", t.prefix, network, processor, mode, blockNumber)
 }
 
+// ErrBlockAlreadyBeingProcessed is returned when attempting to initialize a block that is already being processed.
+var ErrBlockAlreadyBeingProcessed = fmt.Errorf("block is already being processed")
+
 // InitBlock initializes tracking for a block with the given task count.
-// This should be called after enqueueing all tasks for a block.
+// Uses SetNX to ensure only one processor can claim a block at a time.
+// Returns ErrBlockAlreadyBeingProcessed if the block is already being tracked.
+// This should be called BEFORE MarkBlockEnqueued to prevent race conditions.
 func (t *PendingTracker) InitBlock(ctx context.Context, blockNumber uint64, taskCount int, network, processor, mode string) error {
 	key := t.blockKey(blockNumber, network, processor, mode)
 
-	err := t.redis.Set(ctx, key, taskCount, 0).Err()
+	// Use SetNX to atomically check-and-set - only succeeds if key doesn't exist
+	// TTL of 30 minutes prevents orphaned keys if processor crashes
+	wasSet, err := t.redis.SetNX(ctx, key, taskCount, 30*time.Minute).Result()
 	if err != nil {
 		return fmt.Errorf("failed to init block tracking: %w", err)
+	}
+
+	if !wasSet {
+		t.log.WithFields(logrus.Fields{
+			"block_number": blockNumber,
+			"network":      network,
+			"processor":    processor,
+			"mode":         mode,
+			"key":          key,
+		}).Debug("Block already being processed by another worker")
+
+		return ErrBlockAlreadyBeingProcessed
 	}
 
 	t.log.WithFields(logrus.Fields{

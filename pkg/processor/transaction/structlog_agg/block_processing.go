@@ -148,7 +148,30 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	// tasks complete before the block is registered in ClickHouse
 	expectedTaskCount := len(block.Transactions())
 
-	// Mark the block as enqueued FIRST (phase 1 of two-phase completion)
+	// Acquire exclusive lock on this block via Redis FIRST
+	// This prevents multiple workers from processing the same block concurrently
+	if initErr := p.pendingTracker.InitBlock(ctx, nextBlock.Uint64(), expectedTaskCount, p.network.Name, p.Name(), p.processingMode); initErr != nil {
+		// If block is already being processed by another worker, skip gracefully
+		if errors.Is(initErr, tracker.ErrBlockAlreadyBeingProcessed) {
+			p.log.WithFields(logrus.Fields{
+				"network":      p.network.Name,
+				"block_number": nextBlock,
+			}).Debug("Block already being processed by another worker, skipping")
+
+			common.BlockProcessingSkipped.WithLabelValues(p.network.Name, p.Name(), "already_processing").Inc()
+
+			return nil
+		}
+
+		p.log.WithError(initErr).WithFields(logrus.Fields{
+			"network":      p.network.Name,
+			"block_number": nextBlock,
+		}).Error("could not init block tracking in Redis")
+
+		return initErr
+	}
+
+	// Mark the block as enqueued AFTER acquiring Redis lock (phase 1 of two-phase completion)
 	// This ensures the complete=0 record exists before any task can complete
 	if markErr := p.stateManager.MarkBlockEnqueued(ctx, nextBlock.Uint64(), expectedTaskCount, p.network.Name, p.Name()); markErr != nil {
 		p.log.WithError(markErr).WithFields(logrus.Fields{
@@ -156,17 +179,10 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 			"block_number": nextBlock,
 		}).Error("could not mark block as enqueued")
 
+		// Clean up Redis lock since we failed to mark in ClickHouse
+		_ = p.pendingTracker.CleanupBlock(ctx, nextBlock.Uint64(), p.network.Name, p.Name(), p.processingMode)
+
 		return markErr
-	}
-
-	// Initialize block tracking in Redis BEFORE enqueueing tasks
-	if initErr := p.pendingTracker.InitBlock(ctx, nextBlock.Uint64(), expectedTaskCount, p.network.Name, p.Name(), p.processingMode); initErr != nil {
-		p.log.WithError(initErr).WithFields(logrus.Fields{
-			"network":      p.network.Name,
-			"block_number": nextBlock,
-		}).Error("could not init block tracking in Redis")
-
-		return initErr
 	}
 
 	// Enqueue tasks for each transaction LAST
