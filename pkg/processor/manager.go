@@ -515,7 +515,9 @@ func (m *Manager) startProcessorWithRetry(ctx context.Context, processor tracker
 	}
 }
 
-func (m *Manager) processBlocks(ctx context.Context) {
+// processBlocks processes the next block for all registered processors.
+// Returns true if any processor successfully processed a block, false otherwise.
+func (m *Manager) processBlocks(ctx context.Context) bool {
 	m.log.WithField("processor_count", len(m.processors)).Debug("Starting to process blocks")
 
 	// Check if we should skip due to queue backpressure
@@ -525,7 +527,7 @@ func (m *Manager) processBlocks(ctx context.Context) {
 			"max_queue_size": m.config.MaxProcessQueueSize,
 		}).Warn("Skipping block processing due to queue backpressure")
 
-		return
+		return false
 	}
 
 	// Get execution node head for head distance calculation
@@ -537,6 +539,8 @@ func (m *Manager) processBlocks(ctx context.Context) {
 			executionHead = new(big.Int).SetUint64(*latestBlockNum)
 		}
 	}
+
+	workDone := false
 
 	for name, processor := range m.processors {
 		m.log.WithField("processor", name).Debug("Processing next block for processor")
@@ -553,6 +557,8 @@ func (m *Manager) processBlocks(ctx context.Context) {
 
 			common.ProcessorErrors.WithLabelValues(m.network.Name, name, "process_block", "processing").Inc()
 		} else {
+			workDone = true
+
 			// Track processing duration
 			duration := time.Since(startTime)
 
@@ -568,6 +574,8 @@ func (m *Manager) processBlocks(ctx context.Context) {
 		// Update head distance metric (regardless of success/failure to track current distance)
 		m.updateHeadDistanceMetric(ctx, name, executionHead)
 	}
+
+	return workDone
 }
 
 // updateHeadDistanceMetric calculates and updates the head distance metric for a processor.
@@ -689,10 +697,7 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 		m.log.Debug("Context is active, proceeding with block processing")
 	}
 
-	blockTicker := time.NewTicker(m.config.Interval)
 	queueMonitorTicker := time.NewTicker(30 * time.Second) // Monitor queues every 30s
-
-	defer blockTicker.Stop()
 	defer queueMonitorTicker.Stop()
 
 	m.log.WithFields(logrus.Fields{
@@ -729,20 +734,26 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 			m.log.Info("Block processing stopped")
 
 			return
-		case <-blockTicker.C:
-			// Only process if we're still the leader
-			if m.isLeader {
-				m.log.Debug("Block processing ticker fired")
-				m.processBlocks(ctx)
-			} else {
+		case <-queueMonitorTicker.C:
+			m.log.Debug("Queue monitoring ticker fired")
+			m.startQueueMonitoring(ctx)
+		default:
+			if !m.isLeader {
 				m.log.Warn("No longer leader but block processing still running - stopping")
 
 				return
 			}
-		case <-queueMonitorTicker.C:
-			// Monitor queue health
-			m.log.Debug("Queue monitoring ticker fired")
-			m.startQueueMonitoring(ctx)
+
+			workDone := m.processBlocks(ctx)
+
+			if m.config.Interval > 0 {
+				// Fixed interval mode - always sleep the configured duration
+				time.Sleep(m.config.Interval)
+			} else if !workDone {
+				// Zero interval mode with no work - small backoff to prevent CPU spin
+				time.Sleep(DefaultNoWorkBackoff)
+			}
+			// Zero interval with work done - loop immediately (no sleep)
 		}
 	}
 }
