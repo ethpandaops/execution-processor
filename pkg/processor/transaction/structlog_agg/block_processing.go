@@ -143,30 +143,47 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		return nil
 	}
 
-	// Enqueue tasks for each transaction
+	// Calculate expected task count before enqueueing
+	// This MUST happen before tasks are enqueued to avoid race conditions where
+	// tasks complete before the block is registered in ClickHouse
+	expectedTaskCount := len(block.Transactions())
+
+	// Mark the block as enqueued FIRST (phase 1 of two-phase completion)
+	// This ensures the complete=0 record exists before any task can complete
+	if markErr := p.stateManager.MarkBlockEnqueued(ctx, nextBlock.Uint64(), expectedTaskCount, p.network.Name, p.Name()); markErr != nil {
+		p.log.WithError(markErr).WithFields(logrus.Fields{
+			"network":      p.network.Name,
+			"block_number": nextBlock,
+		}).Error("could not mark block as enqueued")
+
+		return markErr
+	}
+
+	// Initialize block tracking in Redis BEFORE enqueueing tasks
+	if initErr := p.pendingTracker.InitBlock(ctx, nextBlock.Uint64(), expectedTaskCount, p.network.Name, p.Name(), p.processingMode); initErr != nil {
+		p.log.WithError(initErr).WithFields(logrus.Fields{
+			"network":      p.network.Name,
+			"block_number": nextBlock,
+		}).Error("could not init block tracking in Redis")
+
+		return initErr
+	}
+
+	// Enqueue tasks for each transaction LAST
+	// Tasks may start processing immediately, but the block is already registered
 	taskCount, err := p.EnqueueTransactionTasks(ctx, block)
 	if err != nil {
 		return fmt.Errorf("failed to enqueue transaction tasks: %w", err)
 	}
 
-	// Initialize block tracking in Redis
-	if err := p.pendingTracker.InitBlock(ctx, nextBlock.Uint64(), taskCount, p.network.Name, p.Name(), p.processingMode); err != nil {
-		p.log.WithError(err).WithFields(logrus.Fields{
-			"network":      p.network.Name,
-			"block_number": nextBlock,
-		}).Error("could not init block tracking in Redis")
-
-		return err
-	}
-
-	// Mark the block as enqueued (phase 1 of two-phase completion)
-	if err := p.stateManager.MarkBlockEnqueued(ctx, nextBlock.Uint64(), taskCount, p.network.Name, p.Name()); err != nil {
-		p.log.WithError(err).WithFields(logrus.Fields{
-			"network":      p.network.Name,
-			"block_number": nextBlock,
-		}).Error("could not mark block as enqueued")
-
-		return err
+	// Log warning if actual count differs from expected (some tasks failed to enqueue)
+	if taskCount != expectedTaskCount {
+		p.log.WithFields(logrus.Fields{
+			"network":             p.network.Name,
+			"block_number":        nextBlock,
+			"expected_task_count": expectedTaskCount,
+			"actual_task_count":   taskCount,
+		}).Warn("task count mismatch - some tasks may have failed to enqueue")
 	}
 
 	p.log.WithFields(logrus.Fields{
