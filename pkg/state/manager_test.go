@@ -3,7 +3,9 @@ package state
 import (
 	"context"
 	"math/big"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/ClickHouse/ch-go"
 	"github.com/sirupsen/logrus"
@@ -548,4 +550,204 @@ func TestGetNewestIncompleteBlock(t *testing.T) {
 			mockClient.AssertExpectations(t)
 		})
 	}
+}
+
+func TestLimiterCache_Hit(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+
+	mockLimiter := new(MockClickHouseClient)
+
+	manager := &Manager{
+		log:               log.WithField("test", "cache_hit"),
+		limiterClient:     mockLimiter,
+		limiterTable:      "test_limiter_table",
+		limiterEnabled:    true,
+		limiterCacheValue: make(map[string]*big.Int, 1),
+		network:           "mainnet",
+	}
+
+	// Pre-populate cache
+	manager.limiterCacheValue["mainnet"] = big.NewInt(12345)
+
+	ctx := context.Background()
+	result, err := manager.getLimiterMaxBlock(ctx, "mainnet")
+
+	// Should return cached value without querying
+	assert.NoError(t, err)
+	assert.Equal(t, big.NewInt(12345), result)
+
+	// Mock should NOT have been called - that's the point of the cache
+	mockLimiter.AssertNotCalled(t, "QueryUInt64", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestLimiterCache_Miss(t *testing.T) {
+	ctx := context.Background()
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+
+	mockLimiter := new(MockClickHouseClient)
+	mockLimiter.On("QueryUInt64", ctx, mock.AnythingOfType("string"), "block_number").Return(uint64Ptr(54321), nil)
+
+	manager := &Manager{
+		log:               log.WithField("test", "cache_miss"),
+		limiterClient:     mockLimiter,
+		limiterTable:      "test_limiter_table",
+		limiterEnabled:    true,
+		limiterCacheValue: make(map[string]*big.Int, 1),
+		network:           "mainnet",
+	}
+
+	// Cache is empty, so should query
+	result, err := manager.getLimiterMaxBlock(ctx, "mainnet")
+
+	assert.NoError(t, err)
+	assert.Equal(t, big.NewInt(54321), result)
+
+	mockLimiter.AssertExpectations(t)
+}
+
+func TestLimiterCache_RefreshUpdatesCache(t *testing.T) {
+	ctx := context.Background()
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+
+	mockLimiter := new(MockClickHouseClient)
+	mockLimiter.On("QueryUInt64", mock.Anything, mock.AnythingOfType("string"), "block_number").Return(uint64Ptr(99999), nil)
+
+	manager := &Manager{
+		log:               log.WithField("test", "refresh"),
+		limiterClient:     mockLimiter,
+		limiterTable:      "test_limiter_table",
+		limiterEnabled:    true,
+		limiterCacheValue: make(map[string]*big.Int, 1),
+		network:           "mainnet",
+	}
+
+	// Refresh the cache
+	manager.refreshLimiterCache()
+
+	// Wait a bit for the refresh to complete
+	time.Sleep(100 * time.Millisecond)
+
+	// Now getLimiterMaxBlock should return cached value
+	result, err := manager.getLimiterMaxBlock(ctx, "mainnet")
+
+	assert.NoError(t, err)
+	assert.Equal(t, big.NewInt(99999), result)
+
+	// QueryUInt64 should only be called once (from refresh), not from getLimiterMaxBlock
+	mockLimiter.AssertNumberOfCalls(t, "QueryUInt64", 1)
+}
+
+func TestLimiterCache_ConcurrentAccess(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+
+	mockLimiter := new(MockClickHouseClient)
+
+	manager := &Manager{
+		log:               log.WithField("test", "concurrent"),
+		limiterClient:     mockLimiter,
+		limiterTable:      "test_limiter_table",
+		limiterEnabled:    true,
+		limiterCacheValue: make(map[string]*big.Int, 1),
+		network:           "mainnet",
+	}
+
+	// Pre-populate cache
+	manager.limiterCacheValue["mainnet"] = big.NewInt(12345)
+
+	// Run concurrent reads
+	var wg sync.WaitGroup
+
+	for i := 0; i < 100; i++ {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			ctx := context.Background()
+			result, err := manager.getLimiterMaxBlock(ctx, "mainnet")
+
+			assert.NoError(t, err)
+			assert.Equal(t, big.NewInt(12345), result)
+		}()
+	}
+
+	wg.Wait()
+
+	// No queries should have been made
+	mockLimiter.AssertNotCalled(t, "QueryUInt64", mock.Anything, mock.Anything, mock.Anything)
+}
+
+func TestLimiterCache_SingleStart(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+
+	mockLimiter := new(MockClickHouseClient)
+	// Return a value for the initial refresh
+	mockLimiter.On("QueryUInt64", mock.Anything, mock.AnythingOfType("string"), "block_number").Return(uint64Ptr(12345), nil)
+
+	manager := &Manager{
+		log:            log.WithField("test", "single_start"),
+		limiterClient:  mockLimiter,
+		limiterTable:   "test_limiter_table",
+		limiterEnabled: true,
+		network:        "mainnet",
+	}
+
+	// Start multiple times concurrently
+	var wg sync.WaitGroup
+
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+
+		go func() {
+			defer wg.Done()
+
+			manager.startLimiterCacheRefresh()
+		}()
+	}
+
+	wg.Wait()
+
+	// Should only have started once
+	assert.True(t, manager.limiterCacheStarted)
+	assert.NotNil(t, manager.limiterCacheStop)
+
+	// Clean up
+	manager.limiterCacheMu.Lock()
+
+	if manager.limiterCacheStarted && manager.limiterCacheStop != nil {
+		close(manager.limiterCacheStop)
+		manager.limiterCacheStarted = false
+	}
+
+	manager.limiterCacheMu.Unlock()
+
+	// Give goroutine time to exit
+	time.Sleep(100 * time.Millisecond)
+}
+
+func TestLimiterCache_NoNetworkSkipsRefresh(t *testing.T) {
+	log := logrus.New()
+	log.SetLevel(logrus.DebugLevel)
+
+	mockLimiter := new(MockClickHouseClient)
+
+	manager := &Manager{
+		log:               log.WithField("test", "no_network"),
+		limiterClient:     mockLimiter,
+		limiterTable:      "test_limiter_table",
+		limiterEnabled:    true,
+		limiterCacheValue: make(map[string]*big.Int, 1),
+		network:           "", // Empty network
+	}
+
+	// Refresh should be a no-op
+	manager.refreshLimiterCache()
+
+	// No queries should have been made
+	mockLimiter.AssertNotCalled(t, "QueryUInt64", mock.Anything, mock.Anything, mock.Anything)
 }

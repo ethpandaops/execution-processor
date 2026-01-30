@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/big"
+	"sync"
 	"time"
 
 	"github.com/ClickHouse/ch-go"
@@ -12,9 +14,14 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
+	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	"github.com/ethpandaops/execution-processor/pkg/state"
+)
+
+const (
+	metricsUpdateInterval = 15 * time.Second
 )
 
 // Compile-time interface compliance check.
@@ -46,6 +53,12 @@ type Processor struct {
 
 	// Embedded limiter for shared blocking/completion logic
 	*tracker.Limiter
+
+	// Background metrics worker fields
+	metricsStop      chan struct{}
+	metricsWg        sync.WaitGroup
+	metricsStarted   bool
+	metricsStartedMu sync.Mutex
 }
 
 // New creates a new transaction structlog_agg processor.
@@ -112,6 +125,9 @@ func (p *Processor) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
 	}
 
+	// Start the background metrics worker
+	p.startMetricsWorker()
+
 	p.log.Info("Transaction structlog_agg processor ready")
 
 	return nil
@@ -120,6 +136,9 @@ func (p *Processor) Start(ctx context.Context) error {
 // Stop stops the processor.
 func (p *Processor) Stop(ctx context.Context) error {
 	p.log.Info("Stopping transaction structlog_agg processor")
+
+	// Stop the background metrics worker
+	p.stopMetricsWorker()
 
 	// Stop the ClickHouse client
 	return p.clickhouse.Stop()
@@ -224,4 +243,86 @@ func (p *Processor) insertCallFrames(ctx context.Context, frames []CallFrameRow,
 	}
 
 	return nil
+}
+
+// startMetricsWorker starts the background metrics update worker.
+func (p *Processor) startMetricsWorker() {
+	p.metricsStartedMu.Lock()
+	defer p.metricsStartedMu.Unlock()
+
+	if p.metricsStarted {
+		return
+	}
+
+	p.metricsStarted = true
+	p.metricsStop = make(chan struct{})
+	p.metricsWg.Add(1)
+
+	go p.runMetricsWorker()
+}
+
+// stopMetricsWorker stops the background metrics update worker.
+func (p *Processor) stopMetricsWorker() {
+	p.metricsStartedMu.Lock()
+	defer p.metricsStartedMu.Unlock()
+
+	if !p.metricsStarted {
+		return
+	}
+
+	close(p.metricsStop)
+	p.metricsWg.Wait()
+	p.metricsStarted = false
+}
+
+// runMetricsWorker runs the background metrics update loop.
+func (p *Processor) runMetricsWorker() {
+	defer p.metricsWg.Done()
+
+	ticker := time.NewTicker(metricsUpdateInterval)
+	defer ticker.Stop()
+
+	// Do initial update
+	p.updateMetricsBackground()
+
+	for {
+		select {
+		case <-p.metricsStop:
+			return
+		case <-ticker.C:
+			p.updateMetricsBackground()
+		}
+	}
+}
+
+// updateMetricsBackground updates expensive metrics in the background.
+func (p *Processor) updateMetricsBackground() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Update blocks stored min/max
+	minBlock, maxBlock, err := p.stateManager.GetMinMaxStoredBlocks(ctx, p.network.Name, ProcessorName)
+	if err != nil {
+		p.log.WithError(err).WithField("network", p.network.Name).Debug("failed to get min/max stored blocks")
+	} else if minBlock != nil && maxBlock != nil {
+		common.BlocksStored.WithLabelValues(p.network.Name, ProcessorName, "min").Set(float64(minBlock.Int64()))
+		common.BlocksStored.WithLabelValues(p.network.Name, ProcessorName, "max").Set(float64(maxBlock.Int64()))
+	}
+
+	// Update head distance metric
+	node := p.pool.GetHealthyExecutionNode()
+
+	if node != nil {
+		if latestBlockNum, err := node.BlockNumber(ctx); err == nil && latestBlockNum != nil {
+			executionHead := new(big.Int).SetUint64(*latestBlockNum)
+
+			distance, headType, err := p.stateManager.GetHeadDistance(ctx, ProcessorName, p.network.Name, p.processingMode, executionHead)
+			if err != nil {
+				p.log.WithError(err).Debug("Failed to calculate head distance in background metrics")
+				common.HeadDistance.WithLabelValues(p.network.Name, ProcessorName, "error").Set(-1)
+			} else {
+				common.HeadDistance.WithLabelValues(p.network.Name, ProcessorName, headType).Set(float64(distance))
+			}
+		}
+	}
 }
