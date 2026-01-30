@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -187,11 +186,7 @@ func (e *RedisElector) tryAcquire(ctx context.Context) bool {
 	)
 
 	if err := e.mutex.TryLockContext(ctx); err != nil {
-		// Don't log ErrFailed - that's normal when another node holds the lock
-		if !errors.Is(err, redsync.ErrFailed) {
-			e.log.WithError(err).Error("Failed to acquire leadership")
-			common.LeaderElectionErrors.WithLabelValues(e.network, e.nodeID, "acquire").Inc()
-		}
+		e.log.WithError(err).Info("Failed to acquire leadership")
 
 		return false
 	}
