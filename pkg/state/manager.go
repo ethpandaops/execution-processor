@@ -393,8 +393,11 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 }
 
 func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.Int, error) {
+	// Use toUInt64OrZero to handle the canonical_beacon_block table's Nullable(UInt32) column type.
+	// This casts to non-nullable UInt64 (required by ch-go) and returns 0 for NULL/no data.
+	// Block 0 is safe to treat as "no data" since execution payloads only exist post-merge.
 	query := fmt.Sprintf(`
-		SELECT max(execution_payload_block_number) AS block_number
+		SELECT toUInt64OrZero(max(execution_payload_block_number)) AS block_number
 		FROM %s FINAL
 		WHERE meta_network_name = '%s'
 	`, s.limiterTable, network)
@@ -409,8 +412,8 @@ func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.
 		return nil, fmt.Errorf("failed to get max execution payload block from %s: %w", s.limiterTable, err)
 	}
 
-	// Check if we got a result
-	if blockNumber == nil {
+	// Check if we got a result (0 means no data due to toUInt64OrZero)
+	if blockNumber == nil || *blockNumber == 0 {
 		// No blocks in limiter table, return genesis
 		s.log.WithFields(logrus.Fields{
 			"network": network,
