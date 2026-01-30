@@ -56,10 +56,7 @@ type WorkerConfig struct {
 }
 
 func (c *Config) Validate() error {
-	if c.Interval == 0 {
-		c.Interval = DefaultInterval
-	}
-
+	// Interval 0 = no delay (default), >0 = fixed interval between processing cycles
 	if c.Mode == "" {
 		c.Mode = tracker.FORWARDS_MODE
 	}

@@ -5,8 +5,9 @@ import "time"
 // Default configuration values for the processor manager.
 // Processor-specific defaults are in the tracker package.
 const (
-	// DefaultInterval is the default interval between processing cycles.
-	DefaultInterval = 10 * time.Second
+	// DefaultNoWorkBackoff is the backoff duration when no work is available.
+	// Used in zero-interval mode to prevent CPU spin when idle.
+	DefaultNoWorkBackoff = 10 * time.Millisecond
 
 	// DefaultConcurrency is the default number of concurrent workers for task processing.
 	DefaultConcurrency = 20
