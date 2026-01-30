@@ -847,7 +847,7 @@ func (s *Manager) queryLimiterMaxBlock(ctx context.Context, network string) (*bi
 	s.log.WithFields(logrus.Fields{
 		"network": network,
 		"table":   s.limiterTable,
-	}).Debug("Querying for maximum execution payload block number (optimized)")
+	}).Debug("Querying for maximum execution payload block number")
 
 	blockNumber, err := s.limiterClient.QueryUInt64(ctx, query, "block_number")
 	if err != nil {
