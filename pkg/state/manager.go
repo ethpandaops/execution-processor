@@ -442,7 +442,7 @@ func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.
 func (s *Manager) MarkBlockProcessed(ctx context.Context, blockNumber uint64, network, processor string) error {
 	// Insert using direct string substitution for table name
 	// Table name is validated during config initialization
-	query := fmt.Sprintf("INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name) VALUES ('%s', %d, '%s', '%s')", s.storageTable, time.Now().Format("2006-01-02 15:04:05"), blockNumber, processor, network)
+	query := fmt.Sprintf("INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name) VALUES ('%s', %d, '%s', '%s')", s.storageTable, time.Now().Format("2006-01-02 15:04:05.000"), blockNumber, processor, network)
 
 	err := s.storageClient.Execute(ctx, query)
 	if err != nil {
@@ -464,7 +464,7 @@ func (s *Manager) MarkBlockEnqueued(ctx context.Context, blockNumber uint64, tas
 	query := fmt.Sprintf(
 		"INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name, complete, task_count) VALUES ('%s', %d, '%s', '%s', 0, %d)",
 		s.storageTable,
-		time.Now().Format("2006-01-02 15:04:05"),
+		time.Now().Format("2006-01-02 15:04:05.000"),
 		blockNumber,
 		processor,
 		network,
@@ -493,7 +493,7 @@ func (s *Manager) MarkBlockComplete(ctx context.Context, blockNumber uint64, net
 	query := fmt.Sprintf(
 		"INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name, complete, task_count) VALUES ('%s', %d, '%s', '%s', 1, 0)",
 		s.storageTable,
-		time.Now().Format("2006-01-02 15:04:05"),
+		time.Now().Format("2006-01-02 15:04:05.000"),
 		blockNumber,
 		processor,
 		network,
