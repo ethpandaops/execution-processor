@@ -80,8 +80,8 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		return nil
 	}
 
-	// Update block metrics
-	p.updateBlockMetrics(ctx, nextBlock)
+	// Update lightweight block height metric only (expensive metrics moved to background worker)
+	common.BlockHeight.WithLabelValues(p.network.Name, ProcessorName).Set(float64(nextBlock.Int64()))
 
 	// Get healthy execution node
 	node = p.pool.GetHealthyExecutionNode()
@@ -261,35 +261,4 @@ func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block execution
 	}
 
 	return enqueuedCount, nil
-}
-
-// updateBlockMetrics updates block-related metrics.
-func (p *Processor) updateBlockMetrics(ctx context.Context, blockNumber *big.Int) {
-	// Update block height
-	common.BlockHeight.WithLabelValues(p.network.Name, ProcessorName).Set(float64(blockNumber.Int64()))
-
-	// Update blocks stored min/max
-	minBlock, maxBlock, err := p.stateManager.GetMinMaxStoredBlocks(ctx, p.network.Name, ProcessorName)
-	if err != nil {
-		p.log.WithError(err).WithField("network", p.network.Name).Debug("failed to get min/max stored blocks")
-	} else if minBlock != nil && maxBlock != nil {
-		common.BlocksStored.WithLabelValues(p.network.Name, ProcessorName, "min").Set(float64(minBlock.Int64()))
-		common.BlocksStored.WithLabelValues(p.network.Name, ProcessorName, "max").Set(float64(maxBlock.Int64()))
-	}
-
-	// Update head distance metric
-	node := p.pool.GetHealthyExecutionNode()
-	if node != nil {
-		if latestBlockNum, err := node.BlockNumber(ctx); err == nil && latestBlockNum != nil {
-			executionHead := new(big.Int).SetUint64(*latestBlockNum)
-
-			distance, headType, err := p.stateManager.GetHeadDistance(ctx, ProcessorName, p.network.Name, p.processingMode, executionHead)
-			if err != nil {
-				p.log.WithError(err).Debug("Failed to calculate head distance in processor metrics")
-				common.HeadDistance.WithLabelValues(p.network.Name, ProcessorName, "error").Set(-1)
-			} else {
-				common.HeadDistance.WithLabelValues(p.network.Name, ProcessorName, headType).Set(float64(distance))
-			}
-		}
-	}
 }

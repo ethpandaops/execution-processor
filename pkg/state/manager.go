@@ -5,11 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sync"
 	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	limiterCacheRefreshInterval = 6 * time.Second
 )
 
 // Sentinel errors.
@@ -25,6 +30,12 @@ type Manager struct {
 	limiterTable   string
 	limiterEnabled bool
 	network        string
+
+	// Limiter cache fields
+	limiterCacheMu      sync.RWMutex
+	limiterCacheValue   map[string]*big.Int // network -> max block
+	limiterCacheStop    chan struct{}
+	limiterCacheStarted bool
 }
 
 func NewManager(log logrus.FieldLogger, config *Config) (*Manager, error) {
@@ -84,6 +95,9 @@ func (s *Manager) Start(ctx context.Context) error {
 		if err := s.startClientWithRetry(ctx, s.limiterClient, "limiter"); err != nil {
 			return fmt.Errorf("failed to start limiter client: %w", err)
 		}
+
+		// Start the limiter cache refresh goroutine
+		s.startLimiterCacheRefresh()
 	}
 
 	return nil
@@ -134,6 +148,16 @@ func (s *Manager) startClientWithRetry(ctx context.Context, client clickhouse.Cl
 
 func (s *Manager) Stop(ctx context.Context) error {
 	var err error
+
+	// Stop the limiter cache refresh goroutine
+	s.limiterCacheMu.Lock()
+
+	if s.limiterCacheStarted && s.limiterCacheStop != nil {
+		close(s.limiterCacheStop)
+		s.limiterCacheStarted = false
+	}
+
+	s.limiterCacheMu.Unlock()
 
 	if stopErr := s.storageClient.Stop(); stopErr != nil {
 		err = fmt.Errorf("failed to stop storage client: %w", stopErr)
@@ -393,43 +417,26 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 }
 
 func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.Int, error) {
-	// Use ifNull + toUInt64 to handle the canonical_beacon_block table's Nullable(UInt32) column type.
-	// - ifNull converts NULL to 0 and strips the Nullable wrapper
-	// - toUInt64 casts UInt32 to UInt64 (required by ch-go decoder)
-	// Block 0 is safe to treat as "no data" since execution payloads only exist post-merge.
-	query := fmt.Sprintf(`
-		SELECT toUInt64(ifNull(max(execution_payload_block_number), 0)) AS block_number
-		FROM %s FINAL
-		WHERE meta_network_name = '%s'
-	`, s.limiterTable, network)
+	// Try to get from cache first
+	s.limiterCacheMu.RLock()
+	cachedValue, ok := s.limiterCacheValue[network]
+	s.limiterCacheMu.RUnlock()
 
+	if ok && cachedValue != nil {
+		s.log.WithFields(logrus.Fields{
+			"network":     network,
+			"limiter_max": cachedValue.String(),
+		}).Debug("Returning limiter max block from cache")
+
+		return cachedValue, nil
+	}
+
+	// Cache miss - query directly (this should be rare after startup)
 	s.log.WithFields(logrus.Fields{
 		"network": network,
-		"table":   s.limiterTable,
-	}).Debug("Querying for maximum execution payload block number")
+	}).Debug("Limiter cache miss, querying directly")
 
-	blockNumber, err := s.limiterClient.QueryUInt64(ctx, query, "block_number")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get max execution payload block from %s: %w", s.limiterTable, err)
-	}
-
-	// Check if we got a result (0 means no data due to toUInt64OrZero)
-	if blockNumber == nil || *blockNumber == 0 {
-		// No blocks in limiter table, return genesis
-		s.log.WithFields(logrus.Fields{
-			"network": network,
-		}).Debug("No blocks found in limiter table, returning genesis block as max")
-
-		return big.NewInt(0), nil
-	}
-
-	maxBlock := new(big.Int).SetUint64(*blockNumber)
-	s.log.WithFields(logrus.Fields{
-		"network":     network,
-		"limiter_max": maxBlock.String(),
-	}).Debug("Found maximum execution payload block number")
-
-	return maxBlock, nil
+	return s.queryLimiterMaxBlock(ctx, network)
 }
 
 func (s *Manager) MarkBlockProcessed(ctx context.Context, blockNumber uint64, network, processor string) error {
@@ -759,4 +766,97 @@ func (s *Manager) GetHeadDistance(ctx context.Context, processor, network, mode 
 	}).Debug("Calculated head distance using beacon chain head")
 
 	return distance, headType, nil
+}
+
+// startLimiterCacheRefresh starts the background goroutine for limiter cache refresh.
+// It ensures only one refresh goroutine runs even if called multiple times.
+func (s *Manager) startLimiterCacheRefresh() {
+	s.limiterCacheMu.Lock()
+
+	if s.limiterCacheStarted {
+		s.limiterCacheMu.Unlock()
+
+		return
+	}
+
+	s.limiterCacheStarted = true
+	s.limiterCacheValue = make(map[string]*big.Int, 1)
+	s.limiterCacheStop = make(chan struct{})
+	s.limiterCacheMu.Unlock()
+
+	go s.refreshLimiterCacheLoop()
+}
+
+// refreshLimiterCacheLoop runs the cache refresh loop in a background goroutine.
+func (s *Manager) refreshLimiterCacheLoop() {
+	ticker := time.NewTicker(limiterCacheRefreshInterval)
+	defer ticker.Stop()
+
+	// Do initial refresh immediately
+	s.refreshLimiterCache()
+
+	for {
+		select {
+		case <-s.limiterCacheStop:
+			return
+		case <-ticker.C:
+			s.refreshLimiterCache()
+		}
+	}
+}
+
+// refreshLimiterCache queries ClickHouse and updates the cache.
+func (s *Manager) refreshLimiterCache() {
+	if s.network == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	maxBlock, err := s.queryLimiterMaxBlock(ctx, s.network)
+	if err != nil {
+		s.log.WithError(err).Warn("Failed to refresh limiter cache")
+
+		return
+	}
+
+	s.limiterCacheMu.Lock()
+	s.limiterCacheValue[s.network] = maxBlock
+	s.limiterCacheMu.Unlock()
+
+	s.log.WithFields(logrus.Fields{
+		"network":     s.network,
+		"limiter_max": maxBlock.String(),
+	}).Debug("Refreshed limiter cache")
+}
+
+// queryLimiterMaxBlock performs the actual ClickHouse query.
+// Uses ORDER BY slot_start_date_time DESC LIMIT 1 to leverage the table's index.
+func (s *Manager) queryLimiterMaxBlock(ctx context.Context, network string) (*big.Int, error) {
+	// Optimized query: uses ORDER BY index instead of MAX() which requires full table scan
+	query := fmt.Sprintf(`
+		SELECT toUInt64(ifNull(execution_payload_block_number, 0)) AS block_number
+		FROM %s
+		WHERE meta_network_name = '%s'
+		  AND execution_payload_block_number IS NOT NULL
+		ORDER BY slot_start_date_time DESC
+		LIMIT 1
+	`, s.limiterTable, network)
+
+	s.log.WithFields(logrus.Fields{
+		"network": network,
+		"table":   s.limiterTable,
+	}).Debug("Querying for maximum execution payload block number")
+
+	blockNumber, err := s.limiterClient.QueryUInt64(ctx, query, "block_number")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query max execution payload block from %s: %w", s.limiterTable, err)
+	}
+
+	if blockNumber == nil || *blockNumber == 0 {
+		return big.NewInt(0), nil
+	}
+
+	return new(big.Int).SetUint64(*blockNumber), nil
 }
