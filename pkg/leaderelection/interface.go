@@ -22,13 +22,6 @@ type Elector interface {
 	// IsLeader returns true if this node is currently the leader
 	IsLeader() bool
 
-	// LeadershipChannel returns a channel that receives leadership changes
-	// true = gained leadership, false = lost leadership
-	//
-	// Deprecated: Use OnLeadershipChange for guaranteed delivery.
-	// This channel may drop events if the buffer is full.
-	LeadershipChannel() <-chan bool
-
 	// OnLeadershipChange registers a callback for guaranteed leadership notification.
 	// The callback is invoked synchronously when leadership status changes.
 	// Multiple callbacks can be registered and will be invoked in registration order.
@@ -36,9 +29,6 @@ type Elector interface {
 	// Important: Keep callbacks fast (< 100ms) to avoid delaying leadership renewal.
 	// For long-running operations, spawn a goroutine within the callback.
 	OnLeadershipChange(callback LeadershipCallback)
-
-	// GetLeaderID returns the current leader's ID
-	GetLeaderID() (string, error)
 }
 
 // Config holds configuration for leader election.
@@ -49,7 +39,7 @@ type Config struct {
 	// RenewalInterval is how often to renew the leader lock
 	RenewalInterval time.Duration
 
-	// NodeID is the unique identifier for this node
+	// NodeID is the unique identifier for this node (for logging/metrics only)
 	// If empty, a random ID will be generated
 	NodeID string
 }
