@@ -151,6 +151,13 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 func (m *Manager) Start(ctx context.Context) error {
 	m.log.Info("Starting processor manager")
 
+	// Start state manager (idempotent - safe to call even if already started by server.go).
+	// This ensures ClickHouse connections are established for embedded mode where
+	// the processor is started directly without the server wrapper.
+	if err := m.state.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start state manager: %w", err)
+	}
+
 	// wait for execution node to be healthy
 	node, err := m.pool.WaitForHealthyExecutionNode(ctx)
 	if err != nil {
