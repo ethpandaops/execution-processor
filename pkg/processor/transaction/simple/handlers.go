@@ -166,8 +166,25 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 		"success",
 	).Inc()
 
-	// Track block completion using embedded Blocker
-	p.TrackBlockCompletion(ctx, blockNumber.Uint64(), payload.ProcessingMode)
+	// Track task completion using SET-based tracker
+	taskID := GenerateTaskID(p.network.Name, blockNumber.Uint64())
+
+	allComplete, trackErr := p.completionTracker.TrackTaskCompletion(ctx, taskID, blockNumber.Uint64(), p.network.Name, p.Name(), payload.ProcessingMode)
+	if trackErr != nil {
+		p.log.WithError(trackErr).WithFields(logrus.Fields{
+			"block_number": blockNumber.Uint64(),
+			"task_id":      taskID,
+		}).Warn("Failed to track task completion")
+		// Non-fatal - stale detection will catch it
+	}
+
+	if allComplete {
+		if markErr := p.completionTracker.MarkBlockComplete(ctx, blockNumber.Uint64(), p.network.Name, p.Name(), payload.ProcessingMode); markErr != nil {
+			p.log.WithError(markErr).WithFields(logrus.Fields{
+				"block_number": blockNumber.Uint64(),
+			}).Error("Failed to mark block complete")
+		}
+	}
 
 	p.log.WithFields(logrus.Fields{
 		"block_number": blockNumber.Uint64(),

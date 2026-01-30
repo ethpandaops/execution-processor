@@ -123,6 +123,11 @@ type BlockProcessor interface {
 
 	// SetProcessingMode configures forwards or backwards processing.
 	SetProcessingMode(mode string)
+
+	// ReprocessBlock re-enqueues tasks for an orphaned block.
+	// Used when a block is in ClickHouse (complete=0) but has no Redis tracking.
+	// This can happen due to Redis TTL expiry, Redis restart, or crashes.
+	ReprocessBlock(ctx context.Context, blockNum uint64) error
 }
 
 // QueueInfo contains information about a processor queue.

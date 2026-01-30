@@ -25,4 +25,7 @@ const (
 
 	// DefaultLeaderRenewalInterval is the default renewal interval for leader election.
 	DefaultLeaderRenewalInterval = 3 * time.Second
+
+	// DefaultStaleBlockCheckInterval is the default interval for checking stale blocks.
+	DefaultStaleBlockCheckInterval = 1 * time.Minute
 )

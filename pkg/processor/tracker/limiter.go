@@ -21,42 +21,44 @@ type LimiterConfig struct {
 
 // LimiterDeps holds dependencies for the Limiter.
 type LimiterDeps struct {
-	Log            logrus.FieldLogger
-	StateProvider  StateProvider
-	PendingTracker *PendingTracker
-	Network        string
-	Processor      string
+	Log           logrus.FieldLogger
+	StateProvider StateProvider
+	Network       string
+	Processor     string
 }
 
 // Limiter provides shared blocking and completion functionality for processors.
 type Limiter struct {
-	log            logrus.FieldLogger
-	stateProvider  StateProvider
-	pendingTracker *PendingTracker
-	config         LimiterConfig
-	network        string
-	processor      string
+	log           logrus.FieldLogger
+	stateProvider StateProvider
+	config        LimiterConfig
+	network       string
+	processor     string
 }
 
 // NewLimiter creates a new Limiter.
 func NewLimiter(deps *LimiterDeps, config LimiterConfig) *Limiter {
 	return &Limiter{
-		log:            deps.Log,
-		stateProvider:  deps.StateProvider,
-		pendingTracker: deps.PendingTracker,
-		config:         config,
-		network:        deps.Network,
-		processor:      deps.Processor,
+		log:           deps.Log,
+		stateProvider: deps.StateProvider,
+		config:        config,
+		network:       deps.Network,
+		processor:     deps.Processor,
 	}
 }
 
 // IsBlockedByIncompleteBlocks checks if processing should be blocked based on distance
 // from the oldest/newest incomplete block (depending on processing mode).
-// Returns true if blocked, false if processing can proceed.
-func (l *Limiter) IsBlockedByIncompleteBlocks(ctx context.Context, nextBlock uint64, mode string) (bool, error) {
+// Returns: blocked status, blocking block number (if blocked), error.
+// The blocking block number can be used to check if the block is orphaned (no Redis tracking).
+func (l *Limiter) IsBlockedByIncompleteBlocks(
+	ctx context.Context,
+	nextBlock uint64,
+	mode string,
+) (bool, *uint64, error) {
 	// Safe conversion: MaxPendingBlockRange is validated to be > 0 during config validation
 	if l.config.MaxPendingBlockRange <= 0 {
-		return false, nil
+		return false, nil, nil
 	}
 
 	maxPendingBlockRange := uint64(l.config.MaxPendingBlockRange) //nolint:gosec // validated above
@@ -70,7 +72,7 @@ func (l *Limiter) IsBlockedByIncompleteBlocks(ctx context.Context, nextBlock uin
 			ctx, l.network, l.processor, searchMaxBlock,
 		)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 
 		if newestIncomplete != nil && (*newestIncomplete-nextBlock) >= maxPendingBlockRange {
@@ -83,7 +85,7 @@ func (l *Limiter) IsBlockedByIncompleteBlocks(ctx context.Context, nextBlock uin
 
 			common.BlockProcessingSkipped.WithLabelValues(l.network, l.processor, "max_pending_block_range").Inc()
 
-			return true, nil
+			return true, newestIncomplete, nil
 		}
 	} else {
 		// Forwards mode: check distance from oldest incomplete block
@@ -97,7 +99,7 @@ func (l *Limiter) IsBlockedByIncompleteBlocks(ctx context.Context, nextBlock uin
 			ctx, l.network, l.processor, searchMinBlock,
 		)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 
 		if oldestIncomplete != nil && (nextBlock-*oldestIncomplete) >= maxPendingBlockRange {
@@ -110,9 +112,9 @@ func (l *Limiter) IsBlockedByIncompleteBlocks(ctx context.Context, nextBlock uin
 
 			common.BlockProcessingSkipped.WithLabelValues(l.network, l.processor, "max_pending_block_range").Inc()
 
-			return true, nil
+			return true, oldestIncomplete, nil
 		}
 	}
 
-	return false, nil
+	return false, nil, nil
 }

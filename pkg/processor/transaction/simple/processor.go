@@ -43,10 +43,12 @@ type Processor struct {
 	asynqClient    *asynq.Client
 	processingMode string
 	redisPrefix    string
-	pendingTracker *tracker.PendingTracker
 
 	// Embedded limiter for shared blocking/completion logic
 	*tracker.Limiter
+
+	// Block completion tracker for SET-based task deduplication
+	completionTracker *tracker.BlockCompletionTracker
 }
 
 // New creates a new simple transaction processor.
@@ -71,34 +73,44 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 	}
 
 	log := deps.Log.WithField("processor", ProcessorName)
-	pendingTracker := tracker.NewPendingTracker(deps.RedisClient, deps.RedisPrefix, log)
 
 	// Create the limiter for shared functionality
 	limiter := tracker.NewLimiter(
 		&tracker.LimiterDeps{
-			Log:            log,
-			StateProvider:  deps.State,
-			PendingTracker: pendingTracker,
-			Network:        deps.Network.Name,
-			Processor:      ProcessorName,
+			Log:           log,
+			StateProvider: deps.State,
+			Network:       deps.Network.Name,
+			Processor:     ProcessorName,
 		},
 		tracker.LimiterConfig{
 			MaxPendingBlockRange: config.MaxPendingBlockRange,
 		},
 	)
 
+	// Create the block completion tracker for SET-based task deduplication
+	completionTracker := tracker.NewBlockCompletionTracker(
+		deps.RedisClient,
+		deps.RedisPrefix,
+		log,
+		deps.State,
+		tracker.BlockCompletionTrackerConfig{
+			StaleThreshold: tracker.DefaultStaleThreshold,
+			AutoRetryStale: true,
+		},
+	)
+
 	return &Processor{
-		log:            log,
-		pool:           deps.Pool,
-		stateManager:   deps.State,
-		clickhouse:     clickhouseClient,
-		config:         config,
-		network:        deps.Network,
-		asynqClient:    deps.AsynqClient,
-		processingMode: tracker.FORWARDS_MODE, // Default mode
-		redisPrefix:    deps.RedisPrefix,
-		pendingTracker: pendingTracker,
-		Limiter:        limiter,
+		log:               log,
+		pool:              deps.Pool,
+		stateManager:      deps.State,
+		clickhouse:        clickhouseClient,
+		config:            config,
+		network:           deps.Network,
+		asynqClient:       deps.AsynqClient,
+		processingMode:    tracker.FORWARDS_MODE, // Default mode
+		redisPrefix:       deps.RedisPrefix,
+		Limiter:           limiter,
+		completionTracker: completionTracker,
 	}, nil
 }
 
@@ -133,6 +145,11 @@ func (p *Processor) Stop(ctx context.Context) error {
 func (p *Processor) SetProcessingMode(mode string) {
 	p.processingMode = mode
 	p.log.WithField("mode", mode).Info("Processing mode updated")
+}
+
+// GetCompletionTracker returns the block completion tracker.
+func (p *Processor) GetCompletionTracker() *tracker.BlockCompletionTracker {
+	return p.completionTracker
 }
 
 // EnqueueTask enqueues a task to the specified queue with infinite retries.
