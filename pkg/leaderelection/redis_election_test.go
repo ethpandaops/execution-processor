@@ -106,45 +106,8 @@ func TestNewRedisElector(t *testing.T) {
 				if elector.IsLeader() {
 					t.Error("new elector should not be leader initially")
 				}
-
-				// Test that channel is created
-				ch := elector.LeadershipChannel()
-				if ch == nil {
-					t.Error("leadership channel should not be nil")
-				}
 			}
 		})
-	}
-}
-
-func TestRedisElector_GetLeaderID_NoLeader(t *testing.T) {
-	client := newTestRedis(t)
-
-	log := logrus.New()
-	log.SetLevel(logrus.ErrorLevel)
-
-	// Clean up any existing keys
-	ctx := context.Background()
-	client.Del(ctx, "test:leader:no-leader")
-
-	config := &leaderelection.Config{
-		TTL:             5 * time.Second,
-		RenewalInterval: 1 * time.Second,
-		NodeID:          "test-node",
-	}
-
-	elector, err := leaderelection.NewRedisElector(client, log, "test:leader:no-leader", config)
-	if err != nil {
-		t.Fatalf("failed to create elector: %v", err)
-	}
-
-	leaderID, err := elector.GetLeaderID()
-	if err == nil {
-		t.Error("expected error when no leader exists")
-	}
-
-	if leaderID != "" {
-		t.Errorf("expected empty leader ID, got %s", leaderID)
 	}
 }
 
@@ -215,6 +178,15 @@ func TestRedisElector_LeadershipAcquisition(t *testing.T) {
 		t.Fatalf("failed to create elector: %v", err)
 	}
 
+	// Track leadership via callback
+	var leadershipGained atomic.Bool
+
+	elector.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+		if isLeader {
+			leadershipGained.Store(true)
+		}
+	})
+
 	startCtx, startCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer startCancel()
 
@@ -225,30 +197,13 @@ func TestRedisElector_LeadershipAcquisition(t *testing.T) {
 	}
 
 	// Wait for leadership acquisition
-	leadershipChan := elector.LeadershipChannel()
-
-	select {
-	case isLeader := <-leadershipChan:
-		if !isLeader {
-			t.Error("expected to gain leadership")
-		}
-	case <-time.After(1 * time.Second):
-		t.Error("timeout waiting for leadership acquisition")
-	}
+	require.Eventually(t, func() bool {
+		return leadershipGained.Load()
+	}, 1*time.Second, 50*time.Millisecond, "should gain leadership via callback")
 
 	// Verify leadership status
 	if !elector.IsLeader() {
 		t.Error("elector should be leader")
-	}
-
-	// Verify leader ID
-	leaderID, err := elector.GetLeaderID()
-	if err != nil {
-		t.Errorf("failed to get leader ID: %v", err)
-	}
-
-	if leaderID != config.NodeID {
-		t.Errorf("expected leader ID %s, got %s", config.NodeID, leaderID)
 	}
 
 	// Stop and clean up
@@ -364,6 +319,14 @@ func TestRedisElector_LeadershipTransition(t *testing.T) {
 		t.Fatalf("failed to create elector1: %v", err)
 	}
 
+	var elector1Gained atomic.Bool
+
+	elector1.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+		if isLeader {
+			elector1Gained.Store(true)
+		}
+	})
+
 	startCtx, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer startCancel()
 
@@ -374,7 +337,9 @@ func TestRedisElector_LeadershipTransition(t *testing.T) {
 	}
 
 	// Wait for leadership
-	time.Sleep(200 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return elector1Gained.Load()
+	}, 1*time.Second, 50*time.Millisecond, "elector1 should gain leadership")
 
 	if !elector1.IsLeader() {
 		t.Error("elector1 should be leader")
@@ -401,6 +366,14 @@ func TestRedisElector_LeadershipTransition(t *testing.T) {
 		t.Fatalf("failed to create elector2: %v", err)
 	}
 
+	var elector2Gained atomic.Bool
+
+	elector2.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+		if isLeader {
+			elector2Gained.Store(true)
+		}
+	})
+
 	// Start second elector
 	err = elector2.Start(startCtx)
 	if err != nil {
@@ -408,29 +381,13 @@ func TestRedisElector_LeadershipTransition(t *testing.T) {
 	}
 
 	// Wait for leadership transition
-	leadershipChan := elector2.LeadershipChannel()
-
-	select {
-	case isLeader := <-leadershipChan:
-		if !isLeader {
-			t.Error("elector2 should gain leadership")
-		}
-	case <-time.After(3 * time.Second):
-		t.Error("timeout waiting for leadership transition")
-	}
+	require.Eventually(t, func() bool {
+		return elector2Gained.Load()
+	}, 3*time.Second, 100*time.Millisecond, "elector2 should gain leadership")
 
 	// Verify new leader
 	if !elector2.IsLeader() {
 		t.Error("elector2 should be leader")
-	}
-
-	leaderID, err := elector2.GetLeaderID()
-	if err != nil {
-		t.Errorf("failed to get leader ID: %v", err)
-	}
-
-	if leaderID != "node-2" {
-		t.Errorf("expected leader ID node-2, got %s", leaderID)
 	}
 
 	// Clean up
@@ -468,6 +425,19 @@ func TestRedisElector_RenewalFailure(t *testing.T) {
 	elector, err := leaderelection.NewRedisElector(client, log, "test:leader:renewal-failure", config)
 	require.NoError(t, err)
 
+	var (
+		gained atomic.Bool
+		lost   atomic.Bool
+	)
+
+	elector.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+		if isLeader {
+			gained.Store(true)
+		} else {
+			lost.Store(true)
+		}
+	})
+
 	startCtx, startCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer startCancel()
 
@@ -476,27 +446,21 @@ func TestRedisElector_RenewalFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	// Wait for leadership acquisition
-	leadershipChan := elector.LeadershipChannel()
-	select {
-	case isLeader := <-leadershipChan:
-		assert.True(t, isLeader, "Should gain leadership")
-	case <-time.After(1 * time.Second):
-		t.Fatal("Timeout waiting for leadership")
-	}
+	require.Eventually(t, func() bool {
+		return gained.Load()
+	}, 1*time.Second, 50*time.Millisecond, "Should gain leadership")
 
 	// Verify leadership
 	assert.True(t, elector.IsLeader())
 
-	// Simulate external interference - delete the key
-	client.Del(ctx, "test:leader:renewal-failure")
+	// Simulate external interference - set a different value to simulate another node holding lock
+	// (just deleting doesn't work because WithSetNXOnExtend recreates the key)
+	client.Set(ctx, "test:leader:renewal-failure", "different-node-value", config.TTL)
 
 	// Wait for leadership loss detection
-	select {
-	case isLeader := <-leadershipChan:
-		assert.False(t, isLeader, "Should lose leadership")
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for leadership loss")
-	}
+	require.Eventually(t, func() bool {
+		return lost.Load()
+	}, 2*time.Second, 50*time.Millisecond, "Should lose leadership")
 
 	// Verify leadership loss
 	assert.False(t, elector.IsLeader())
@@ -531,7 +495,7 @@ func TestRedisElector_ConcurrentElectors(t *testing.T) {
 	}
 
 	// Create multiple electors
-	for i := 0; i < numElectors; i++ {
+	for i := range numElectors {
 		nodeConfig := *config
 		nodeConfig.NodeID = fmt.Sprintf("node-%d", i)
 
@@ -546,6 +510,7 @@ func TestRedisElector_ConcurrentElectors(t *testing.T) {
 
 	// Start all electors simultaneously
 	var wg sync.WaitGroup
+
 	for i, elector := range electors {
 		wg.Add(1)
 
@@ -567,24 +532,15 @@ func TestRedisElector_ConcurrentElectors(t *testing.T) {
 	// Exactly one should be leader
 	leaderCount := 0
 
-	var leader *leaderelection.RedisElector
-
 	for i, elector := range electors {
 		if elector.IsLeader() {
 			leaderCount++
-			leader = elector
 
 			t.Logf("Elector %d is leader", i)
 		}
 	}
 
 	assert.Equal(t, 1, leaderCount, "Exactly one elector should be leader")
-	require.NotNil(t, leader)
-
-	// Verify leader ID
-	leaderID, err := leader.GetLeaderID()
-	assert.NoError(t, err)
-	assert.NotEmpty(t, leaderID)
 
 	// Stop all electors
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -733,289 +689,12 @@ func TestRedisElector_InvalidRedisAddress(t *testing.T) {
 	isLeader := elector.IsLeader()
 	assert.False(t, isLeader)
 
-	leaderID, err := elector.GetLeaderID()
-	assert.Error(t, err) // Should error due to connection failure
-	assert.Empty(t, leaderID)
-
 	// Stop should work even with connection issues
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer stopCancel()
 
 	err = elector.Stop(stopCtx)
 	assert.NoError(t, err)
-}
-
-// =====================================
-// CHANNEL OVERFLOW / GUARANTEED DELIVERY TESTS
-// =====================================
-
-// TestLeadershipChannelOverflow_LossEventDelivery tests that leadership loss events
-// are NOT dropped when the channel buffer is full.
-//
-// This test should FAIL with the current implementation because:
-// 1. The leadership channel has a buffer of 10.
-// 2. When the buffer is full, events are silently dropped with a warning log.
-// 3. A consumer that is slow (or blocked) can miss critical leadership loss events.
-// 4. This causes the consumer to think it's still leader when it's not.
-func TestLeadershipChannelOverflow_LossEventDelivery(t *testing.T) {
-	client := newTestRedis(t)
-
-	log := logrus.New()
-	log.SetLevel(logrus.WarnLevel) // Show warnings about dropped events
-
-	ctx := context.Background()
-	client.Del(ctx, "test:leader:overflow")
-
-	config := &leaderelection.Config{
-		TTL:             500 * time.Millisecond,
-		RenewalInterval: 100 * time.Millisecond,
-		NodeID:          "overflow-test-node",
-	}
-
-	elector, err := leaderelection.NewRedisElector(client, log, "test:leader:overflow", config)
-	require.NoError(t, err)
-
-	// Start the elector
-	startCtx, startCancel := context.WithCancel(context.Background())
-	defer startCancel()
-
-	err = elector.Start(startCtx)
-	require.NoError(t, err)
-
-	// Wait for initial leadership gain
-	leadershipChan := elector.LeadershipChannel()
-
-	select {
-	case isLeader := <-leadershipChan:
-		require.True(t, isLeader, "Should gain leadership initially")
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for initial leadership")
-	}
-
-	// Verify we're leader
-	require.True(t, elector.IsLeader(), "Should be leader after gaining leadership")
-
-	// Now simulate a slow consumer by NOT reading from the channel
-	// We'll set a different node as leader to force a leadership loss event
-	// The loss event should be delivered even if we haven't been reading
-
-	// Set a different node as leader to simulate another node taking over
-	client.Set(ctx, "test:leader:overflow", "different-node", config.TTL)
-
-	// Wait for the renewal cycle to detect the loss
-	// With 100ms renewal interval, this should happen within 200ms
-	time.Sleep(300 * time.Millisecond)
-
-	// At this point, IsLeader() should return false (internal state updated)
-	assert.False(t, elector.IsLeader(), "IsLeader() should return false after another node took over")
-
-	// CRITICAL: The leadership loss event MUST be available on the channel
-	// If it was dropped, this will timeout and the test fails
-	select {
-	case isLeader := <-leadershipChan:
-		assert.False(t, isLeader, "Should receive leadership LOSS event")
-	case <-time.After(1 * time.Second):
-		t.Fatal("CRITICAL: Leadership loss event was DROPPED - consumer never notified!")
-	}
-
-	// Cleanup
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer stopCancel()
-
-	_ = elector.Stop(stopCtx)
-}
-
-// TestLeadershipChannelOverflow_BufferExhaustion specifically tests what happens
-// when the channel buffer (size 10) is completely filled.
-//
-// This simulates rapid leadership transitions that exhaust the buffer,
-// causing subsequent events to be dropped.
-func TestLeadershipChannelOverflow_BufferExhaustion(t *testing.T) {
-	client := newTestRedis(t)
-
-	log := logrus.New()
-	log.SetLevel(logrus.WarnLevel)
-
-	ctx := context.Background()
-	keyName := "test:leader:buffer-exhaust"
-	client.Del(ctx, keyName)
-
-	// Very fast renewal to generate many events
-	config := &leaderelection.Config{
-		TTL:             200 * time.Millisecond,
-		RenewalInterval: 50 * time.Millisecond,
-		NodeID:          "buffer-test-node",
-	}
-
-	elector, err := leaderelection.NewRedisElector(client, log, keyName, config)
-	require.NoError(t, err)
-
-	startCtx, startCancel := context.WithCancel(context.Background())
-	defer startCancel()
-
-	err = elector.Start(startCtx)
-	require.NoError(t, err)
-
-	// DON'T read from the channel - simulate a completely blocked consumer
-	// This will cause the buffer to fill up
-
-	// Rapidly toggle leadership by deleting and letting it re-acquire
-	// Each cycle generates gain+loss events
-	for range 15 { // More than buffer size (10)
-		client.Del(ctx, keyName)
-		time.Sleep(60 * time.Millisecond) // Let it detect loss
-		// It will auto-reacquire on next renewal tick
-		time.Sleep(60 * time.Millisecond)
-	}
-
-	// Now delete one final time to ensure we're not leader
-	client.Del(ctx, keyName)
-	time.Sleep(100 * time.Millisecond)
-
-	// Internal state should show not leader
-	finalIsLeader := elector.IsLeader()
-
-	// Count how many events we can actually read from the channel
-	leadershipChan := elector.LeadershipChannel()
-	eventCount := 0
-
-	var lastEvent *bool
-
-drainLoop:
-	for {
-		select {
-		case isLeader, ok := <-leadershipChan:
-			if !ok {
-				break drainLoop
-			}
-
-			eventCount++
-			lastEvent = &isLeader
-		default:
-			break drainLoop
-		}
-	}
-
-	t.Logf("Events in buffer: %d, Final IsLeader(): %v", eventCount, finalIsLeader)
-
-	// CRITICAL ASSERTION:
-	// If the final state is "not leader", the last event we receive MUST be "false"
-	// If it's not, events were dropped and state is inconsistent
-	if !finalIsLeader {
-		if lastEvent == nil {
-			t.Fatal("CRITICAL: IsLeader()=false but NO events in channel - consumer has no way to know!")
-		}
-
-		if *lastEvent {
-			t.Fatal("CRITICAL: IsLeader()=false but last channel event was 'true' - events were dropped!")
-		}
-	}
-
-	// Cleanup
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer stopCancel()
-
-	_ = elector.Stop(stopCtx)
-}
-
-// TestLeadershipChannelOverflow_SlowConsumer tests that a slow consumer
-// eventually receives all leadership events without any being dropped.
-func TestLeadershipChannelOverflow_SlowConsumer(t *testing.T) {
-	client := newTestRedis(t)
-
-	log := logrus.New()
-	log.SetLevel(logrus.WarnLevel)
-
-	ctx := context.Background()
-	keyName := "test:leader:slow-consumer"
-	client.Del(ctx, keyName)
-
-	config := &leaderelection.Config{
-		TTL:             300 * time.Millisecond,
-		RenewalInterval: 100 * time.Millisecond,
-		NodeID:          "slow-consumer-node",
-	}
-
-	elector, err := leaderelection.NewRedisElector(client, log, keyName, config)
-	require.NoError(t, err)
-
-	startCtx, startCancel := context.WithCancel(context.Background())
-	defer startCancel()
-
-	err = elector.Start(startCtx)
-	require.NoError(t, err)
-
-	leadershipChan := elector.LeadershipChannel()
-
-	// Track events received by a slow consumer
-	var (
-		eventsReceived []bool
-		eventsMu       sync.Mutex
-		consumerDone   = make(chan struct{})
-	)
-
-	// Start a SLOW consumer that takes 200ms to process each event
-	go func() {
-		defer close(consumerDone)
-
-		for {
-			select {
-			case isLeader, ok := <-leadershipChan:
-				if !ok {
-					return
-				}
-
-				eventsMu.Lock()
-
-				eventsReceived = append(eventsReceived, isLeader)
-
-				eventsMu.Unlock()
-
-				time.Sleep(200 * time.Millisecond) // Slow processing
-			case <-startCtx.Done():
-				return
-			}
-		}
-	}()
-
-	// Wait for initial leadership
-	time.Sleep(200 * time.Millisecond)
-	require.True(t, elector.IsLeader(), "Should be leader")
-
-	// Trigger leadership loss by setting a different node as leader
-	client.Set(ctx, keyName, "different-node", config.TTL)
-	time.Sleep(200 * time.Millisecond)
-
-	// Should have lost leadership
-	assert.False(t, elector.IsLeader(), "Should have lost leadership")
-
-	// Give slow consumer time to catch up
-	time.Sleep(500 * time.Millisecond)
-
-	// Stop and wait for consumer
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer stopCancel()
-
-	_ = elector.Stop(stopCtx)
-
-	startCancel()
-	<-consumerDone
-
-	// Check that we received the loss event
-	eventsMu.Lock()
-	defer eventsMu.Unlock()
-
-	t.Logf("Events received by slow consumer: %v", eventsReceived)
-
-	// Must have received at least 2 events: gain (true) and loss (false)
-	require.GreaterOrEqual(t, len(eventsReceived), 2,
-		"Slow consumer should receive both gain and loss events")
-
-	// The last event must be false (loss)
-	lastEvent := eventsReceived[len(eventsReceived)-1]
-
-	assert.False(t, lastEvent,
-		"CRITICAL: Last event should be loss (false), but slow consumer missed it!")
 }
 
 // =====================================
@@ -1068,9 +747,9 @@ func TestOnLeadershipChange_CallbackInvocation(t *testing.T) {
 	// Should have gained leadership
 	require.True(t, elector.IsLeader(), "Should be leader")
 
-	// Force leadership loss by setting a different node as leader
-	// This prevents the current node from re-acquiring
-	client.Set(ctx, keyName, "different-node", config.TTL)
+	// Force leadership loss by setting a different value to simulate another node holding lock
+	// (just deleting doesn't work because WithSetNXOnExtend recreates the key)
+	client.Set(ctx, keyName, "different-node-value", config.TTL)
 	time.Sleep(300 * time.Millisecond) // Wait for renewal cycle to detect loss
 
 	// Should have lost leadership
@@ -1205,16 +884,20 @@ func TestOnLeadershipChange_GuaranteedDelivery(t *testing.T) {
 	// Wait for initial leadership
 	time.Sleep(100 * time.Millisecond)
 
-	// Rapidly toggle leadership by deleting key multiple times
+	// Rapidly toggle leadership by setting different values and deleting
 	// This generates more events than a channel buffer (10) could hold
 	for range 15 {
-		client.Del(ctx, keyName)
+		// Set a different value to simulate another node taking the lock
+		client.Set(ctx, keyName, "different-node-value", config.TTL)
 		time.Sleep(60 * time.Millisecond) // Let it detect loss
+
+		// Delete to allow re-acquire
+		client.Del(ctx, keyName)
 		time.Sleep(60 * time.Millisecond) // Let it re-acquire
 	}
 
-	// Final deletion to ensure not leader
-	client.Del(ctx, keyName)
+	// Final - set different value to ensure not leader
+	client.Set(ctx, keyName, "different-node-value", config.TTL)
 	time.Sleep(100 * time.Millisecond)
 
 	// Check final state
@@ -1294,8 +977,8 @@ func TestOnLeadershipChange_SlowCallback(t *testing.T) {
 	// Should have gained leadership despite slow callback
 	require.True(t, elector.IsLeader(), "Should be leader")
 
-	// Force leadership loss by setting a different node as leader
-	client.Set(ctx, keyName, "different-node", config.TTL)
+	// Force leadership loss by setting a different value to simulate another node
+	client.Set(ctx, keyName, "different-node-value", config.TTL)
 	time.Sleep(600 * time.Millisecond) // Wait for renewal + slow callback
 
 	// Should have lost leadership
@@ -1318,12 +1001,12 @@ func TestOnLeadershipChange_SlowCallback(t *testing.T) {
 	_ = elector.Stop(stopCtx)
 }
 
-// TestLeadershipChannel_GuaranteedDelivery verifies that leadership loss events
+// TestCallback_GuaranteedDelivery verifies that leadership loss events
 // are ALWAYS delivered, even under contention.
 //
 // This is the contract that distributed systems depend on:
 // If IsLeader() returns false, the consumer MUST have been notified.
-func TestLeadershipChannel_GuaranteedDelivery(t *testing.T) {
+func TestCallback_GuaranteedDelivery(t *testing.T) {
 	client := newTestRedis(t)
 
 	log := logrus.New()
@@ -1347,47 +1030,29 @@ func TestLeadershipChannel_GuaranteedDelivery(t *testing.T) {
 
 		startCtx, startCancel := context.WithCancel(context.Background())
 
-		err = elector.Start(startCtx)
-		require.NoError(t, err)
-
-		leadershipChan := elector.LeadershipChannel()
-
 		// Track whether we've been notified of loss
 		var notifiedOfLoss atomic.Bool
 
-		// Consumer goroutine
-		consumerDone := make(chan struct{})
-
-		go func() {
-			defer close(consumerDone)
-
-			for {
-				select {
-				case isLeader, ok := <-leadershipChan:
-					if !ok {
-						return
-					}
-
-					if !isLeader {
-						notifiedOfLoss.Store(true)
-					}
-				case <-startCtx.Done():
-					return
-				}
+		elector.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+			if !isLeader {
+				notifiedOfLoss.Store(true)
 			}
-		}()
+		})
+
+		err = elector.Start(startCtx)
+		require.NoError(t, err)
 
 		// Wait for leadership
 		time.Sleep(100 * time.Millisecond)
 
 		if elector.IsLeader() {
-			// Force leadership loss
-			client.Del(ctx, keyName)
+			// Force leadership loss by setting a different value to simulate another node
+			client.Set(ctx, keyName, "different-node-value", config.TTL)
 			time.Sleep(150 * time.Millisecond)
 
 			// If we're no longer leader, we MUST have been notified
 			if !elector.IsLeader() {
-				// Give consumer a moment to process
+				// Give callback a moment to process
 				time.Sleep(50 * time.Millisecond)
 
 				if !notifiedOfLoss.Load() {
@@ -1404,8 +1069,6 @@ func TestLeadershipChannel_GuaranteedDelivery(t *testing.T) {
 
 		stopCancel()
 		startCancel()
-
-		<-consumerDone
 
 		client.Del(ctx, keyName)
 	}

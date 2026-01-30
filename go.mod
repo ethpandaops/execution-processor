@@ -9,10 +9,11 @@ require (
 	github.com/creasty/defaults v1.8.0
 	github.com/ethereum/go-ethereum v1.16.7
 	github.com/go-co-op/gocron v1.37.0
+	github.com/go-redsync/redsync/v4 v4.15.0
 	github.com/hibiken/asynq v0.25.1
 	github.com/lib/pq v1.10.9
 	github.com/prometheus/client_golang v1.20.5
-	github.com/redis/go-redis/v9 v9.14.0
+	github.com/redis/go-redis/v9 v9.17.2
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.10.1
 	github.com/stretchr/testify v1.11.1
@@ -60,6 +61,8 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.27.5 // indirect
+	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-multierror v1.1.1 // indirect
 	github.com/hashicorp/go-version v1.7.0 // indirect
 	github.com/holiman/uint256 v1.3.2 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
