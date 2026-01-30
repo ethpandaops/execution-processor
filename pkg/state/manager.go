@@ -837,7 +837,7 @@ func (s *Manager) queryLimiterMaxBlock(ctx context.Context, network string) (*bi
 	// Optimized query: uses ORDER BY index instead of MAX() which requires full table scan
 	query := fmt.Sprintf(`
 		SELECT toUInt64(ifNull(execution_payload_block_number, 0)) AS block_number
-		FROM %s FINAL
+		FROM %s
 		WHERE meta_network_name = '%s'
 		  AND execution_payload_block_number IS NOT NULL
 		ORDER BY slot_start_date_time DESC
