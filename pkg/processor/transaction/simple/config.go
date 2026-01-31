@@ -12,6 +12,10 @@ type Config struct {
 	Enabled           bool   `yaml:"enabled"`
 	Table             string `yaml:"table"`
 
+	// Async insert settings for ClickHouse (pointers to distinguish omitted from explicit false)
+	AsyncInsert        *bool `yaml:"asyncInsert"`        // Enable async inserts to reduce part creation. Default: true
+	WaitForAsyncInsert *bool `yaml:"waitForAsyncInsert"` // Wait for async insert to complete. Default: true
+
 	// Block completion tracking
 	MaxPendingBlockRange int `yaml:"maxPendingBlockRange"` // Max distance between oldest incomplete and current block. Default: 2
 }
