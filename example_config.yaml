@@ -50,18 +50,21 @@ processors:
     addr: "localhost:9000"
     database: "default"
     table: "canonical_execution_transaction_structlog"
-    # debug: false                     # Enable debug logging for ClickHouse queries
-    # maxPendingBlockRange: 2          # Max distance between oldest incomplete and current block (default: 2)
-    # Channel-based batching configuration for memory-efficient processing
-    # bigTransactionThreshold: 500000  # Transactions with more structlogs are considered "big" (default: 500000)
-    # chunkSize: 10000                 # Number of structlogs per batch (default: 10000)
-    # channelBufferSize: 2             # Number of chunks to buffer in channel (default: 2)
-    # progressLogThreshold: 100000     # Log progress every N structlogs for large transactions (default: 100000)
+    # debug: false                # Enable debug logging for ClickHouse queries
+    # maxPendingBlockRange: 2     # Max distance between oldest incomplete and current block (default: 2)
+    # asyncInsert: true           # Enable async inserts to reduce part creation (default: true)
+    # waitForAsyncInsert: true    # Wait for async insert to complete for durability (default: true)
 
-    # Small transaction batching configuration
-    # batchInsertThreshold: 50000      # Transactions with fewer structlogs than this will be batched (default: 50000)
-    # batchFlushInterval: 5s           # Maximum time to wait before flushing a batch (default: 5s)
-    # batchMaxSize: 100000             # Maximum number of structlogs to accumulate in a batch (default: 100000)
+  # Aggregated structlog processor (call frame level aggregation)
+  transactionStructlogAgg:
+    enabled: false
+    addr: "localhost:9000"
+    database: "default"
+    table: "canonical_execution_transaction_structlog_agg"
+    # debug: false                # Enable debug logging for ClickHouse queries
+    # maxPendingBlockRange: 2     # Max distance between oldest incomplete and current block (default: 2)
+    # asyncInsert: true           # Enable async inserts to reduce part creation (default: true)
+    # waitForAsyncInsert: true    # Wait for async insert to complete for durability (default: true)
 
   # Simple transaction processor (lightweight - no debug traces)
   transactionSimple:
@@ -71,6 +74,8 @@ processors:
     table: "execution_transaction"
     # debug: false                     # Enable debug logging for ClickHouse queries
     # maxPendingBlockRange: 2          # Max distance between oldest incomplete and current block (default: 2)
+    # asyncInsert: true                # Enable async inserts to reduce part creation (default: true)
+    # waitForAsyncInsert: true         # Wait for async insert to complete for durability (default: true)
 
 # Application settings
 shutdownTimeout: 6m

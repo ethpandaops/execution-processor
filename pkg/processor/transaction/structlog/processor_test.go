@@ -22,7 +22,6 @@ func TestProcessor_Creation(t *testing.T) {
 		Config: clickhouse.Config{
 			Addr: "localhost:9000",
 		},
-		ChunkSize: 10000,
 	}
 
 	// Test config validation
@@ -44,7 +43,6 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 				Config: clickhouse.Config{
 					Addr: "localhost:9000",
 				},
-				ChunkSize: 10000,
 			},
 			expectError: false,
 		},
@@ -58,9 +56,8 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 		{
 			name: "missing addr",
 			config: transaction_structlog.Config{
-				Enabled:   true,
-				Table:     "test_table",
-				ChunkSize: 10000,
+				Enabled: true,
+				Table:   "test_table",
 			},
 			expectError: true,
 		},
@@ -71,7 +68,6 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 				Config: clickhouse.Config{
 					Addr: "localhost:9000",
 				},
-				ChunkSize: 10000,
 			},
 			expectError: true,
 		},
@@ -104,7 +100,6 @@ func TestProcessor_ConcurrentConfigValidation(t *testing.T) {
 				Config: clickhouse.Config{
 					Addr: "localhost:9000",
 				},
-				ChunkSize: 10000,
 			}
 			results <- cfg.Validate()
 		}()
@@ -252,33 +247,6 @@ func TestMemoryManagement(t *testing.T) {
 
 	assert.Equal(t, rowCount, cols.Rows(), "Should have correct row count")
 
-	// Test that chunking calculations work properly
-	const chunkSize = 100
-
-	expectedChunks := (rowCount + chunkSize - 1) / chunkSize
-
-	// Verify chunking logic
-	actualChunks := 0
-
-	for i := 0; i < rowCount; i += chunkSize {
-		actualChunks++
-
-		end := i + chunkSize
-		if end > rowCount {
-			end = rowCount
-		}
-
-		// Verify chunk size constraints
-		chunkLen := end - i
-		if chunkLen <= 0 || chunkLen > chunkSize {
-			t.Errorf("Invalid chunk size: %d (expected 1-%d)", chunkLen, chunkSize)
-		}
-	}
-
-	if actualChunks != expectedChunks {
-		t.Errorf("Expected %d chunks, got %d", expectedChunks, actualChunks)
-	}
-
 	// Reset columns to free memory
 	cols.Reset()
 	assert.Equal(t, 0, cols.Rows(), "Reset should clear all rows")
@@ -299,86 +267,6 @@ func TestMemoryManagement(t *testing.T) {
 	maxAcceptableGrowth := uint64(1024 * 1024) // 1MB overhead allowance
 	if allocDiff > maxAcceptableGrowth {
 		t.Logf("Warning: Memory usage grew by %d bytes, which may indicate incomplete cleanup", allocDiff)
-	}
-}
-
-func TestChunkProcessing(t *testing.T) {
-	tests := []struct {
-		name           string
-		inputSize      int
-		expectedChunks int
-		chunkSize      int
-	}{
-		{
-			name:           "small input",
-			inputSize:      50,
-			expectedChunks: 1,
-			chunkSize:      100,
-		},
-		{
-			name:           "exact chunk size",
-			inputSize:      100,
-			expectedChunks: 1,
-			chunkSize:      100,
-		},
-		{
-			name:           "multiple chunks",
-			inputSize:      250,
-			expectedChunks: 3,
-			chunkSize:      100,
-		},
-		{
-			name:           "large input",
-			inputSize:      1500,
-			expectedChunks: 15,
-			chunkSize:      100,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Test chunking logic using Columns
-			cols := transaction_structlog.NewColumns()
-			now := time.Now()
-
-			// Fill columns with test data
-			for i := 0; i < tt.inputSize; i++ {
-				cols.Append(
-					now, uint64(i), "0xtest", uint32(0), uint64(21000), false, nil,
-					uint32(i), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
-					nil, nil, nil, nil, uint32(0), []uint32{}, "test",
-				)
-			}
-
-			assert.Equal(t, tt.inputSize, cols.Rows(), "Should have correct row count")
-
-			// Calculate expected chunks
-			expectedChunks := (tt.inputSize + tt.chunkSize - 1) / tt.chunkSize
-
-			if expectedChunks != tt.expectedChunks {
-				t.Errorf("Expected %d chunks for %d items, got %d", tt.expectedChunks, tt.inputSize, expectedChunks)
-			}
-
-			// Test that the chunking logic would work correctly
-			chunkCount := 0
-
-			for i := 0; i < tt.inputSize; i += tt.chunkSize {
-				chunkCount++
-
-				end := i + tt.chunkSize
-				if end > tt.inputSize {
-					end = tt.inputSize
-				}
-				// Verify chunk boundaries
-				if end <= i {
-					t.Errorf("Invalid chunk boundaries: start=%d, end=%d", i, end)
-				}
-			}
-
-			if chunkCount != tt.expectedChunks {
-				t.Errorf("Chunking produced %d chunks, expected %d", chunkCount, tt.expectedChunks)
-			}
-		})
 	}
 }
 

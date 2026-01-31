@@ -196,6 +196,35 @@ func (p *Processor) getProcessBackwardsQueue() string {
 	return tracker.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
+// getInsertSettings returns ClickHouse settings for async inserts.
+func (p *Processor) getInsertSettings() []ch.Setting {
+	// Default to true if not explicitly configured (nil pointer)
+	asyncInsert := true
+	if p.config.AsyncInsert != nil {
+		asyncInsert = *p.config.AsyncInsert
+	}
+
+	waitForAsync := true
+	if p.config.WaitForAsyncInsert != nil {
+		waitForAsync = *p.config.WaitForAsyncInsert
+	}
+
+	asyncVal := "0"
+	if asyncInsert {
+		asyncVal = "1"
+	}
+
+	waitVal := "0"
+	if waitForAsync {
+		waitVal = "1"
+	}
+
+	return []ch.Setting{
+		{Key: "async_insert", Value: asyncVal},
+		{Key: "wait_for_async_insert", Value: waitVal},
+	}
+}
+
 // insertStructlogs inserts structlogs into ClickHouse using columnar protocol.
 func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog) error {
 	if len(structlogs) == 0 {
@@ -236,8 +265,9 @@ func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog
 	input := cols.Input()
 
 	if err := p.clickhouse.Do(insertCtx, ch.Query{
-		Body:  input.Into(p.config.Table),
-		Input: input,
+		Body:     input.Into(p.config.Table),
+		Input:    input,
+		Settings: p.getInsertSettings(),
 	}); err != nil {
 		return fmt.Errorf("failed to insert structlogs: %w", err)
 	}
