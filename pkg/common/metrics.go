@@ -205,4 +205,32 @@ var (
 		Name: "execution_processor_clickhouse_pool_empty_acquire_wait_duration_seconds",
 		Help: "Cumulative time spent waiting for a resource when pool was empty",
 	}, []string{"network", "processor"})
+
+	// Row buffer metrics for batched ClickHouse inserts.
+	RowBufferFlushTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "execution_processor_row_buffer_flush_total",
+		Help: "Total number of row buffer flushes",
+	}, []string{"network", "processor", "table", "trigger", "status"})
+
+	RowBufferFlushDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "execution_processor_row_buffer_flush_duration_seconds",
+		Help:    "Duration of row buffer flushes",
+		Buckets: prometheus.ExponentialBuckets(0.001, 2, 15),
+	}, []string{"network", "processor", "table"})
+
+	RowBufferFlushSize = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "execution_processor_row_buffer_flush_size_rows",
+		Help:    "Number of rows per flush",
+		Buckets: prometheus.ExponentialBuckets(100, 2, 12),
+	}, []string{"network", "processor", "table"})
+
+	RowBufferPendingRows = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_row_buffer_pending_rows",
+		Help: "Current number of rows waiting in the buffer",
+	}, []string{"network", "processor", "table"})
+
+	RowBufferPendingTasks = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_row_buffer_pending_tasks",
+		Help: "Current number of tasks waiting for their rows to be flushed",
+	}, []string{"network", "processor", "table"})
 )

@@ -17,6 +17,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
+	"github.com/ethpandaops/execution-processor/pkg/rowbuffer"
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
@@ -51,6 +52,9 @@ type Processor struct {
 	redisPrefix    string
 	pendingTracker *tracker.PendingTracker
 
+	// Row buffer for batched ClickHouse inserts
+	rowBuffer *rowbuffer.Buffer[Structlog]
+
 	// Embedded limiter for shared blocking/completion logic
 	*tracker.Limiter
 
@@ -76,6 +80,15 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 	// Set default for MaxPendingBlockRange
 	if config.MaxPendingBlockRange <= 0 {
 		config.MaxPendingBlockRange = tracker.DefaultMaxPendingBlockRange
+	}
+
+	// Set buffer defaults
+	if config.BufferMaxRows <= 0 {
+		config.BufferMaxRows = DefaultBufferMaxRows
+	}
+
+	if config.BufferFlushInterval <= 0 {
+		config.BufferFlushInterval = DefaultBufferFlushInterval
 	}
 
 	log := deps.Log.WithField("processor", ProcessorName)
@@ -110,9 +123,24 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 
 	processor.network = deps.Network
 
+	// Create the row buffer with the flush function
+	processor.rowBuffer = rowbuffer.New(
+		rowbuffer.Config{
+			MaxRows:       config.BufferMaxRows,
+			FlushInterval: config.BufferFlushInterval,
+			Network:       deps.Network.Name,
+			Processor:     ProcessorName,
+			Table:         config.Table,
+		},
+		processor.flushRows,
+		log,
+	)
+
 	processor.log.WithFields(logrus.Fields{
 		"network":                 processor.network.Name,
 		"max_pending_block_range": config.MaxPendingBlockRange,
+		"buffer_max_rows":         config.BufferMaxRows,
+		"buffer_flush_interval":   config.BufferFlushInterval,
 	}).Info("Detected network")
 
 	return processor, nil
@@ -123,6 +151,11 @@ func (p *Processor) Start(ctx context.Context) error {
 	// Start the ClickHouse client
 	if err := p.clickhouse.Start(); err != nil {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
+	}
+
+	// Start the row buffer
+	if err := p.rowBuffer.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start row buffer: %w", err)
 	}
 
 	// Start the background metrics worker
@@ -139,6 +172,11 @@ func (p *Processor) Stop(ctx context.Context) error {
 
 	// Stop the background metrics worker
 	p.stopMetricsWorker()
+
+	// Stop the row buffer first (flushes remaining rows)
+	if err := p.rowBuffer.Stop(ctx); err != nil {
+		p.log.WithError(err).Error("Failed to stop row buffer")
+	}
 
 	// Stop the ClickHouse client
 	return p.clickhouse.Stop()
@@ -196,38 +234,9 @@ func (p *Processor) getProcessBackwardsQueue() string {
 	return tracker.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// getInsertSettings returns ClickHouse settings for async inserts.
-func (p *Processor) getInsertSettings() []ch.Setting {
-	// Default to true if not explicitly configured (nil pointer)
-	asyncInsert := true
-	if p.config.AsyncInsert != nil {
-		asyncInsert = *p.config.AsyncInsert
-	}
-
-	waitForAsync := true
-	if p.config.WaitForAsyncInsert != nil {
-		waitForAsync = *p.config.WaitForAsyncInsert
-	}
-
-	asyncVal := "0"
-	if asyncInsert {
-		asyncVal = "1"
-	}
-
-	waitVal := "0"
-	if waitForAsync {
-		waitVal = "1"
-	}
-
-	return []ch.Setting{
-		{Key: "async_insert", Value: asyncVal},
-		{Key: "wait_for_async_insert", Value: waitVal},
-	}
-}
-
-// insertStructlogs inserts structlogs into ClickHouse using columnar protocol.
-func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog) error {
-	if len(structlogs) == 0 {
+// flushRows is the flush function for the row buffer.
+func (p *Processor) flushRows(ctx context.Context, rows []Structlog) error {
+	if len(rows) == 0 {
 		return nil
 	}
 
@@ -236,7 +245,8 @@ func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog
 	defer cancel()
 
 	cols := NewColumns()
-	for _, sl := range structlogs {
+
+	for _, sl := range rows {
 		cols.Append(
 			sl.UpdatedDateTime.Time(),
 			sl.BlockNumber,
@@ -265,14 +275,26 @@ func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog
 	input := cols.Input()
 
 	if err := p.clickhouse.Do(insertCtx, ch.Query{
-		Body:     input.Into(p.config.Table),
-		Input:    input,
-		Settings: p.getInsertSettings(),
+		Body:  input.Into(p.config.Table),
+		Input: input,
 	}); err != nil {
+		common.ClickHouseInsertsRows.WithLabelValues(
+			p.network.Name, ProcessorName, p.config.Table, "failed", "",
+		).Add(float64(len(rows)))
+
 		return fmt.Errorf("failed to insert structlogs: %w", err)
 	}
 
+	common.ClickHouseInsertsRows.WithLabelValues(
+		p.network.Name, ProcessorName, p.config.Table, "success", "",
+	).Add(float64(len(rows)))
+
 	return nil
+}
+
+// insertStructlogs submits structlogs to the row buffer for batched insertion.
+func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog) error {
+	return p.rowBuffer.Submit(ctx, structlogs)
 }
 
 // startMetricsWorker starts the background metrics update worker.

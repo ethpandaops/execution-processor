@@ -2,8 +2,15 @@ package structlog_agg
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
+)
+
+// Default buffer configuration values.
+const (
+	DefaultBufferMaxRows       = 100000
+	DefaultBufferFlushInterval = time.Second
 )
 
 // Config holds configuration for transaction structlog_agg processor.
@@ -12,9 +19,9 @@ type Config struct {
 	Enabled           bool   `yaml:"enabled"`
 	Table             string `yaml:"table"`
 
-	// Async insert settings for ClickHouse (pointers to distinguish omitted from explicit false)
-	AsyncInsert        *bool `yaml:"asyncInsert"`        // Enable async inserts to reduce part creation. Default: true
-	WaitForAsyncInsert *bool `yaml:"waitForAsyncInsert"` // Wait for async insert to complete. Default: true
+	// Row buffer settings for batched ClickHouse inserts
+	BufferMaxRows       int           `yaml:"bufferMaxRows"`       // Max rows before flush. Default: 100000
+	BufferFlushInterval time.Duration `yaml:"bufferFlushInterval"` // Max time before flush. Default: 1s
 
 	// Block completion tracking
 	MaxPendingBlockRange int `yaml:"maxPendingBlockRange"` // Max distance between oldest incomplete and current block. Default: 2

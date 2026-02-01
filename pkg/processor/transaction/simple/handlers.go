@@ -320,37 +320,8 @@ func calculateEffectiveGasPrice(block execution.Block, tx execution.Transaction)
 	return effectiveGasPrice
 }
 
-// getInsertSettings returns ClickHouse settings for async inserts.
-func (p *Processor) getInsertSettings() []ch.Setting {
-	// Default to true if not explicitly configured (nil pointer)
-	asyncInsert := true
-	if p.config.AsyncInsert != nil {
-		asyncInsert = *p.config.AsyncInsert
-	}
-
-	waitForAsync := true
-	if p.config.WaitForAsyncInsert != nil {
-		waitForAsync = *p.config.WaitForAsyncInsert
-	}
-
-	asyncVal := "0"
-	if asyncInsert {
-		asyncVal = "1"
-	}
-
-	waitVal := "0"
-	if waitForAsync {
-		waitVal = "1"
-	}
-
-	return []ch.Setting{
-		{Key: "async_insert", Value: asyncVal},
-		{Key: "wait_for_async_insert", Value: waitVal},
-	}
-}
-
-// insertTransactions inserts transactions into ClickHouse using columnar protocol.
-func (p *Processor) insertTransactions(ctx context.Context, transactions []Transaction) error {
+// flushRows is the flush function for the row buffer.
+func (p *Processor) flushRows(ctx context.Context, transactions []Transaction) error {
 	if len(transactions) == 0 {
 		return nil
 	}
@@ -360,6 +331,7 @@ func (p *Processor) insertTransactions(ctx context.Context, transactions []Trans
 	defer cancel()
 
 	cols := NewColumns()
+
 	for _, tx := range transactions {
 		cols.Append(tx)
 	}
@@ -367,9 +339,8 @@ func (p *Processor) insertTransactions(ctx context.Context, transactions []Trans
 	input := cols.Input()
 
 	if err := p.clickhouse.Do(insertCtx, ch.Query{
-		Body:     input.Into(p.config.Table),
-		Input:    input,
-		Settings: p.getInsertSettings(),
+		Body:  input.Into(p.config.Table),
+		Input: input,
 	}); err != nil {
 		common.ClickHouseInsertsRows.WithLabelValues(
 			p.network.Name,
@@ -391,4 +362,9 @@ func (p *Processor) insertTransactions(ctx context.Context, transactions []Trans
 	).Add(float64(len(transactions)))
 
 	return nil
+}
+
+// insertTransactions submits transactions to the row buffer for batched insertion.
+func (p *Processor) insertTransactions(ctx context.Context, transactions []Transaction) error {
+	return p.rowBuffer.Submit(ctx, transactions)
 }

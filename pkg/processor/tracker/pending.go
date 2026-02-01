@@ -94,7 +94,7 @@ func (t *PendingTracker) DecrementPending(ctx context.Context, blockNumber uint6
 		"network":      network,
 		"processor":    processor,
 		"mode":         mode,
-	}).Debug("Decremented pending task count")
+	}).Trace("Decremented pending task count")
 
 	return remaining, nil
 }
