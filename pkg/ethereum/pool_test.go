@@ -98,6 +98,15 @@ func (m *MockNode) BlockByNumber(_ context.Context, number *big.Int) (execution.
 	return &MockBlock{number: number}, nil
 }
 
+func (m *MockNode) BlocksByNumbers(_ context.Context, numbers []*big.Int) ([]execution.Block, error) {
+	blocks := make([]execution.Block, len(numbers))
+	for i, num := range numbers {
+		blocks[i] = &MockBlock{number: num}
+	}
+
+	return blocks, nil
+}
+
 func (m *MockNode) BlockReceipts(_ context.Context, _ *big.Int) ([]execution.Receipt, error) {
 	return []execution.Receipt{}, nil
 }
@@ -805,4 +814,13 @@ func (ds *testDataSource) ClientType() string {
 
 func (ds *testDataSource) IsSynced() bool {
 	return true
+}
+
+func (ds *testDataSource) BlocksByNumbers(_ context.Context, numbers []*big.Int) ([]execution.Block, error) {
+	blocks := make([]execution.Block, len(numbers))
+	for i, num := range numbers {
+		blocks[i] = &MockBlock{number: num}
+	}
+
+	return blocks, nil
 }

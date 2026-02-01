@@ -27,6 +27,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -101,6 +102,9 @@ type Manager struct {
 	// Track queue high water marks
 	queueHighWaterMarks map[string]int
 	queueMetricsMutex   sync.RWMutex
+
+	// Backpressure backoff tracking
+	backpressureBackoff time.Duration
 }
 
 func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, state *s.Manager, redis *r.Client, redisPrefix string) (*Manager, error) {
@@ -749,13 +753,48 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 			if m.config.Interval > 0 {
 				// Fixed interval mode - always sleep the configured duration
 				time.Sleep(m.config.Interval)
+				m.backpressureBackoff = 0 // Reset backoff in fixed interval mode
 			} else if !workDone {
-				// Zero interval mode with no work - small backoff to prevent CPU spin
-				time.Sleep(DefaultNoWorkBackoff)
+				// Zero interval mode with no work - exponential backoff with jitter
+				m.backpressureBackoff = m.calculateBackpressureBackoff(m.backpressureBackoff)
+				time.Sleep(m.backpressureBackoff)
+			} else {
+				// Zero interval with work done - reset backoff and loop immediately
+				m.backpressureBackoff = 0
 			}
-			// Zero interval with work done - loop immediately (no sleep)
 		}
 	}
+}
+
+// calculateBackpressureBackoff calculates the next backoff duration using exponential backoff with jitter.
+func (m *Manager) calculateBackpressureBackoff(current time.Duration) time.Duration {
+	var next time.Duration
+
+	if current == 0 {
+		// Start with minimum backoff
+		next = DefaultBackpressureBackoffMin
+	} else {
+		// Double the current backoff (exponential)
+		next = current * 2
+	}
+
+	// Cap at maximum backoff
+	if next > DefaultBackpressureBackoffMax {
+		next = DefaultBackpressureBackoffMax
+	}
+
+	// Add jitter (up to 25% of the backoff duration)
+	//nolint:gosec // G404: Weak RNG is fine for backoff jitter - no security requirement
+	jitter := time.Duration(rand.Float64() * DefaultBackpressureJitterFraction * float64(next))
+	next += jitter
+
+	m.log.WithFields(logrus.Fields{
+		"previous_backoff": current,
+		"next_backoff":     next,
+		"jitter":           jitter,
+	}).Debug("Calculated backpressure backoff")
+
+	return next
 }
 
 // monitorQueues monitors queue health and archived items.

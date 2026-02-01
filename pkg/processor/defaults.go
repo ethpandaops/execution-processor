@@ -25,4 +25,13 @@ const (
 
 	// DefaultLeaderRenewalInterval is the default renewal interval for leader election.
 	DefaultLeaderRenewalInterval = 3 * time.Second
+
+	// DefaultBackpressureBackoffMin is the minimum backoff duration when backpressure is detected.
+	DefaultBackpressureBackoffMin = 10 * time.Millisecond
+
+	// DefaultBackpressureBackoffMax is the maximum backoff duration when backpressure persists.
+	DefaultBackpressureBackoffMax = 1 * time.Second
+
+	// DefaultBackpressureJitterFraction is the fraction of backoff to add as random jitter (0.25 = 25%).
+	DefaultBackpressureJitterFraction = 0.25
 )
