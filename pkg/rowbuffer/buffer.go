@@ -293,18 +293,22 @@ func (b *Buffer[R]) doFlush(ctx context.Context, rows []R, waiters []waiter, tri
 	// Log the flush
 	if err != nil {
 		b.log.WithError(err).WithFields(logrus.Fields{
-			"rows":     rowCount,
-			"waiters":  len(waiters),
-			"trigger":  trigger,
-			"duration": duration,
-		}).Error("Flush failed")
+			"rows":      rowCount,
+			"waiters":   len(waiters),
+			"trigger":   trigger,
+			"duration":  duration,
+			"processor": b.config.Processor,
+			"table":     b.config.Table,
+		}).Error("ClickHouse flush failed")
 	} else {
 		b.log.WithFields(logrus.Fields{
-			"rows":     rowCount,
-			"waiters":  len(waiters),
-			"trigger":  trigger,
-			"duration": duration,
-		}).Debug("Flush completed")
+			"rows":      rowCount,
+			"waiters":   len(waiters),
+			"trigger":   trigger,
+			"duration":  duration,
+			"processor": b.config.Processor,
+			"table":     b.config.Table,
+		}).Debug("ClickHouse flush completed")
 	}
 
 	// Notify all waiters
