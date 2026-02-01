@@ -52,8 +52,8 @@ processors:
     table: "canonical_execution_transaction_structlog"
     # debug: false                # Enable debug logging for ClickHouse queries
     # maxPendingBlockRange: 2     # Max distance between oldest incomplete and current block (default: 2)
-    # asyncInsert: true           # Enable async inserts to reduce part creation (default: true)
-    # waitForAsyncInsert: true    # Wait for async insert to complete for durability (default: true)
+    # bufferMaxRows: 100000       # Max rows before flush (default: 100000)
+    # bufferFlushInterval: "1s"   # Max time before flush (default: 1s)
 
   # Aggregated structlog processor (call frame level aggregation)
   transactionStructlogAgg:
@@ -63,8 +63,8 @@ processors:
     table: "canonical_execution_transaction_structlog_agg"
     # debug: false                # Enable debug logging for ClickHouse queries
     # maxPendingBlockRange: 2     # Max distance between oldest incomplete and current block (default: 2)
-    # asyncInsert: true           # Enable async inserts to reduce part creation (default: true)
-    # waitForAsyncInsert: true    # Wait for async insert to complete for durability (default: true)
+    # bufferMaxRows: 100000       # Max rows before flush (default: 100000)
+    # bufferFlushInterval: "1s"   # Max time before flush (default: 1s)
 
   # Simple transaction processor (lightweight - no debug traces)
   transactionSimple:
@@ -72,10 +72,10 @@ processors:
     addr: "localhost:9000"
     database: "default"
     table: "execution_transaction"
-    # debug: false                     # Enable debug logging for ClickHouse queries
-    # maxPendingBlockRange: 2          # Max distance between oldest incomplete and current block (default: 2)
-    # asyncInsert: true                # Enable async inserts to reduce part creation (default: true)
-    # waitForAsyncInsert: true         # Wait for async insert to complete for durability (default: true)
+    # debug: false                # Enable debug logging for ClickHouse queries
+    # maxPendingBlockRange: 2     # Max distance between oldest incomplete and current block (default: 2)
+    # bufferMaxRows: 100000       # Max rows before flush (default: 100000)
+    # bufferFlushInterval: "1s"   # Max time before flush (default: 1s)
 
 # Application settings
 shutdownTimeout: 6m
