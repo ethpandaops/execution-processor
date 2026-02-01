@@ -170,6 +170,21 @@ func (m *MockDataSource) IsSynced() bool {
 	return args.Bool(0)
 }
 
+func (m *MockDataSource) BlocksByNumbers(ctx context.Context, numbers []*big.Int) ([]execution.Block, error) {
+	args := m.Called(ctx, numbers)
+
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+
+	val, ok := args.Get(0).([]execution.Block)
+	if !ok {
+		return nil, args.Error(1)
+	}
+
+	return val, args.Error(1)
+}
+
 func TestEmbeddedNode_Creation(t *testing.T) {
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)

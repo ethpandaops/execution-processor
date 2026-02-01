@@ -140,3 +140,76 @@ func (t *PendingTracker) CleanupBlock(ctx context.Context, blockNumber uint64, n
 
 	return nil
 }
+
+// BlockInit contains the information needed to initialize a block for tracking.
+type BlockInit struct {
+	Number    uint64
+	TaskCount int
+}
+
+// InitBlocks initializes tracking for multiple blocks atomically via Redis pipeline.
+// Uses SetNX to ensure only one processor can claim each block at a time.
+// Returns the block numbers that were successfully initialized (those not already being processed).
+func (t *PendingTracker) InitBlocks(
+	ctx context.Context,
+	blocks []BlockInit,
+	network, processor, mode string,
+) ([]uint64, error) {
+	if len(blocks) == 0 {
+		return []uint64{}, nil
+	}
+
+	// Use pipeline for atomic batch operation
+	pipe := t.redis.Pipeline()
+	cmds := make([]*redis.BoolCmd, len(blocks))
+
+	for i, block := range blocks {
+		key := t.blockKey(block.Number, network, processor, mode)
+		// SetNX with 30 minute TTL to prevent orphaned keys
+		cmds[i] = pipe.SetNX(ctx, key, block.TaskCount, 30*time.Minute)
+	}
+
+	// Execute pipeline
+	_, err := pipe.Exec(ctx)
+	if err != nil && err != redis.Nil {
+		return nil, fmt.Errorf("failed to execute init blocks pipeline: %w", err)
+	}
+
+	// Collect successfully initialized block numbers
+	initialized := make([]uint64, 0, len(blocks))
+
+	for i, cmd := range cmds {
+		wasSet, cmdErr := cmd.Result()
+		if cmdErr != nil && cmdErr != redis.Nil {
+			t.log.WithError(cmdErr).WithFields(logrus.Fields{
+				"block_number": blocks[i].Number,
+				"network":      network,
+				"processor":    processor,
+				"mode":         mode,
+			}).Warn("Failed to check SetNX result for block")
+
+			continue
+		}
+
+		if wasSet {
+			initialized = append(initialized, blocks[i].Number)
+
+			t.log.WithFields(logrus.Fields{
+				"block_number": blocks[i].Number,
+				"task_count":   blocks[i].TaskCount,
+				"network":      network,
+				"processor":    processor,
+				"mode":         mode,
+			}).Debug("Initialized block tracking")
+		} else {
+			t.log.WithFields(logrus.Fields{
+				"block_number": blocks[i].Number,
+				"network":      network,
+				"processor":    processor,
+				"mode":         mode,
+			}).Debug("Block already being processed by another worker")
+		}
+	}
+
+	return initialized, nil
+}

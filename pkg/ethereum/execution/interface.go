@@ -41,6 +41,11 @@ type Node interface {
 	// BlockByNumber returns the block at the given number.
 	BlockByNumber(ctx context.Context, number *big.Int) (Block, error)
 
+	// BlocksByNumbers returns blocks at the given numbers using batch RPC.
+	// Returns blocks up to the first not-found (contiguous only).
+	// If a block is not found, the returned slice contains all blocks before that point.
+	BlocksByNumbers(ctx context.Context, numbers []*big.Int) ([]Block, error)
+
 	// BlockReceipts returns all receipts for the block at the given number.
 	BlockReceipts(ctx context.Context, number *big.Int) ([]Receipt, error)
 

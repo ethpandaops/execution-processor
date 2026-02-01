@@ -5,11 +5,13 @@ package geth
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rpc"
 
 	pcommon "github.com/ethpandaops/execution-processor/pkg/common"
@@ -69,6 +71,116 @@ func (n *RPCNode) blockByNumber(ctx context.Context, blockNumber *big.Int) (exec
 	}
 
 	return NewBlockAdapter(block), nil
+}
+
+// blocksByNumbers fetches multiple blocks using batch RPC calls.
+// Returns blocks up to the first not-found (contiguous only).
+func (n *RPCNode) blocksByNumbers(ctx context.Context, numbers []*big.Int) ([]execution.Block, error) {
+	if len(numbers) == 0 {
+		return []execution.Block{}, nil
+	}
+
+	start := time.Now()
+	network := n.Metadata().ChainID()
+
+	// Prepare batch calls using json.RawMessage to handle null responses
+	batch := make([]rpc.BatchElem, len(numbers))
+	results := make([]*json.RawMessage, len(numbers))
+
+	for i, num := range numbers {
+		results[i] = new(json.RawMessage)
+		batch[i] = rpc.BatchElem{
+			Method: "eth_getBlockByNumber",
+			Args:   []interface{}{toBlockNumArg(num), true}, // true = include transactions
+			Result: results[i],
+		}
+	}
+
+	// Execute batch call
+	err := n.rpcClient.BatchCallContext(ctx, batch)
+
+	duration := time.Since(start)
+
+	// Record batch RPC metrics
+	status := statusSuccess
+	if err != nil {
+		status = statusError
+	}
+
+	pcommon.RPCCallDuration.WithLabelValues(
+		fmt.Sprintf("%d", network),
+		n.config.Name,
+		"eth_getBlockByNumber_batch",
+		status,
+	).Observe(duration.Seconds())
+
+	pcommon.RPCCallsTotal.WithLabelValues(
+		fmt.Sprintf("%d", network),
+		n.config.Name,
+		"eth_getBlockByNumber_batch",
+		status,
+	).Inc()
+
+	if err != nil {
+		return nil, fmt.Errorf("batch call failed: %w", err)
+	}
+
+	// Process results, stopping at first not-found (contiguity requirement)
+	blocks := make([]execution.Block, 0, len(numbers))
+
+	for i, elem := range batch {
+		// Check for individual call error - stop at first error for contiguity
+		// We intentionally don't return this error as we want partial results
+		if elem.Error != nil {
+			break
+		}
+
+		// Check for nil/not-found block (null JSON response)
+		if results[i] == nil || len(*results[i]) == 0 || string(*results[i]) == "null" {
+			// Block not found - stop here for contiguity
+			break
+		}
+
+		// Parse the block from JSON
+		block, parseErr := parseBlockFromJSON(*results[i])
+		if parseErr != nil {
+			// Parse error - stop here for contiguity
+			break
+		}
+
+		blocks = append(blocks, NewBlockAdapter(block))
+	}
+
+	return blocks, nil //nolint:nilerr // Intentionally returning partial results for contiguity
+}
+
+// toBlockNumArg converts a block number to the RPC argument format.
+func toBlockNumArg(number *big.Int) string {
+	if number == nil {
+		return "latest"
+	}
+
+	return fmt.Sprintf("0x%x", number)
+}
+
+// parseBlockFromJSON parses a types.Block from JSON-RPC response.
+func parseBlockFromJSON(raw json.RawMessage) (*types.Block, error) {
+	// Use go-ethereum's internal header structure for unmarshaling
+	var head *types.Header
+	if err := json.Unmarshal(raw, &head); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal block header: %w", err)
+	}
+
+	// Parse transactions separately
+	var body struct {
+		Transactions []*types.Transaction `json:"transactions"`
+	}
+
+	if err := json.Unmarshal(raw, &body); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal block body: %w", err)
+	}
+
+	return types.NewBlockWithHeader(head).WithBody(types.Body{Transactions: body.Transactions}), nil
 }
 
 // getTraceParams returns VM trace parameters with configurable options.

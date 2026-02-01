@@ -36,6 +36,10 @@ type DataSource interface {
 	// BlockByNumber returns the block at the given number.
 	BlockByNumber(ctx context.Context, number *big.Int) (Block, error)
 
+	// BlocksByNumbers returns blocks at the given numbers.
+	// Returns blocks up to the first not-found (contiguous only).
+	BlocksByNumbers(ctx context.Context, numbers []*big.Int) ([]Block, error)
+
 	// BlockReceipts returns all receipts for the block at the given number.
 	BlockReceipts(ctx context.Context, number *big.Int) ([]Receipt, error)
 
@@ -159,6 +163,11 @@ func (n *EmbeddedNode) BlockNumber(ctx context.Context) (*uint64, error) {
 // BlockByNumber delegates to the DataSource.
 func (n *EmbeddedNode) BlockByNumber(ctx context.Context, number *big.Int) (Block, error) {
 	return n.source.BlockByNumber(ctx, number)
+}
+
+// BlocksByNumbers delegates to the DataSource.
+func (n *EmbeddedNode) BlocksByNumbers(ctx context.Context, numbers []*big.Int) ([]Block, error) {
+	return n.source.BlocksByNumbers(ctx, numbers)
 }
 
 // BlockReceipts delegates to the DataSource.
