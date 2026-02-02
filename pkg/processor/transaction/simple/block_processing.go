@@ -10,6 +10,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
@@ -17,7 +18,9 @@ import (
 // ErrTaskIDConflict is returned when a task with the same ID already exists.
 var ErrTaskIDConflict = asynq.ErrTaskIDConflict
 
-// ProcessNextBlock processes the next available block.
+// ProcessNextBlock processes the next available block(s).
+// In zero-interval mode, this attempts to fetch and process multiple blocks
+// up to the available capacity for improved throughput.
 func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	p.log.WithField("network", p.network.Name).Debug("Querying for next block to process")
 
@@ -34,7 +37,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		chainHead = new(big.Int).SetUint64(*latestBlockNum)
 	}
 
-	// Get next block to process from state manager
+	// Get next block to determine starting point
 	nextBlock, err := p.stateManager.NextBlock(ctx, p.Name(), p.network.Name, p.processingMode, chainHead)
 	if err != nil {
 		if errors.Is(err, state.ErrNoMoreBlocks) {
@@ -52,8 +55,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		return nil
 	}
 
-	// Distance-based pending block range check
-	// Only allow processing if distance between oldest incomplete and next block < maxPendingBlockRange
+	// Distance-based pending block range check with orphan detection
 	blocked, blockingBlock, err := p.IsBlockedByIncompleteBlocks(ctx, nextBlock.Uint64(), p.processingMode)
 	if err != nil {
 		p.log.WithError(err).Warn("Failed to check incomplete blocks distance, proceeding anyway")
@@ -80,15 +82,93 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		return nil
 	}
 
+	// Get available capacity for batch processing
+	capacity, err := p.GetAvailableCapacity(ctx, nextBlock.Uint64(), p.processingMode)
+	if err != nil {
+		p.log.WithError(err).Warn("Failed to get available capacity, falling back to single block")
+
+		capacity = 1
+	}
+
+	if capacity <= 0 {
+		p.log.Debug("No capacity available, waiting for tasks to complete")
+
+		return nil
+	}
+
+	// Get batch of block numbers
+	blockNumbers, err := p.stateManager.NextBlocks(ctx, p.Name(), p.network.Name, p.processingMode, chainHead, capacity)
+	if err != nil {
+		p.log.WithError(err).Warn("Failed to get batch of block numbers, falling back to single block")
+
+		blockNumbers = []*big.Int{nextBlock}
+	}
+
+	if len(blockNumbers) == 0 {
+		p.log.Debug("No blocks to process")
+
+		return nil
+	}
+
+	// Validate batch won't exceed leash
+	if validateErr := p.ValidateBatchWithinLeash(ctx, blockNumbers[0].Uint64(), len(blockNumbers), p.processingMode); validateErr != nil {
+		p.log.WithError(validateErr).Warn("Batch validation failed, reducing to single block")
+
+		blockNumbers = blockNumbers[:1]
+	}
+
+	// Fetch blocks using batch RPC
+	blocks, err := node.BlocksByNumbers(ctx, blockNumbers)
+	if err != nil {
+		p.log.WithError(err).WithField("network", p.network.Name).Error("could not fetch blocks")
+
+		return err
+	}
+
+	if len(blocks) == 0 {
+		// No blocks returned - might be at chain tip
+		return p.handleBlockNotFound(ctx, nextBlock)
+	}
+
+	p.log.WithFields(logrus.Fields{
+		"requested": len(blockNumbers),
+		"received":  len(blocks),
+		"network":   p.network.Name,
+	}).Debug("Fetched batch of blocks")
+
+	// Process each block, stopping on first error
+	for _, block := range blocks {
+		if processErr := p.processBlock(ctx, block); processErr != nil {
+			return processErr
+		}
+	}
+
+	return nil
+}
+
+// handleBlockNotFound handles the case when a block is not found.
+func (p *Processor) handleBlockNotFound(_ context.Context, nextBlock *big.Int) error {
 	p.log.WithFields(logrus.Fields{
 		"block_number": nextBlock.String(),
 		"network":      p.network.Name,
-	}).Debug("Found next block to process")
+	}).Debug("Block not yet available")
+
+	return fmt.Errorf("block %s not yet available", nextBlock.String())
+}
+
+// processBlock processes a single block - the core logic extracted from the original ProcessNextBlock.
+func (p *Processor) processBlock(ctx context.Context, block execution.Block) error {
+	blockNumber := block.Number()
+
+	p.log.WithFields(logrus.Fields{
+		"block_number": blockNumber.String(),
+		"network":      p.network.Name,
+	}).Debug("Processing block")
 
 	// Check if this block was recently processed
 	recentlyProcessed, err := p.stateManager.IsBlockRecentlyProcessed(
 		ctx,
-		nextBlock.Uint64(),
+		blockNumber.Uint64(),
 		p.network.Name,
 		p.Name(),
 		10,
@@ -98,40 +178,25 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	}
 
 	if recentlyProcessed {
-		p.log.WithField("block", nextBlock.Uint64()).Debug("Block was recently processed, skipping")
+		p.log.WithField("block", blockNumber.Uint64()).Debug("Block was recently processed, skipping")
 		common.BlockProcessingSkipped.WithLabelValues(p.network.Name, p.Name(), "recently_processed").Inc()
 
-		return fmt.Errorf("block %d was recently processed", nextBlock.Uint64())
-	}
-
-	// Get block data
-	block, err := node.BlockByNumber(ctx, nextBlock)
-	if err != nil {
-		if tracker.IsBlockNotFoundError(err) {
-			p.log.WithFields(logrus.Fields{
-				"block_number": nextBlock.String(),
-				"network":      p.network.Name,
-			}).Debug("Block not yet available")
-
-			return fmt.Errorf("block %s not yet available", nextBlock.String())
-		}
-
-		return fmt.Errorf("failed to get block %d: %w", nextBlock.Uint64(), err)
+		return fmt.Errorf("block %d was recently processed", blockNumber.Uint64())
 	}
 
 	// Handle empty blocks - mark complete immediately (no task tracking needed)
 	if len(block.Transactions()) == 0 {
-		p.log.WithField("block", nextBlock.Uint64()).Debug("Empty block, marking as complete")
+		p.log.WithField("block", blockNumber.Uint64()).Debug("Empty block, marking as complete")
 
-		return p.stateManager.MarkBlockComplete(ctx, nextBlock.Uint64(), p.network.Name, p.Name())
+		return p.stateManager.MarkBlockComplete(ctx, blockNumber.Uint64(), p.network.Name, p.Name())
 	}
 
 	// 1. Mark block as enqueued in ClickHouse FIRST (complete=0)
 	// This records that we started processing this block (1 task per block for simple processor)
-	if markErr := p.stateManager.MarkBlockEnqueued(ctx, nextBlock.Uint64(), 1, p.network.Name, p.Name()); markErr != nil {
+	if markErr := p.stateManager.MarkBlockEnqueued(ctx, blockNumber.Uint64(), 1, p.network.Name, p.Name()); markErr != nil {
 		p.log.WithError(markErr).WithFields(logrus.Fields{
 			"network":      p.network.Name,
-			"block_number": nextBlock,
+			"block_number": blockNumber,
 		}).Error("could not mark block as enqueued")
 
 		return markErr
@@ -143,10 +208,10 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		queue = p.getProcessBackwardsQueue()
 	}
 
-	if regErr := p.completionTracker.RegisterBlock(ctx, nextBlock.Uint64(), 1, p.network.Name, p.Name(), p.processingMode, queue); regErr != nil {
+	if regErr := p.completionTracker.RegisterBlock(ctx, blockNumber.Uint64(), 1, p.network.Name, p.Name(), p.processingMode, queue); regErr != nil {
 		p.log.WithError(regErr).WithFields(logrus.Fields{
 			"network":      p.network.Name,
-			"block_number": nextBlock,
+			"block_number": blockNumber,
 		}).Error("could not register block for completion tracking")
 
 		return regErr
@@ -154,7 +219,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 
 	// 3. Create and enqueue block processing task with TaskID deduplication
 	payload := &ProcessPayload{
-		BlockNumber:    *nextBlock,
+		BlockNumber:    *blockNumber,
 		NetworkName:    p.network.Name,
 		ProcessingMode: p.processingMode,
 	}
@@ -183,7 +248,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 		// Task already exists - this is fine, it will still complete and be tracked
 		p.log.WithFields(logrus.Fields{
 			"task_id":      taskID,
-			"block_number": nextBlock.Uint64(),
+			"block_number": blockNumber.Uint64(),
 		}).Debug("Task already exists (TaskID conflict), skipping")
 	} else if err != nil {
 		return fmt.Errorf("failed to enqueue task: %w", err)
@@ -192,7 +257,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	}
 
 	p.log.WithFields(logrus.Fields{
-		"block_number": nextBlock.Uint64(),
+		"block_number": blockNumber.Uint64(),
 		"tx_count":     len(block.Transactions()),
 	}).Info("Enqueued block for processing")
 

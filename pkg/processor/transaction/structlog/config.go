@@ -2,8 +2,15 @@ package structlog
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
+)
+
+// Default buffer configuration values.
+const (
+	DefaultBufferMaxRows       = 100000
+	DefaultBufferFlushInterval = time.Second
 )
 
 // Config holds configuration for transaction structlog processor.
@@ -12,9 +19,9 @@ type Config struct {
 	Enabled           bool   `yaml:"enabled"`
 	Table             string `yaml:"table"`
 
-	// Streaming settings
-	ChunkSize            int `yaml:"chunkSize"`            // Default: 10,000 rows per OnInput iteration
-	ProgressLogThreshold int `yaml:"progressLogThreshold"` // Default: 100,000 - log progress for large txs
+	// Row buffer settings for batched ClickHouse inserts
+	BufferMaxRows       int           `yaml:"bufferMaxRows"`       // Max rows before flush. Default: 100000
+	BufferFlushInterval time.Duration `yaml:"bufferFlushInterval"` // Max time before flush. Default: 1s
 
 	// Block completion tracking
 	MaxPendingBlockRange int `yaml:"maxPendingBlockRange"` // Max distance between oldest incomplete and current block. Default: 2

@@ -17,6 +17,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
+	"github.com/ethpandaops/execution-processor/pkg/rowbuffer"
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
@@ -38,6 +39,16 @@ type Dependencies struct {
 	RedisPrefix string
 }
 
+// insertRow wraps CallFrameRow with additional context needed for batched inserts.
+type insertRow struct {
+	Frame       CallFrameRow
+	BlockNumber uint64
+	TxHash      string
+	TxIndex     uint32
+	UpdatedAt   time.Time
+	Network     string
+}
+
 // Processor handles transaction structlog_agg processing.
 type Processor struct {
 	log            logrus.FieldLogger
@@ -49,6 +60,9 @@ type Processor struct {
 	asynqClient    *asynq.Client
 	processingMode string
 	redisPrefix    string
+
+	// Row buffer for batched ClickHouse inserts
+	rowBuffer *rowbuffer.Buffer[insertRow]
 
 	// Embedded limiter for shared blocking/completion logic
 	*tracker.Limiter
@@ -78,6 +92,15 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 	// Set default for MaxPendingBlockRange
 	if config.MaxPendingBlockRange <= 0 {
 		config.MaxPendingBlockRange = tracker.DefaultMaxPendingBlockRange
+	}
+
+	// Set buffer defaults
+	if config.BufferMaxRows <= 0 {
+		config.BufferMaxRows = DefaultBufferMaxRows
+	}
+
+	if config.BufferFlushInterval <= 0 {
+		config.BufferFlushInterval = DefaultBufferFlushInterval
 	}
 
 	log := deps.Log.WithField("processor", ProcessorName)
@@ -122,9 +145,24 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 
 	processor.network = deps.Network
 
+	// Create the row buffer with the flush function
+	processor.rowBuffer = rowbuffer.New(
+		rowbuffer.Config{
+			MaxRows:       config.BufferMaxRows,
+			FlushInterval: config.BufferFlushInterval,
+			Network:       deps.Network.Name,
+			Processor:     ProcessorName,
+			Table:         config.Table,
+		},
+		processor.flushRows,
+		log,
+	)
+
 	processor.log.WithFields(logrus.Fields{
 		"network":                 processor.network.Name,
 		"max_pending_block_range": config.MaxPendingBlockRange,
+		"buffer_max_rows":         config.BufferMaxRows,
+		"buffer_flush_interval":   config.BufferFlushInterval,
 	}).Info("Detected network")
 
 	return processor, nil
@@ -135,6 +173,11 @@ func (p *Processor) Start(ctx context.Context) error {
 	// Start the ClickHouse client
 	if err := p.clickhouse.Start(); err != nil {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
+	}
+
+	// Start the row buffer
+	if err := p.rowBuffer.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start row buffer: %w", err)
 	}
 
 	// Start the background metrics worker
@@ -151,6 +194,11 @@ func (p *Processor) Stop(ctx context.Context) error {
 
 	// Stop the background metrics worker
 	p.stopMetricsWorker()
+
+	// Stop the row buffer first (flushes remaining rows)
+	if err := p.rowBuffer.Stop(ctx); err != nil {
+		p.log.WithError(err).Error("Failed to stop row buffer")
+	}
 
 	// Stop the ClickHouse client
 	return p.clickhouse.Stop()
@@ -213,9 +261,9 @@ func (p *Processor) getProcessBackwardsQueue() string {
 	return tracker.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
-// insertCallFrames inserts call frames into ClickHouse using columnar protocol.
-func (p *Processor) insertCallFrames(ctx context.Context, frames []CallFrameRow, blockNumber uint64, txHash string, txIndex uint32, now time.Time) error {
-	if len(frames) == 0 {
+// flushRows is the flush function for the row buffer.
+func (p *Processor) flushRows(ctx context.Context, rows []insertRow) error {
+	if len(rows) == 0 {
 		return nil
 	}
 
@@ -225,28 +273,28 @@ func (p *Processor) insertCallFrames(ctx context.Context, frames []CallFrameRow,
 
 	cols := NewColumns()
 
-	for _, frame := range frames {
+	for _, row := range rows {
 		cols.Append(
-			now,
-			blockNumber,
-			txHash,
-			txIndex,
-			frame.CallFrameID,
-			frame.ParentCallFrameID,
-			frame.CallFramePath,
-			frame.Depth,
-			frame.TargetAddress,
-			frame.CallType,
-			frame.Operation,
-			frame.OpcodeCount,
-			frame.ErrorCount,
-			frame.Gas,
-			frame.GasCumulative,
-			frame.MinDepth,
-			frame.MaxDepth,
-			frame.GasRefund,
-			frame.IntrinsicGas,
-			p.network.Name,
+			row.UpdatedAt,
+			row.BlockNumber,
+			row.TxHash,
+			row.TxIndex,
+			row.Frame.CallFrameID,
+			row.Frame.ParentCallFrameID,
+			row.Frame.CallFramePath,
+			row.Frame.Depth,
+			row.Frame.TargetAddress,
+			row.Frame.CallType,
+			row.Frame.Operation,
+			row.Frame.OpcodeCount,
+			row.Frame.ErrorCount,
+			row.Frame.Gas,
+			row.Frame.GasCumulative,
+			row.Frame.MinDepth,
+			row.Frame.MaxDepth,
+			row.Frame.GasRefund,
+			row.Frame.IntrinsicGas,
+			row.Network,
 		)
 	}
 
@@ -256,10 +304,40 @@ func (p *Processor) insertCallFrames(ctx context.Context, frames []CallFrameRow,
 		Body:  input.Into(p.config.Table),
 		Input: input,
 	}); err != nil {
+		common.ClickHouseInsertsRows.WithLabelValues(
+			p.network.Name, ProcessorName, p.config.Table, "failed", "",
+		).Add(float64(len(rows)))
+
 		return fmt.Errorf("failed to insert call frames: %w", err)
 	}
 
+	common.ClickHouseInsertsRows.WithLabelValues(
+		p.network.Name, ProcessorName, p.config.Table, "success", "",
+	).Add(float64(len(rows)))
+
 	return nil
+}
+
+// insertCallFrames submits call frames to the row buffer for batched insertion.
+func (p *Processor) insertCallFrames(ctx context.Context, frames []CallFrameRow, blockNumber uint64, txHash string, txIndex uint32, now time.Time) error {
+	if len(frames) == 0 {
+		return nil
+	}
+
+	// Convert to insertRow slice
+	rows := make([]insertRow, len(frames))
+	for i, frame := range frames {
+		rows[i] = insertRow{
+			Frame:       frame,
+			BlockNumber: blockNumber,
+			TxHash:      txHash,
+			TxIndex:     txIndex,
+			UpdatedAt:   now,
+			Network:     p.network.Name,
+		}
+	}
+
+	return p.rowBuffer.Submit(ctx, rows)
 }
 
 // startMetricsWorker starts the background metrics update worker.

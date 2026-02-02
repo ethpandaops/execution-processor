@@ -65,13 +65,6 @@ const (
 	// incomplete block and the current block before blocking new block processing.
 	DefaultMaxPendingBlockRange = 2
 
-	// DefaultChunkSize is the default number of rows per ClickHouse insert batch.
-	DefaultChunkSize = 10000
-
-	// DefaultProgressLogThreshold is the default threshold for logging progress
-	// on large transactions (structlog processor).
-	DefaultProgressLogThreshold = 100000
-
 	// DefaultClickHouseTimeout is the default timeout for ClickHouse operations.
 	DefaultClickHouseTimeout = 30 * time.Second
 

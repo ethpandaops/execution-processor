@@ -3,12 +3,8 @@ package structlog
 import (
 	"context"
 	"fmt"
-	"io"
 	"strings"
 	"time"
-
-	"github.com/ClickHouse/ch-go"
-	"github.com/sirupsen/logrus"
 
 	pcommon "github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
@@ -147,7 +143,7 @@ func (p *Processor) ProcessSingleTransaction(ctx context.Context, block executio
 	return structlogCount, nil
 }
 
-// ProcessTransaction processes a transaction using ch-go columnar streaming.
+// ProcessTransaction processes a transaction and inserts structlogs to ClickHouse.
 func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Block, index int, tx execution.Transaction) (int, error) {
 	// Get trace from execution node
 	trace, err := p.getTransactionTrace(ctx, tx, block)
@@ -192,144 +188,105 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		createAddresses = ComputeCreateAddresses(trace.Structlogs)
 	}
 
-	chunkSize := p.config.ChunkSize
-	if chunkSize == 0 {
-		chunkSize = tracker.DefaultChunkSize
-	}
-
-	cols := NewColumns()
-	input := cols.Input()
-
-	currentIdx := 0
 	blockNum := block.Number().Uint64()
 	txHash := tx.Hash().String()
 	txIndex := uint32(index) //nolint:gosec // index is bounded by block.Transactions() length
 	now := time.Now()
 
-	// Use Do with OnInput for streaming insert
-	err = p.clickhouse.Do(ctx, ch.Query{
-		Body:  input.Into(p.config.Table),
-		Input: input,
-		OnInput: func(ctx context.Context) error {
-			// Reset columns for next chunk
-			cols.Reset()
+	// Pre-allocate slice for structlogs (estimate with some extra capacity for EOA frames)
+	structlogs := make([]Structlog, 0, totalCount+totalCount/10)
 
-			if currentIdx >= totalCount {
-				return io.EOF
-			}
+	// Build all structlogs
+	for i := 0; i < totalCount; i++ {
+		sl := &trace.Structlogs[i]
 
-			// Fill columns with next chunk
-			end := currentIdx + chunkSize
-			if end > totalCount {
-				end = totalCount
-			}
+		// Track call frame based on depth changes
+		frameID, framePath := callTracker.ProcessDepthChange(sl.Depth)
 
-			for i := currentIdx; i < end; i++ {
-				sl := &trace.Structlogs[i]
+		callToAddr := p.extractCallAddressWithCreate(sl, i, createAddresses)
 
-				// Track call frame based on depth changes
-				frameID, framePath := callTracker.ProcessDepthChange(sl.Depth)
+		structlogs = append(structlogs, Structlog{
+			UpdatedDateTime:        NewClickHouseTime(now),
+			BlockNumber:            blockNum,
+			TransactionHash:        txHash,
+			TransactionIndex:       txIndex,
+			TransactionGas:         trace.Gas,
+			TransactionFailed:      trace.Failed,
+			TransactionReturnValue: trace.ReturnValue,
+			Index:                  uint32(i), //nolint:gosec // index is bounded by structlogs length
+			Operation:              sl.Op,
+			Gas:                    sl.Gas,
+			GasCost:                sl.GasCost,
+			GasUsed:                gasUsed[i],
+			GasSelf:                gasSelf[i],
+			Depth:                  sl.Depth,
+			ReturnData:             sl.ReturnData,
+			Refund:                 sl.Refund,
+			Error:                  sl.Error,
+			CallToAddress:          callToAddr,
+			CallFrameID:            frameID,
+			CallFramePath:          framePath,
+			MetaNetworkName:        p.network.Name,
+		})
 
-				callToAddr := p.extractCallAddressWithCreate(sl, i, createAddresses)
+		// Check for EOA call: CALL-type opcode where depth stays the same (immediate return)
+		// and target is not a precompile (precompiles don't create trace frames)
+		if isCallOpcode(sl.Op) && callToAddr != nil {
+			isEOACall := false
 
-				cols.Append(
-					now,
-					blockNum,
-					txHash,
-					txIndex,
-					trace.Gas,
-					trace.Failed,
-					trace.ReturnValue,
-					uint32(i), //nolint:gosec // index is bounded by structlogs length
-					sl.Op,
-					sl.Gas,
-					sl.GasCost,
-					gasUsed[i],
-					gasSelf[i],
-					sl.Depth,
-					sl.ReturnData,
-					sl.Refund,
-					sl.Error,
-					callToAddr,
-					frameID,
-					framePath,
-					p.network.Name,
-				)
-
-				// Check for EOA call: CALL-type opcode where depth stays the same (immediate return)
-				// and target is not a precompile (precompiles don't create trace frames)
-				if isCallOpcode(sl.Op) && callToAddr != nil {
-					isEOACall := false
-
-					if i+1 < totalCount {
-						// Next opcode exists - check if depth stayed the same
-						nextDepth := trace.Structlogs[i+1].Depth
-						if nextDepth == sl.Depth && !isPrecompile(*callToAddr) {
-							isEOACall = true
-						}
-					}
-
-					if isEOACall {
-						// Emit synthetic structlog for EOA frame
-						eoaFrameID, eoaFramePath := callTracker.IssueFrameID()
-
-						cols.Append(
-							now,
-							blockNum,
-							txHash,
-							txIndex,
-							trace.Gas,
-							trace.Failed,
-							trace.ReturnValue,
-							uint32(i),  //nolint:gosec // Same index as parent CALL
-							"",         // Empty = synthetic EOA frame
-							uint64(0),  // Gas
-							uint64(0),  // GasCost
-							uint64(0),  // GasUsed
-							uint64(0),  // GasSelf
-							sl.Depth+1, // One level deeper than caller
-							nil,        // ReturnData
-							nil,        // Refund
-							sl.Error,   // Inherit error if CALL failed
-							callToAddr, // The EOA address
-							eoaFrameID,
-							eoaFramePath,
-							p.network.Name,
-						)
-					}
+			if i+1 < totalCount {
+				// Next opcode exists - check if depth stayed the same
+				nextDepth := trace.Structlogs[i+1].Depth
+				if nextDepth == sl.Depth && !isPrecompile(*callToAddr) {
+					isEOACall = true
 				}
-
-				// Free original trace data immediately to help GC
-				trace.Structlogs[i] = execution.StructLog{}
 			}
 
-			// Log progress for large transactions
-			progressThreshold := p.config.ProgressLogThreshold
-			if progressThreshold == 0 {
-				progressThreshold = tracker.DefaultProgressLogThreshold
+			if isEOACall {
+				// Emit synthetic structlog for EOA frame
+				eoaFrameID, eoaFramePath := callTracker.IssueFrameID()
+
+				structlogs = append(structlogs, Structlog{
+					UpdatedDateTime:        NewClickHouseTime(now),
+					BlockNumber:            blockNum,
+					TransactionHash:        txHash,
+					TransactionIndex:       txIndex,
+					TransactionGas:         trace.Gas,
+					TransactionFailed:      trace.Failed,
+					TransactionReturnValue: trace.ReturnValue,
+					Index:                  uint32(i), //nolint:gosec // Same index as parent CALL
+					Operation:              "",        // Empty = synthetic EOA frame
+					Gas:                    0,
+					GasCost:                0,
+					GasUsed:                0,
+					GasSelf:                0,
+					Depth:                  sl.Depth + 1, // One level deeper than caller
+					ReturnData:             nil,
+					Refund:                 nil,
+					Error:                  sl.Error,   // Inherit error if CALL failed
+					CallToAddress:          callToAddr, // The EOA address
+					CallFrameID:            eoaFrameID,
+					CallFramePath:          eoaFramePath,
+					MetaNetworkName:        p.network.Name,
+				})
 			}
+		}
 
-			if totalCount > progressThreshold && end%progressThreshold < chunkSize {
-				p.log.WithFields(logrus.Fields{
-					"tx_hash":  txHash,
-					"progress": fmt.Sprintf("%d/%d", end, totalCount),
-				}).Debug("Processing large transaction")
-			}
+		// Free original trace data immediately to help GC
+		trace.Structlogs[i] = execution.StructLog{}
+	}
 
-			currentIdx = end
+	rowCount := len(structlogs)
 
-			return nil
-		},
-	})
-	if err != nil {
+	// Submit to row buffer for batched insertion
+	if err := p.insertStructlogs(ctx, structlogs); err != nil {
 		return 0, fmt.Errorf("insert failed: %w", err)
 	}
 
 	// Record success metrics
 	pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
-	pcommon.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "success", "").Add(float64(totalCount))
 
-	return totalCount, nil
+	return rowCount, nil
 }
 
 // getTransactionTrace gets the trace for a transaction.

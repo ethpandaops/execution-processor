@@ -277,6 +277,64 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 	return progressiveNext, nil
 }
 
+// NextBlocks returns up to `count` sequential block numbers starting from what NextBlock returns.
+// This is used for batch block fetching to get multiple consecutive blocks at once.
+func (s *Manager) NextBlocks(
+	ctx context.Context,
+	processor, network, mode string,
+	chainHead *big.Int,
+	count int,
+) ([]*big.Int, error) {
+	if count <= 0 {
+		return []*big.Int{}, nil
+	}
+
+	// Get the first block number
+	firstBlock, err := s.NextBlock(ctx, processor, network, mode, chainHead)
+	if err != nil {
+		return nil, err
+	}
+
+	if firstBlock == nil {
+		return []*big.Int{}, nil
+	}
+
+	// Generate sequential block numbers
+	blocks := make([]*big.Int, 0, count)
+	blocks = append(blocks, firstBlock)
+
+	for i := 1; i < count; i++ {
+		var nextBlock *big.Int
+		if mode == tracker.BACKWARDS_MODE {
+			// Backwards mode: decrement block numbers
+			nextBlock = new(big.Int).Sub(firstBlock, big.NewInt(int64(i)))
+			// Don't go below 0
+			if nextBlock.Sign() < 0 {
+				break
+			}
+		} else {
+			// Forwards mode: increment block numbers
+			nextBlock = new(big.Int).Add(firstBlock, big.NewInt(int64(i)))
+			// Don't exceed chain head if provided
+			if chainHead != nil && nextBlock.Cmp(chainHead) > 0 {
+				break
+			}
+		}
+
+		blocks = append(blocks, nextBlock)
+	}
+
+	s.log.WithFields(logrus.Fields{
+		"processor":   processor,
+		"network":     network,
+		"mode":        mode,
+		"first_block": firstBlock.String(),
+		"count":       len(blocks),
+	}).Debug("Generated batch of block numbers")
+
+	return blocks, nil
+}
+
 func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, network string, chainHead *big.Int) (*big.Int, bool, error) {
 	query := fmt.Sprintf(`
 		SELECT block_number

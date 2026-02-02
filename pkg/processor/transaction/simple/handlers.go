@@ -337,8 +337,8 @@ func calculateEffectiveGasPrice(block execution.Block, tx execution.Transaction)
 	return effectiveGasPrice
 }
 
-// insertTransactions inserts transactions into ClickHouse using columnar protocol.
-func (p *Processor) insertTransactions(ctx context.Context, transactions []Transaction) error {
+// flushRows is the flush function for the row buffer.
+func (p *Processor) flushRows(ctx context.Context, transactions []Transaction) error {
 	if len(transactions) == 0 {
 		return nil
 	}
@@ -348,6 +348,7 @@ func (p *Processor) insertTransactions(ctx context.Context, transactions []Trans
 	defer cancel()
 
 	cols := NewColumns()
+
 	for _, tx := range transactions {
 		cols.Append(tx)
 	}
@@ -378,4 +379,9 @@ func (p *Processor) insertTransactions(ctx context.Context, transactions []Trans
 	).Add(float64(len(transactions)))
 
 	return nil
+}
+
+// insertTransactions submits transactions to the row buffer for batched insertion.
+func (p *Processor) insertTransactions(ctx context.Context, transactions []Transaction) error {
+	return p.rowBuffer.Submit(ctx, transactions)
 }

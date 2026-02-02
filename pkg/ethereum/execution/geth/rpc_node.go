@@ -308,6 +308,12 @@ func (n *RPCNode) BlockByNumber(ctx context.Context, number *big.Int) (execution
 	return n.blockByNumber(ctx, number)
 }
 
+// BlocksByNumbers returns blocks at the given numbers using batch RPC.
+// Returns blocks up to the first not-found (contiguous only).
+func (n *RPCNode) BlocksByNumbers(ctx context.Context, numbers []*big.Int) ([]execution.Block, error) {
+	return n.blocksByNumbers(ctx, numbers)
+}
+
 // BlockReceipts returns all receipts for the block at the given number.
 func (n *RPCNode) BlockReceipts(ctx context.Context, number *big.Int) ([]execution.Receipt, error) {
 	return n.blockReceipts(ctx, number)

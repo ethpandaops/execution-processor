@@ -12,6 +12,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
+	"github.com/ethpandaops/execution-processor/pkg/rowbuffer"
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
@@ -44,6 +45,9 @@ type Processor struct {
 	processingMode string
 	redisPrefix    string
 
+	// Row buffer for batched ClickHouse inserts
+	rowBuffer *rowbuffer.Buffer[Transaction]
+
 	// Embedded limiter for shared blocking/completion logic
 	*tracker.Limiter
 
@@ -70,6 +74,15 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 	// Set default for MaxPendingBlockRange
 	if config.MaxPendingBlockRange <= 0 {
 		config.MaxPendingBlockRange = tracker.DefaultMaxPendingBlockRange
+	}
+
+	// Set buffer defaults
+	if config.BufferMaxRows <= 0 {
+		config.BufferMaxRows = DefaultBufferMaxRows
+	}
+
+	if config.BufferFlushInterval <= 0 {
+		config.BufferFlushInterval = DefaultBufferFlushInterval
 	}
 
 	log := deps.Log.WithField("processor", ProcessorName)
@@ -99,7 +112,7 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 		},
 	)
 
-	return &Processor{
+	processor := &Processor{
 		log:               log,
 		pool:              deps.Pool,
 		stateManager:      deps.State,
@@ -111,7 +124,29 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 		redisPrefix:       deps.RedisPrefix,
 		Limiter:           limiter,
 		completionTracker: completionTracker,
-	}, nil
+	}
+
+	// Create the row buffer with the flush function
+	processor.rowBuffer = rowbuffer.New(
+		rowbuffer.Config{
+			MaxRows:       config.BufferMaxRows,
+			FlushInterval: config.BufferFlushInterval,
+			Network:       deps.Network.Name,
+			Processor:     ProcessorName,
+			Table:         config.Table,
+		},
+		processor.flushRows,
+		log,
+	)
+
+	processor.log.WithFields(logrus.Fields{
+		"network":                 processor.network.Name,
+		"max_pending_block_range": config.MaxPendingBlockRange,
+		"buffer_max_rows":         config.BufferMaxRows,
+		"buffer_flush_interval":   config.BufferFlushInterval,
+	}).Info("Simple transaction processor initialized")
+
+	return processor, nil
 }
 
 // Name returns the processor name.
@@ -127,6 +162,11 @@ func (p *Processor) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
 	}
 
+	// Start the row buffer
+	if err := p.rowBuffer.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start row buffer: %w", err)
+	}
+
 	p.log.WithFields(logrus.Fields{
 		"network": p.network.Name,
 	}).Info("Transaction simple processor ready")
@@ -137,6 +177,11 @@ func (p *Processor) Start(ctx context.Context) error {
 // Stop stops the processor.
 func (p *Processor) Stop(ctx context.Context) error {
 	p.log.Info("Stopping transaction simple processor")
+
+	// Stop the row buffer first (flushes remaining rows)
+	if err := p.rowBuffer.Stop(ctx); err != nil {
+		p.log.WithError(err).Error("Failed to stop row buffer")
+	}
 
 	return p.clickhouse.Stop()
 }
