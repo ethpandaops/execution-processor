@@ -56,10 +56,13 @@ processors:
     addr: "localhost:9000"
     database: "default"
     table: "canonical_execution_transaction_structlog"
-    # debug: false                # Enable debug logging for ClickHouse queries
-    # maxPendingBlockRange: 2     # Max distance between oldest incomplete and current block (default: 2)
-    # bufferMaxRows: 100000       # Max rows before flush (default: 100000)
-    # bufferFlushInterval: "1s"   # Max time before flush (default: 1s)
+    # debug: false                          # Enable debug logging for ClickHouse queries
+    # maxPendingBlockRange: 2               # Max distance between oldest incomplete and current block (default: 2)
+    # bufferMaxRows: 100000                 # Max rows before flush (default: 100000)
+    # bufferFlushInterval: "1s"             # Max time before flush (default: 1s)
+    # bufferMaxConcurrentFlushes: 10        # Max concurrent ClickHouse inserts (default: 10)
+    # bufferCircuitBreakerMaxFailures: 5    # Consecutive failures to trip circuit (default: 5)
+    # bufferCircuitBreakerTimeout: "60s"    # Open state duration before half-open (default: 60s)
 
   # Aggregated structlog processor (call frame level aggregation)
   transactionStructlogAgg:
@@ -67,10 +70,13 @@ processors:
     addr: "localhost:9000"
     database: "default"
     table: "canonical_execution_transaction_structlog_agg"
-    # debug: false                # Enable debug logging for ClickHouse queries
-    # maxPendingBlockRange: 2     # Max distance between oldest incomplete and current block (default: 2)
-    # bufferMaxRows: 100000       # Max rows before flush (default: 100000)
-    # bufferFlushInterval: "1s"   # Max time before flush (default: 1s)
+    # debug: false                          # Enable debug logging for ClickHouse queries
+    # maxPendingBlockRange: 2               # Max distance between oldest incomplete and current block (default: 2)
+    # bufferMaxRows: 100000                 # Max rows before flush (default: 100000)
+    # bufferFlushInterval: "1s"             # Max time before flush (default: 1s)
+    # bufferMaxConcurrentFlushes: 10        # Max concurrent ClickHouse inserts (default: 10)
+    # bufferCircuitBreakerMaxFailures: 5    # Consecutive failures to trip circuit (default: 5)
+    # bufferCircuitBreakerTimeout: "60s"    # Open state duration before half-open (default: 60s)
 
   # Simple transaction processor (lightweight - no debug traces)
   transactionSimple:
@@ -78,10 +84,13 @@ processors:
     addr: "localhost:9000"
     database: "default"
     table: "execution_transaction"
-    # debug: false                # Enable debug logging for ClickHouse queries
-    # maxPendingBlockRange: 2     # Max distance between oldest incomplete and current block (default: 2)
-    # bufferMaxRows: 100000       # Max rows before flush (default: 100000)
-    # bufferFlushInterval: "1s"   # Max time before flush (default: 1s)
+    # debug: false                          # Enable debug logging for ClickHouse queries
+    # maxPendingBlockRange: 2               # Max distance between oldest incomplete and current block (default: 2)
+    # bufferMaxRows: 100000                 # Max rows before flush (default: 100000)
+    # bufferFlushInterval: "1s"             # Max time before flush (default: 1s)
+    # bufferMaxConcurrentFlushes: 10        # Max concurrent ClickHouse inserts (default: 10)
+    # bufferCircuitBreakerMaxFailures: 5    # Consecutive failures to trip circuit (default: 5)
+    # bufferCircuitBreakerTimeout: "60s"    # Open state duration before half-open (default: 60s)
 
 # Application settings
 shutdownTimeout: 6m

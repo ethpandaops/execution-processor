@@ -103,6 +103,18 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 		config.BufferFlushInterval = DefaultBufferFlushInterval
 	}
 
+	if config.BufferMaxConcurrentFlushes <= 0 {
+		config.BufferMaxConcurrentFlushes = DefaultBufferMaxConcurrentFlushes
+	}
+
+	if config.BufferCircuitBreakerMaxFailures <= 0 {
+		config.BufferCircuitBreakerMaxFailures = DefaultBufferCircuitBreakerMaxFailures
+	}
+
+	if config.BufferCircuitBreakerTimeout <= 0 {
+		config.BufferCircuitBreakerTimeout = DefaultBufferCircuitBreakerTimeout
+	}
+
 	log := deps.Log.WithField("processor", ProcessorName)
 
 	// Create the limiter for shared functionality
@@ -148,21 +160,25 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 	// Create the row buffer with the flush function
 	processor.rowBuffer = rowbuffer.New(
 		rowbuffer.Config{
-			MaxRows:       config.BufferMaxRows,
-			FlushInterval: config.BufferFlushInterval,
-			Network:       deps.Network.Name,
-			Processor:     ProcessorName,
-			Table:         config.Table,
+			MaxRows:                   config.BufferMaxRows,
+			FlushInterval:             config.BufferFlushInterval,
+			MaxConcurrentFlushes:      config.BufferMaxConcurrentFlushes,
+			CircuitBreakerMaxFailures: config.BufferCircuitBreakerMaxFailures,
+			CircuitBreakerTimeout:     config.BufferCircuitBreakerTimeout,
+			Network:                   deps.Network.Name,
+			Processor:                 ProcessorName,
+			Table:                     config.Table,
 		},
 		processor.flushRows,
 		log,
 	)
 
 	processor.log.WithFields(logrus.Fields{
-		"network":                 processor.network.Name,
-		"max_pending_block_range": config.MaxPendingBlockRange,
-		"buffer_max_rows":         config.BufferMaxRows,
-		"buffer_flush_interval":   config.BufferFlushInterval,
+		"network":                       processor.network.Name,
+		"max_pending_block_range":       config.MaxPendingBlockRange,
+		"buffer_max_rows":               config.BufferMaxRows,
+		"buffer_flush_interval":         config.BufferFlushInterval,
+		"buffer_max_concurrent_flushes": config.BufferMaxConcurrentFlushes,
 	}).Info("Detected network")
 
 	return processor, nil
