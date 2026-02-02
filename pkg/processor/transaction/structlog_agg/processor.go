@@ -213,12 +213,20 @@ func (p *Processor) Name() string {
 func (p *Processor) GetQueues() []tracker.QueueInfo {
 	return []tracker.QueueInfo{
 		{
+			Name:     tracker.PrefixedProcessReprocessForwardsQueue(ProcessorName, p.redisPrefix),
+			Priority: 20, // Highest priority for reprocessed/orphaned blocks (forwards)
+		},
+		{
+			Name:     tracker.PrefixedProcessReprocessBackwardsQueue(ProcessorName, p.redisPrefix),
+			Priority: 15, // High priority for reprocessed/orphaned blocks (backwards)
+		},
+		{
 			Name:     tracker.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix),
-			Priority: 10, // Highest priority for forwards processing
+			Priority: 10, // Medium priority for forwards processing
 		},
 		{
 			Name:     tracker.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix),
-			Priority: 5, // Medium priority for backwards processing
+			Priority: 5, // Lower priority for backwards processing
 		},
 	}
 }
@@ -259,6 +267,16 @@ func (p *Processor) getProcessForwardsQueue() string {
 // getProcessBackwardsQueue returns the prefixed process backwards queue name.
 func (p *Processor) getProcessBackwardsQueue() string {
 	return tracker.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
+}
+
+// getProcessReprocessForwardsQueue returns the prefixed reprocess forwards queue name.
+func (p *Processor) getProcessReprocessForwardsQueue() string {
+	return tracker.PrefixedProcessReprocessForwardsQueue(ProcessorName, p.redisPrefix)
+}
+
+// getProcessReprocessBackwardsQueue returns the prefixed reprocess backwards queue name.
+func (p *Processor) getProcessReprocessBackwardsQueue() string {
+	return tracker.PrefixedProcessReprocessBackwardsQueue(ProcessorName, p.redisPrefix)
 }
 
 // flushRows is the flush function for the row buffer.

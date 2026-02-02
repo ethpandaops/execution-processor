@@ -393,10 +393,12 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 
 	expectedCount := len(block.Transactions())
 
-	// Determine queue based on processing mode
-	queue := p.getProcessForwardsQueue()
+	// Use the high-priority reprocess queue for orphaned/stale blocks (mode-specific)
+	var queue string
 	if p.processingMode == tracker.BACKWARDS_MODE {
-		queue = p.getProcessBackwardsQueue()
+		queue = p.getProcessReprocessBackwardsQueue()
+	} else {
+		queue = p.getProcessReprocessForwardsQueue()
 	}
 
 	// Register in Redis (clears any partial state)
@@ -406,17 +408,61 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 		return fmt.Errorf("failed to register block: %w", regErr)
 	}
 
-	// Enqueue tasks (TaskID handles dedup - existing tasks return ErrTaskIDConflict)
-	enqueuedCount, err := p.EnqueueTransactionTasks(ctx, block)
-	if err != nil {
-		return fmt.Errorf("failed to enqueue tasks: %w", err)
+	// Enqueue tasks directly to the reprocess queue (high priority)
+	var enqueuedCount int
+
+	var skippedCount int
+
+	for index, tx := range block.Transactions() {
+		payload := &ProcessPayload{
+			BlockNumber:      *block.Number(),
+			TransactionHash:  tx.Hash().String(),
+			TransactionIndex: uint32(index), //nolint:gosec // index is bounded by block.Transactions() length
+			NetworkName:      p.network.Name,
+			Network:          p.network.Name,
+		}
+
+		// Create task based on processing mode but enqueue to reprocess queue
+		var task *asynq.Task
+
+		var taskID string
+
+		if p.processingMode == tracker.BACKWARDS_MODE {
+			task, taskID, err = NewProcessBackwardsTask(payload)
+		} else {
+			task, taskID, err = NewProcessForwardsTask(payload)
+		}
+
+		if err != nil {
+			return fmt.Errorf("failed to create task for tx %s: %w", tx.Hash().String(), err)
+		}
+
+		// Enqueue to the high-priority reprocess queue
+		err = p.EnqueueTask(ctx, task,
+			asynq.Queue(queue),
+			asynq.TaskID(taskID),
+		)
+
+		if errors.Is(err, ErrTaskIDConflict) {
+			skippedCount++
+
+			continue
+		}
+
+		if err != nil {
+			return fmt.Errorf("failed to enqueue task for tx %s: %w", tx.Hash().String(), err)
+		}
+
+		enqueuedCount++
 	}
 
 	p.log.WithFields(logrus.Fields{
 		"block_number":   blockNum,
 		"expected_count": expectedCount,
 		"enqueued_count": enqueuedCount,
-	}).Info("Reprocessed orphaned block")
+		"skipped_count":  skippedCount,
+		"queue":          queue,
+	}).Info("Reprocessed orphaned block to high-priority queue")
 
 	return nil
 }

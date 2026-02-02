@@ -129,6 +129,7 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 	asynqServer = asynq.NewServer(asynqRedisOpt, asynq.Config{
 		Concurrency:    config.Concurrency,
 		Queues:         queues,
+		StrictPriority: true,
 		LogLevel:       asynq.InfoLevel,
 		Logger:         log,
 		RetryDelayFunc: retryDelayFunc,
@@ -847,14 +848,19 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 			default:
 			}
 
-			// Only monitor queues that match the current processing mode
+			// Only monitor queues that match the current processing mode or reprocess queue
 			shouldMonitor := false
 
-			switch m.config.Mode {
-			case tracker.FORWARDS_MODE:
-				shouldMonitor = strings.Contains(queue.Name, "forwards")
-			case tracker.BACKWARDS_MODE:
-				shouldMonitor = strings.Contains(queue.Name, "backwards")
+			// Always monitor the reprocess queue (high priority for orphaned/stale blocks)
+			if strings.Contains(queue.Name, "reprocess") {
+				shouldMonitor = true
+			} else {
+				switch m.config.Mode {
+				case tracker.FORWARDS_MODE:
+					shouldMonitor = strings.Contains(queue.Name, "forwards")
+				case tracker.BACKWARDS_MODE:
+					shouldMonitor = strings.Contains(queue.Name, "backwards")
+				}
 			}
 
 			if !shouldMonitor {
@@ -869,6 +875,16 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 			// Queue name is already prefixed from GetQueues()
 			info, err := inspector.GetQueueInfo(queue.Name)
 			if err != nil {
+				// Queue doesn't exist yet (no tasks enqueued) - this is normal for reprocess queue
+				if strings.Contains(err.Error(), "NOT_FOUND") || strings.Contains(err.Error(), "does not exist") {
+					m.log.WithFields(logrus.Fields{
+						"processor": name,
+						"queue":     queue.Name,
+					}).Debug("Queue does not exist yet, skipping monitoring")
+
+					continue
+				}
+
 				m.log.WithError(err).WithFields(logrus.Fields{
 					"processor": name,
 					"queue":     queue.Name,
@@ -969,14 +985,19 @@ func (m *Manager) updateAsynqQueues() error {
 
 	for _, processor := range m.processors {
 		for _, queue := range processor.GetQueues() {
-			// Only register queues that match the current processing mode
+			// Register queues that match the current processing mode or the reprocess queue
 			shouldInclude := false
 
-			switch m.config.Mode {
-			case tracker.FORWARDS_MODE:
-				shouldInclude = strings.Contains(queue.Name, "forwards")
-			case tracker.BACKWARDS_MODE:
-				shouldInclude = strings.Contains(queue.Name, "backwards")
+			// Always include the reprocess queue (high priority for orphaned/stale blocks)
+			if strings.Contains(queue.Name, "reprocess") {
+				shouldInclude = true
+			} else {
+				switch m.config.Mode {
+				case tracker.FORWARDS_MODE:
+					shouldInclude = strings.Contains(queue.Name, "forwards")
+				case tracker.BACKWARDS_MODE:
+					shouldInclude = strings.Contains(queue.Name, "backwards")
+				}
 			}
 
 			if shouldInclude {
@@ -1012,6 +1033,7 @@ func (m *Manager) updateAsynqQueues() error {
 	m.asynqServer = asynq.NewServer(asynqRedisOpt, asynq.Config{
 		Concurrency:    m.config.Concurrency,
 		Queues:         queues,
+		StrictPriority: true,
 		LogLevel:       asynq.InfoLevel,
 		Logger:         m.log,
 		RetryDelayFunc: retryDelayFunc,
@@ -1068,21 +1090,33 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 			return true, "context cancelled"
 		default:
 		}
-		// Check all queues based on mode
+		// Check all queues based on mode (including mode-specific reprocess queue)
 		var queuesToCheck []string
 		if m.config.Mode == tracker.FORWARDS_MODE {
 			queuesToCheck = []string{
 				tracker.PrefixedProcessForwardsQueue(name, m.redisPrefix),
+				tracker.PrefixedProcessReprocessForwardsQueue(name, m.redisPrefix),
 			}
 		} else {
 			queuesToCheck = []string{
 				tracker.PrefixedProcessBackwardsQueue(name, m.redisPrefix),
+				tracker.PrefixedProcessReprocessBackwardsQueue(name, m.redisPrefix),
 			}
 		}
 
 		for _, queueName := range queuesToCheck {
 			info, err := inspector.GetQueueInfo(queueName)
 			if err != nil {
+				// Queue doesn't exist yet (no tasks enqueued) - this is normal for reprocess queue
+				if strings.Contains(err.Error(), "NOT_FOUND") || strings.Contains(err.Error(), "does not exist") {
+					m.log.WithFields(logrus.Fields{
+						"processor": name,
+						"queue":     queueName,
+					}).Debug("Queue does not exist yet, skipping backpressure check")
+
+					continue
+				}
+
 				m.log.WithError(err).WithFields(logrus.Fields{
 					"processor": name,
 					"queue":     queueName,
