@@ -28,10 +28,25 @@ type Config struct {
 	MaxProcessQueueSize    int     `yaml:"maxProcessQueueSize"`
 	BackpressureHysteresis float64 `yaml:"backpressureHysteresis"`
 
+	// Stale block detection configuration
+	StaleBlockDetection StaleBlockDetectionConfig `yaml:"staleBlockDetection"`
+
 	// Processor configurations
 	TransactionStructlog    structlog.Config     `yaml:"transactionStructlog"`
 	TransactionSimple       simple.Config        `yaml:"transactionSimple"`
 	TransactionStructlogAgg structlog_agg.Config `yaml:"transactionStructlogAgg"`
+}
+
+// StaleBlockDetectionConfig holds configuration for stale block detection.
+type StaleBlockDetectionConfig struct {
+	// Enabled enables stale block detection (default: true)
+	Enabled bool `yaml:"enabled"`
+
+	// StaleThreshold is the time after which a block is considered stale (default: 5m)
+	StaleThreshold time.Duration `yaml:"staleThreshold"`
+
+	// CheckInterval is how often to check for stale blocks (default: 1m)
+	CheckInterval time.Duration `yaml:"checkInterval"`
 }
 
 // LeaderElectionConfig holds configuration for leader election.
@@ -95,6 +110,20 @@ func (c *Config) Validate() error {
 	// Validate leader election settings
 	if c.LeaderElection.RenewalInterval >= c.LeaderElection.TTL {
 		return fmt.Errorf("leader election renewal interval must be less than TTL")
+	}
+
+	// Set stale block detection defaults
+	// Enable by default unless explicitly disabled
+	if !c.StaleBlockDetection.Enabled && c.StaleBlockDetection.StaleThreshold == 0 && c.StaleBlockDetection.CheckInterval == 0 {
+		c.StaleBlockDetection.Enabled = true
+	}
+
+	if c.StaleBlockDetection.StaleThreshold == 0 {
+		c.StaleBlockDetection.StaleThreshold = tracker.DefaultStaleThreshold
+	}
+
+	if c.StaleBlockDetection.CheckInterval == 0 {
+		c.StaleBlockDetection.CheckInterval = DefaultStaleBlockCheckInterval
 	}
 
 	if c.TransactionStructlog.Enabled {

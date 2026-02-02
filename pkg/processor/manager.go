@@ -703,9 +703,15 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 	queueMonitorTicker := time.NewTicker(30 * time.Second) // Monitor queues every 30s
 	defer queueMonitorTicker.Stop()
 
+	// Stale block detection ticker
+	staleBlockTicker := time.NewTicker(m.config.StaleBlockDetection.CheckInterval)
+	defer staleBlockTicker.Stop()
+
 	m.log.WithFields(logrus.Fields{
-		"interval":   m.config.Interval,
-		"processors": len(m.processors),
+		"interval":             m.config.Interval,
+		"processors":           len(m.processors),
+		"stale_check_interval": m.config.StaleBlockDetection.CheckInterval,
+		"stale_threshold":      m.config.StaleBlockDetection.StaleThreshold,
 	}).Info("Started block processing loop")
 
 	// Check if we have any processors
@@ -740,6 +746,9 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 		case <-queueMonitorTicker.C:
 			m.log.Debug("Queue monitoring ticker fired")
 			m.startQueueMonitoring(ctx)
+		case <-staleBlockTicker.C:
+			m.log.Debug("Stale block detection ticker fired")
+			m.checkStaleBlocks(ctx)
 		default:
 			if !m.isLeader {
 				m.log.Warn("No longer leader but block processing still running - stopping")
@@ -1215,10 +1224,10 @@ func (m *Manager) enqueueSimpleBlockTask(ctx context.Context, p *transaction_sim
 	var err error
 
 	if m.config.Mode == tracker.BACKWARDS_MODE {
-		task, err = transaction_simple.NewProcessBackwardsTask(payload)
+		task, _, err = transaction_simple.NewProcessBackwardsTask(payload)
 		queue = tracker.PrefixedProcessBackwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
 	} else {
-		task, err = transaction_simple.NewProcessForwardsTask(payload)
+		task, _, err = transaction_simple.NewProcessForwardsTask(payload)
 		queue = tracker.PrefixedProcessForwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
 	}
 
@@ -1293,6 +1302,72 @@ func (m *Manager) updateBlocksStoredMetrics(ctx context.Context) {
 		if minBlock != nil && maxBlock != nil {
 			common.BlocksStored.WithLabelValues(m.network.Name, processorName, "min").Set(float64(minBlock.Int64()))
 			common.BlocksStored.WithLabelValues(m.network.Name, processorName, "max").Set(float64(maxBlock.Int64()))
+		}
+	}
+}
+
+// checkStaleBlocks checks for stale blocks across all processors and triggers retries.
+func (m *Manager) checkStaleBlocks(ctx context.Context) {
+	if !m.config.StaleBlockDetection.Enabled {
+		return
+	}
+
+	for processorName, processor := range m.processors {
+		// Check for context cancellation between processors
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Get the completion tracker based on processor type
+		var completionTracker *tracker.BlockCompletionTracker
+
+		switch p := processor.(type) {
+		case *transaction_structlog.Processor:
+			completionTracker = p.GetCompletionTracker()
+		case *transaction_simple.Processor:
+			completionTracker = p.GetCompletionTracker()
+		case *transaction_structlog_agg.Processor:
+			completionTracker = p.GetCompletionTracker()
+		default:
+			m.log.WithField("processor", processorName).Warn("Unknown processor type for stale block detection")
+
+			continue
+		}
+
+		if completionTracker == nil {
+			continue
+		}
+
+		staleBlocks, err := completionTracker.GetStaleBlocks(ctx, m.network.Name, processorName, m.config.Mode)
+		if err != nil {
+			m.log.WithError(err).WithField("processor", processorName).Warn("Failed to get stale blocks")
+
+			continue
+		}
+
+		for _, blockNum := range staleBlocks {
+			m.log.WithFields(logrus.Fields{
+				"processor":    processorName,
+				"block_number": blockNum,
+			}).Warn("Stale block detected - clearing for re-processing")
+
+			// Clear the stale block tracking (it will be re-enqueued on next ProcessNextBlock cycle)
+			if clearErr := completionTracker.ClearBlock(ctx, blockNum, m.network.Name, processorName, m.config.Mode); clearErr != nil {
+				m.log.WithError(clearErr).WithFields(logrus.Fields{
+					"processor":    processorName,
+					"block_number": blockNum,
+				}).Error("Failed to clear stale block")
+			}
+		}
+
+		if len(staleBlocks) > 0 {
+			m.log.WithFields(logrus.Fields{
+				"processor":    processorName,
+				"stale_count":  len(staleBlocks),
+				"stale_blocks": staleBlocks,
+			}).Info("Cleared stale blocks for re-processing")
 		}
 	}
 }

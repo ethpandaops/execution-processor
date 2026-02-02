@@ -63,8 +63,25 @@ func (p *Processor) handleProcessForwardsTask(ctx context.Context, task *asynq.T
 	// Record successful processing
 	common.TasksProcessed.WithLabelValues(p.network.Name, ProcessorName, tracker.ProcessForwardsQueue(ProcessorName), ProcessForwardsTaskType, "success").Inc()
 
-	// Track block completion using embedded Blocker
-	p.TrackBlockCompletion(ctx, blockNumber.Uint64(), tracker.FORWARDS_MODE)
+	// Track task completion using SET-based tracker
+	taskID := GenerateTaskID(p.network.Name, blockNumber.Uint64(), payload.TransactionHash)
+
+	allComplete, trackErr := p.completionTracker.TrackTaskCompletion(ctx, taskID, blockNumber.Uint64(), p.network.Name, p.Name(), tracker.FORWARDS_MODE)
+	if trackErr != nil {
+		p.log.WithError(trackErr).WithFields(logrus.Fields{
+			"block_number": blockNumber.Uint64(),
+			"task_id":      taskID,
+		}).Warn("Failed to track task completion")
+		// Non-fatal - stale detection will catch it
+	}
+
+	if allComplete {
+		if markErr := p.completionTracker.MarkBlockComplete(ctx, blockNumber.Uint64(), p.network.Name, p.Name(), tracker.FORWARDS_MODE); markErr != nil {
+			p.log.WithError(markErr).WithFields(logrus.Fields{
+				"block_number": blockNumber.Uint64(),
+			}).Error("Failed to mark block complete")
+		}
+	}
 
 	p.log.WithFields(logrus.Fields{
 		"transaction_hash": payload.TransactionHash,
@@ -125,8 +142,25 @@ func (p *Processor) handleProcessBackwardsTask(ctx context.Context, task *asynq.
 	// Record successful processing
 	common.TasksProcessed.WithLabelValues(p.network.Name, ProcessorName, tracker.ProcessBackwardsQueue(ProcessorName), ProcessBackwardsTaskType, "success").Inc()
 
-	// Track block completion using embedded Blocker
-	p.TrackBlockCompletion(ctx, blockNumber.Uint64(), tracker.BACKWARDS_MODE)
+	// Track task completion using SET-based tracker
+	taskID := GenerateTaskID(p.network.Name, blockNumber.Uint64(), payload.TransactionHash)
+
+	allComplete, trackErr := p.completionTracker.TrackTaskCompletion(ctx, taskID, blockNumber.Uint64(), p.network.Name, p.Name(), tracker.BACKWARDS_MODE)
+	if trackErr != nil {
+		p.log.WithError(trackErr).WithFields(logrus.Fields{
+			"block_number": blockNumber.Uint64(),
+			"task_id":      taskID,
+		}).Warn("Failed to track task completion")
+		// Non-fatal - stale detection will catch it
+	}
+
+	if allComplete {
+		if markErr := p.completionTracker.MarkBlockComplete(ctx, blockNumber.Uint64(), p.network.Name, p.Name(), tracker.BACKWARDS_MODE); markErr != nil {
+			p.log.WithError(markErr).WithFields(logrus.Fields{
+				"block_number": blockNumber.Uint64(),
+			}).Error("Failed to mark block complete")
+		}
+	}
 
 	p.log.WithFields(logrus.Fields{
 		"transaction_hash": payload.TransactionHash,

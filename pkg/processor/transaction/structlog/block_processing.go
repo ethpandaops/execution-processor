@@ -15,6 +15,9 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
+// ErrTaskIDConflict is returned when a task with the same ID already exists.
+var ErrTaskIDConflict = asynq.ErrTaskIDConflict
+
 // ProcessNextBlock processes the next available block(s).
 // In zero-interval mode, this attempts to fetch and process multiple blocks
 // up to the available capacity for improved throughput.
@@ -51,6 +54,33 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 
 	if nextBlock == nil {
 		p.log.Debug("no more blocks to process")
+
+		return nil
+	}
+
+	// Distance-based pending block range check with orphan detection
+	blocked, blockingBlock, err := p.IsBlockedByIncompleteBlocks(ctx, nextBlock.Uint64(), p.processingMode)
+	if err != nil {
+		p.log.WithError(err).Warn("Failed to check incomplete blocks distance, proceeding anyway")
+	} else if blocked {
+		// Check if the blocking block is orphaned (no Redis tracking)
+		if blockingBlock != nil {
+			hasTracking, trackErr := p.completionTracker.HasBlockTracking(
+				ctx, *blockingBlock, p.network.Name, p.Name(), p.processingMode)
+			if trackErr != nil {
+				p.log.WithError(trackErr).Warn("Failed to check block tracking")
+			} else if !hasTracking {
+				// Orphaned block - reprocess it
+				p.log.WithFields(logrus.Fields{
+					"blocking_block": *blockingBlock,
+					"next_block":     nextBlock,
+				}).Warn("Detected orphaned block blocking progress, reprocessing")
+
+				if reprocessErr := p.ReprocessBlock(ctx, *blockingBlock); reprocessErr != nil {
+					p.log.WithError(reprocessErr).Error("Failed to reprocess orphaned block")
+				}
+			}
+		}
 
 		return nil
 	}
@@ -202,42 +232,35 @@ func (p *Processor) processBlock(ctx context.Context, block execution.Block) err
 	// Calculate expected task count before enqueueing
 	expectedTaskCount := len(block.Transactions())
 
-	// Acquire exclusive lock on this block via Redis FIRST
-	if initErr := p.pendingTracker.InitBlock(ctx, blockNumber.Uint64(), expectedTaskCount, p.network.Name, p.Name(), p.processingMode); initErr != nil {
-		// If block is already being processed by another worker, skip gracefully
-		if errors.Is(initErr, tracker.ErrBlockAlreadyBeingProcessed) {
-			p.log.WithFields(logrus.Fields{
-				"network":      p.network.Name,
-				"block_number": blockNumber,
-			}).Debug("Block already being processed by another worker, skipping")
-
-			common.BlockProcessingSkipped.WithLabelValues(p.network.Name, p.Name(), "already_processing").Inc()
-
-			return nil
-		}
-
-		p.log.WithError(initErr).WithFields(logrus.Fields{
-			"network":      p.network.Name,
-			"block_number": blockNumber,
-		}).Error("could not init block tracking in Redis")
-
-		return initErr
-	}
-
-	// Mark the block as enqueued AFTER acquiring Redis lock (phase 1 of two-phase completion)
+	// 1. Mark block as enqueued in ClickHouse FIRST (complete=0)
+	// This records that we started processing this block
 	if markErr := p.stateManager.MarkBlockEnqueued(ctx, blockNumber.Uint64(), expectedTaskCount, p.network.Name, p.Name()); markErr != nil {
 		p.log.WithError(markErr).WithFields(logrus.Fields{
 			"network":      p.network.Name,
 			"block_number": blockNumber,
 		}).Error("could not mark block as enqueued")
 
-		// Clean up Redis lock since we failed to mark in ClickHouse
-		_ = p.pendingTracker.CleanupBlock(ctx, blockNumber.Uint64(), p.network.Name, p.Name(), p.processingMode)
-
 		return markErr
 	}
 
-	// Enqueue tasks for each transaction LAST
+	// 2. Register block for completion tracking in Redis (clears any old state)
+	// This uses SET-based tracking instead of counter-based
+	queue := p.getProcessForwardsQueue()
+	if p.processingMode == tracker.BACKWARDS_MODE {
+		queue = p.getProcessBackwardsQueue()
+	}
+
+	if regErr := p.completionTracker.RegisterBlock(ctx, blockNumber.Uint64(), expectedTaskCount, p.network.Name, p.Name(), p.processingMode, queue); regErr != nil {
+		p.log.WithError(regErr).WithFields(logrus.Fields{
+			"network":      p.network.Name,
+			"block_number": blockNumber,
+		}).Error("could not register block for completion tracking")
+
+		return regErr
+	}
+
+	// 3. Enqueue tasks with TaskID deduplication
+	// Tasks may start processing immediately, but the block is already registered
 	taskCount, err := p.EnqueueTransactionTasks(ctx, block)
 	if err != nil {
 		return fmt.Errorf("failed to enqueue transaction tasks: %w", err)
@@ -264,8 +287,11 @@ func (p *Processor) processBlock(ctx context.Context, block execution.Block) err
 }
 
 // EnqueueTransactionTasks enqueues transaction processing tasks for a given block.
+// Uses TaskID for deduplication - tasks with conflicting IDs are skipped but still count.
 func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block execution.Block) (int, error) {
 	var enqueuedCount int
+
+	var skippedCount int
 
 	var errs []error
 
@@ -282,6 +308,8 @@ func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block execution
 		// Create the task based on processing mode
 		var task *asynq.Task
 
+		var taskID string
+
 		var queue string
 
 		var taskType string
@@ -289,11 +317,11 @@ func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block execution
 		var err error
 
 		if p.processingMode == tracker.BACKWARDS_MODE {
-			task, err = NewProcessBackwardsTask(payload)
+			task, taskID, err = NewProcessBackwardsTask(payload)
 			queue = p.getProcessBackwardsQueue()
 			taskType = ProcessBackwardsTaskType
 		} else {
-			task, err = NewProcessForwardsTask(payload)
+			task, taskID, err = NewProcessForwardsTask(payload)
 			queue = p.getProcessForwardsQueue()
 			taskType = ProcessForwardsTaskType
 		}
@@ -304,8 +332,25 @@ func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block execution
 			continue
 		}
 
-		// Enqueue the task
-		if err := p.EnqueueTask(ctx, task, asynq.Queue(queue)); err != nil {
+		// Enqueue the task with TaskID for deduplication
+		err = p.EnqueueTask(ctx, task,
+			asynq.Queue(queue),
+			asynq.TaskID(taskID),
+		)
+
+		if errors.Is(err, ErrTaskIDConflict) {
+			// Task already exists - this is fine, it will still complete and be tracked
+			skippedCount++
+
+			p.log.WithFields(logrus.Fields{
+				"task_id": taskID,
+				"tx_hash": tx.Hash().String(),
+			}).Debug("Task already exists (TaskID conflict), skipping")
+
+			continue
+		}
+
+		if err != nil {
 			errs = append(errs, fmt.Errorf("failed to enqueue task for tx %s: %w", tx.Hash().String(), err))
 
 			continue
@@ -320,12 +365,72 @@ func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block execution
 		"block_number":   block.Number(),
 		"total_txs":      len(block.Transactions()),
 		"enqueued_count": enqueuedCount,
+		"skipped_count":  skippedCount,
 		"error_count":    len(errs),
 	}).Info("Enqueued transaction processing tasks")
 
 	if len(errs) > 0 {
-		return enqueuedCount, fmt.Errorf("failed to enqueue %d tasks: %v", len(errs), errs[0])
+		return enqueuedCount + skippedCount, fmt.Errorf("failed to enqueue %d tasks: %v", len(errs), errs[0])
 	}
 
-	return enqueuedCount, nil
+	// Return total count including skipped (already existing) tasks
+	return enqueuedCount + skippedCount, nil
+}
+
+// ReprocessBlock re-enqueues tasks for an orphaned block.
+// Used when a block is in ClickHouse (complete=0) but has no Redis tracking.
+// TaskID deduplication ensures no duplicate tasks are created.
+func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
+	p.log.WithFields(logrus.Fields{
+		"block_number": blockNum,
+		"network":      p.network.Name,
+	}).Info("Reprocessing orphaned block")
+
+	// Get execution node
+	node := p.pool.GetHealthyExecutionNode()
+	if node == nil {
+		return fmt.Errorf("no healthy execution node available")
+	}
+
+	// Fetch block
+	block, err := node.BlockByNumber(ctx, new(big.Int).SetUint64(blockNum))
+	if err != nil {
+		return fmt.Errorf("failed to fetch block %d: %w", blockNum, err)
+	}
+
+	// Handle empty blocks - mark complete immediately
+	if len(block.Transactions()) == 0 {
+		p.log.WithField("block", blockNum).Debug("Empty orphaned block, marking as complete")
+
+		return p.stateManager.MarkBlockComplete(ctx, blockNum, p.network.Name, p.Name())
+	}
+
+	expectedCount := len(block.Transactions())
+
+	// Determine queue based on processing mode
+	queue := p.getProcessForwardsQueue()
+	if p.processingMode == tracker.BACKWARDS_MODE {
+		queue = p.getProcessBackwardsQueue()
+	}
+
+	// Register in Redis (clears any partial state)
+	if regErr := p.completionTracker.RegisterBlock(
+		ctx, blockNum, expectedCount, p.network.Name, p.Name(), p.processingMode, queue,
+	); regErr != nil {
+		return fmt.Errorf("failed to register block: %w", regErr)
+	}
+
+	// Enqueue tasks (TaskID handles dedup - existing tasks return ErrTaskIDConflict)
+	enqueuedCount, err := p.EnqueueTransactionTasks(ctx, block)
+	if err != nil {
+		return fmt.Errorf("failed to enqueue tasks: %w", err)
+	}
+
+	p.log.WithFields(logrus.Fields{
+		"block_number":   blockNum,
+		"expected_count": expectedCount,
+		"enqueued_count": enqueuedCount,
+	}).Info("Reprocessed orphaned block")
+
+	return nil
 }

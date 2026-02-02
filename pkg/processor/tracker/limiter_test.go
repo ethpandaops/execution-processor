@@ -1,9 +1,11 @@
 package tracker
 
 import (
+	"context"
 	"errors"
 	"testing"
 
+	"github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
@@ -358,4 +360,126 @@ type testError struct {
 
 func (e *testError) Error() string {
 	return e.msg
+}
+
+// mockStateProvider implements StateProvider for testing IsBlockedByIncompleteBlocks.
+type mockStateProvider struct {
+	oldestIncomplete *uint64
+	newestIncomplete *uint64
+}
+
+func (m *mockStateProvider) GetOldestIncompleteBlock(
+	_ context.Context, _, _ string, _ uint64,
+) (*uint64, error) {
+	return m.oldestIncomplete, nil
+}
+
+func (m *mockStateProvider) GetNewestIncompleteBlock(
+	_ context.Context, _, _ string, _ uint64,
+) (*uint64, error) {
+	return m.newestIncomplete, nil
+}
+
+func (m *mockStateProvider) MarkBlockComplete(
+	_ context.Context, _ uint64, _, _ string,
+) error {
+	return nil
+}
+
+func TestLimiter_IsBlockedByIncompleteBlocks_ReturnsBlockingBlock(t *testing.T) {
+	tests := []struct {
+		name                 string
+		mode                 string
+		nextBlock            uint64
+		maxPendingBlockRange int
+		oldestIncomplete     *uint64
+		newestIncomplete     *uint64
+		wantBlocked          bool
+		wantBlockingBlock    *uint64
+	}{
+		{
+			name:                 "forwards mode - returns oldest incomplete when blocked",
+			mode:                 FORWARDS_MODE,
+			nextBlock:            110,
+			maxPendingBlockRange: 5,
+			oldestIncomplete:     uint64Ptr(100), // distance = 10 >= 5
+			wantBlocked:          true,
+			wantBlockingBlock:    uint64Ptr(100),
+		},
+		{
+			name:                 "forwards mode - returns nil when not blocked",
+			mode:                 FORWARDS_MODE,
+			nextBlock:            103,
+			maxPendingBlockRange: 5,
+			oldestIncomplete:     uint64Ptr(100), // distance = 3 < 5
+			wantBlocked:          false,
+			wantBlockingBlock:    nil,
+		},
+		{
+			name:                 "backwards mode - returns newest incomplete when blocked",
+			mode:                 BACKWARDS_MODE,
+			nextBlock:            100,
+			maxPendingBlockRange: 5,
+			newestIncomplete:     uint64Ptr(110), // distance = 10 >= 5
+			wantBlocked:          true,
+			wantBlockingBlock:    uint64Ptr(110),
+		},
+		{
+			name:                 "backwards mode - returns nil when not blocked",
+			mode:                 BACKWARDS_MODE,
+			nextBlock:            100,
+			maxPendingBlockRange: 5,
+			newestIncomplete:     uint64Ptr(103), // distance = 3 < 5
+			wantBlocked:          false,
+			wantBlockingBlock:    nil,
+		},
+		{
+			name:                 "no incomplete blocks - returns nil",
+			mode:                 FORWARDS_MODE,
+			nextBlock:            100,
+			maxPendingBlockRange: 5,
+			oldestIncomplete:     nil,
+			wantBlocked:          false,
+			wantBlockingBlock:    nil,
+		},
+		{
+			name:                 "zero maxPendingBlockRange - returns not blocked",
+			mode:                 FORWARDS_MODE,
+			nextBlock:            110,
+			maxPendingBlockRange: 0,
+			oldestIncomplete:     uint64Ptr(100),
+			wantBlocked:          false,
+			wantBlockingBlock:    nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mockState := &mockStateProvider{
+				oldestIncomplete: tt.oldestIncomplete,
+				newestIncomplete: tt.newestIncomplete,
+			}
+
+			limiter := NewLimiter(&LimiterDeps{
+				Log:           logrus.New(),
+				StateProvider: mockState,
+				Network:       "test",
+				Processor:     "test",
+			}, LimiterConfig{MaxPendingBlockRange: tt.maxPendingBlockRange})
+
+			blocked, blockingBlock, err := limiter.IsBlockedByIncompleteBlocks(
+				context.Background(), tt.nextBlock, tt.mode,
+			)
+
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantBlocked, blocked)
+
+			if tt.wantBlockingBlock == nil {
+				assert.Nil(t, blockingBlock)
+			} else {
+				assert.NotNil(t, blockingBlock)
+				assert.Equal(t, *tt.wantBlockingBlock, *blockingBlock)
+			}
+		})
+	}
 }

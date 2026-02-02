@@ -375,13 +375,19 @@ func TestNewProcessForwardsTask(t *testing.T) {
 		Network:          "mainnet",
 	}
 
-	task, err := transaction_structlog.NewProcessForwardsTask(payload)
+	task, taskID, err := transaction_structlog.NewProcessForwardsTask(payload)
 	if err != nil {
 		t.Fatalf("failed to create task: %v", err)
 	}
 
 	if task.Type() != transaction_structlog.ProcessForwardsTaskType {
 		t.Errorf("expected task type %s, got %s", transaction_structlog.ProcessForwardsTaskType, task.Type())
+	}
+
+	// Verify taskID is generated correctly
+	expectedTaskID := transaction_structlog.GenerateTaskID(payload.NetworkName, payload.BlockNumber.Uint64(), payload.TransactionHash)
+	if taskID != expectedTaskID {
+		t.Errorf("expected taskID %s, got %s", expectedTaskID, taskID)
 	}
 
 	// Verify payload can be unmarshaled from task
@@ -410,13 +416,19 @@ func TestNewProcessBackwardsTask(t *testing.T) {
 		Network:          "mainnet",
 	}
 
-	task, err := transaction_structlog.NewProcessBackwardsTask(payload)
+	task, taskID, err := transaction_structlog.NewProcessBackwardsTask(payload)
 	if err != nil {
 		t.Fatalf("failed to create task: %v", err)
 	}
 
 	if task.Type() != transaction_structlog.ProcessBackwardsTaskType {
 		t.Errorf("expected task type %s, got %s", transaction_structlog.ProcessBackwardsTaskType, task.Type())
+	}
+
+	// Verify taskID is generated correctly
+	expectedTaskID := transaction_structlog.GenerateTaskID(payload.NetworkName, payload.BlockNumber.Uint64(), payload.TransactionHash)
+	if taskID != expectedTaskID {
+		t.Errorf("expected taskID %s, got %s", expectedTaskID, taskID)
 	}
 
 	// Verify payload can be unmarshaled from task
