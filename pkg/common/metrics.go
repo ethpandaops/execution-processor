@@ -233,4 +233,20 @@ var (
 		Name: "execution_processor_row_buffer_pending_tasks",
 		Help: "Current number of tasks waiting for their rows to be flushed",
 	}, []string{"network", "processor", "table"})
+
+	RowBufferInflightFlushes = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_row_buffer_inflight_flushes",
+		Help: "Number of flush operations currently in progress",
+	}, []string{"network", "processor", "table"})
+
+	// Circuit breaker metrics for row buffer.
+	RowBufferCircuitOpen = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_row_buffer_circuit_open",
+		Help: "Whether circuit breaker is open (1) or closed (0)",
+	}, []string{"network", "processor", "table"})
+
+	RowBufferCircuitRejections = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "execution_processor_row_buffer_circuit_rejections_total",
+		Help: "Total number of flushes rejected by circuit breaker",
+	}, []string{"network", "processor", "table"})
 )

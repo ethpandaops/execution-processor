@@ -110,10 +110,24 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	}).Debug("Fetched batch of blocks")
 
 	// Process each block, stopping on first error
+	processedCount := 0
+
 	for _, block := range blocks {
 		if processErr := p.processBlock(ctx, block); processErr != nil {
+			// Record blocks that were successfully processed before the error
+			if processedCount > 0 {
+				common.BlocksProcessed.WithLabelValues(p.network.Name, p.Name()).Add(float64(processedCount))
+			}
+
 			return processErr
 		}
+
+		processedCount++
+	}
+
+	// Record all successfully processed blocks
+	if processedCount > 0 {
+		common.BlocksProcessed.WithLabelValues(p.network.Name, p.Name()).Add(float64(processedCount))
 	}
 
 	return nil
@@ -126,7 +140,7 @@ func (p *Processor) handleBlockNotFound(ctx context.Context, node execution.Node
 		chainTip := new(big.Int).SetUint64(*latestBlock)
 		diff := new(big.Int).Sub(nextBlock, chainTip).Int64()
 
-		if diff <= 5 { // Within 5 blocks of chain tip
+		if diff > 0 && diff <= 5 { // 1-5 blocks ahead of chain tip, might appear soon
 			p.log.WithFields(logrus.Fields{
 				"network":      p.network.Name,
 				"block_number": nextBlock,

@@ -5,11 +5,13 @@ package rowbuffer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"github.com/sony/gobreaker/v2"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 )
@@ -19,11 +21,16 @@ type FlushFunc[R any] func(ctx context.Context, rows []R) error
 
 // Config holds configuration for the row buffer.
 type Config struct {
-	MaxRows       int           // Flush threshold (default: 100000)
-	FlushInterval time.Duration // Max wait before flush (default: 1s)
-	Network       string        // For metrics
-	Processor     string        // For metrics
-	Table         string        // For metrics
+	MaxRows              int           // Flush threshold (default: 100000)
+	FlushInterval        time.Duration // Max wait before flush (default: 1s)
+	MaxConcurrentFlushes int           // Max parallel flush operations (default: 10)
+	Network              string        // For metrics
+	Processor            string        // For metrics
+	Table                string        // For metrics
+
+	// Circuit breaker configuration
+	CircuitBreakerMaxFailures uint32        // Consecutive failures to trip circuit (default: 5)
+	CircuitBreakerTimeout     time.Duration // Open state duration before half-open (default: 60s)
 }
 
 // waiter represents a task waiting for its rows to be flushed.
@@ -46,6 +53,9 @@ type Buffer[R any] struct {
 	stoppedChan chan struct{}
 	wg          sync.WaitGroup
 	started     bool
+
+	flushSem chan struct{}                  // Semaphore to limit concurrent flushes
+	cb       *gobreaker.CircuitBreaker[any] // Circuit breaker for flush operations
 }
 
 // New creates a new Buffer with the given configuration and flush function.
@@ -59,14 +69,55 @@ func New[R any](cfg Config, flushFn FlushFunc[R], log logrus.FieldLogger) *Buffe
 		cfg.FlushInterval = time.Second
 	}
 
+	if cfg.MaxConcurrentFlushes <= 0 {
+		cfg.MaxConcurrentFlushes = 10
+	}
+
+	if cfg.CircuitBreakerMaxFailures <= 0 {
+		cfg.CircuitBreakerMaxFailures = 5
+	}
+
+	if cfg.CircuitBreakerTimeout <= 0 {
+		cfg.CircuitBreakerTimeout = 60 * time.Second
+	}
+
+	bufLog := log.WithField("component", "rowbuffer")
+
+	cbSettings := gobreaker.Settings{
+		Name:        fmt.Sprintf("rowbuffer-%s-%s", cfg.Processor, cfg.Table),
+		MaxRequests: 1,
+		Timeout:     cfg.CircuitBreakerTimeout,
+		ReadyToTrip: func(counts gobreaker.Counts) bool {
+			return counts.ConsecutiveFailures >= cfg.CircuitBreakerMaxFailures
+		},
+		OnStateChange: func(name string, from, to gobreaker.State) {
+			bufLog.WithFields(logrus.Fields{
+				"circuit": name,
+				"from":    from.String(),
+				"to":      to.String(),
+			}).Warn("Circuit breaker state changed")
+
+			state := 0.0
+			if to == gobreaker.StateOpen {
+				state = 1.0
+			}
+
+			common.RowBufferCircuitOpen.WithLabelValues(
+				cfg.Network, cfg.Processor, cfg.Table,
+			).Set(state)
+		},
+	}
+
 	return &Buffer[R]{
 		rows:        make([]R, 0, cfg.MaxRows),
 		waiters:     make([]waiter, 0, 64),
 		config:      cfg,
 		flushFn:     flushFn,
-		log:         log.WithField("component", "rowbuffer"),
+		log:         bufLog,
 		stopChan:    make(chan struct{}),
 		stoppedChan: make(chan struct{}),
+		flushSem:    make(chan struct{}, cfg.MaxConcurrentFlushes),
+		cb:          gobreaker.NewCircuitBreaker[any](cbSettings),
 	}
 }
 
@@ -189,9 +240,21 @@ func (b *Buffer[R]) Submit(ctx context.Context, rows []R) error {
 
 	// Perform flush outside of lock if triggered by size
 	if shouldFlush {
-		go func() {
+		b.wg.Go(func() {
+			b.flushSem <- struct{}{} // Acquire semaphore (blocks if at limit)
+
+			defer func() { <-b.flushSem }() // Release semaphore
+
+			common.RowBufferInflightFlushes.WithLabelValues(
+				b.config.Network, b.config.Processor, b.config.Table,
+			).Inc()
+
+			defer common.RowBufferInflightFlushes.WithLabelValues(
+				b.config.Network, b.config.Processor, b.config.Table,
+			).Dec()
+
 			_ = b.doFlush(context.Background(), flushRows, flushWaiters, "size")
-		}()
+		})
 	}
 
 	// Wait for result or context cancellation
@@ -244,15 +307,55 @@ func (b *Buffer[R]) flushOnTimer(ctx context.Context) {
 	b.waiters = make([]waiter, 0, 64)
 	b.mu.Unlock()
 
-	_ = b.doFlush(ctx, rows, waiters, "timer")
+	b.wg.Go(func() {
+		b.flushSem <- struct{}{} // Acquire semaphore (blocks if at limit)
+
+		defer func() { <-b.flushSem }() // Release semaphore
+
+		common.RowBufferInflightFlushes.WithLabelValues(
+			b.config.Network, b.config.Processor, b.config.Table,
+		).Inc()
+
+		defer common.RowBufferInflightFlushes.WithLabelValues(
+			b.config.Network, b.config.Processor, b.config.Table,
+		).Dec()
+
+		_ = b.doFlush(ctx, rows, waiters, "timer")
+	})
 }
 
-// doFlush performs the actual flush and notifies all waiters.
+// doFlush performs the actual flush through the circuit breaker and notifies all waiters.
 func (b *Buffer[R]) doFlush(ctx context.Context, rows []R, waiters []waiter, trigger string) error {
 	if len(rows) == 0 {
 		return nil
 	}
 
+	// Execute through circuit breaker
+	_, err := b.cb.Execute(func() (any, error) {
+		return nil, b.executeFlush(ctx, rows, trigger)
+	})
+
+	// Track circuit breaker rejections
+	if errors.Is(err, gobreaker.ErrOpenState) || errors.Is(err, gobreaker.ErrTooManyRequests) {
+		common.RowBufferCircuitRejections.WithLabelValues(
+			b.config.Network, b.config.Processor, b.config.Table,
+		).Inc()
+	}
+
+	// Notify all waiters
+	for _, w := range waiters {
+		select {
+		case w.resultCh <- err:
+		default:
+			// Waiter may have timed out, skip
+		}
+	}
+
+	return err
+}
+
+// executeFlush performs the actual flush to ClickHouse.
+func (b *Buffer[R]) executeFlush(ctx context.Context, rows []R, trigger string) error {
 	start := time.Now()
 	rowCount := len(rows)
 
@@ -294,7 +397,6 @@ func (b *Buffer[R]) doFlush(ctx context.Context, rows []R, waiters []waiter, tri
 	if err != nil {
 		b.log.WithError(err).WithFields(logrus.Fields{
 			"rows":      rowCount,
-			"waiters":   len(waiters),
 			"trigger":   trigger,
 			"duration":  duration,
 			"processor": b.config.Processor,
@@ -303,21 +405,11 @@ func (b *Buffer[R]) doFlush(ctx context.Context, rows []R, waiters []waiter, tri
 	} else {
 		b.log.WithFields(logrus.Fields{
 			"rows":      rowCount,
-			"waiters":   len(waiters),
 			"trigger":   trigger,
 			"duration":  duration,
 			"processor": b.config.Processor,
 			"table":     b.config.Table,
 		}).Debug("ClickHouse flush completed")
-	}
-
-	// Notify all waiters
-	for _, w := range waiters {
-		select {
-		case w.resultCh <- err:
-		default:
-			// Waiter may have timed out, skip
-		}
 	}
 
 	return err
