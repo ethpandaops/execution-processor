@@ -292,10 +292,12 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 		return p.stateManager.MarkBlockComplete(ctx, blockNum, p.network.Name, p.Name())
 	}
 
-	// Determine queue based on processing mode
-	queue := p.getProcessForwardsQueue()
+	// Use the high-priority reprocess queue for orphaned/stale blocks (mode-specific)
+	var queue string
 	if p.processingMode == tracker.BACKWARDS_MODE {
-		queue = p.getProcessBackwardsQueue()
+		queue = p.getProcessReprocessBackwardsQueue()
+	} else {
+		queue = p.getProcessReprocessForwardsQueue()
 	}
 
 	// Register in Redis (clears any partial state)
@@ -316,6 +318,7 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 
 	var taskID string
 
+	// Create task based on processing mode but enqueue to reprocess queue
 	if p.processingMode == tracker.BACKWARDS_MODE {
 		task, taskID, err = NewProcessBackwardsTask(payload)
 	} else {
@@ -326,7 +329,7 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 		return fmt.Errorf("failed to create task: %w", err)
 	}
 
-	// Enqueue with TaskID for deduplication
+	// Enqueue to the high-priority reprocess queue
 	err = p.EnqueueTask(ctx, task,
 		asynq.Queue(queue),
 		asynq.TaskID(taskID),
@@ -347,7 +350,8 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 	p.log.WithFields(logrus.Fields{
 		"block_number": blockNum,
 		"tx_count":     len(block.Transactions()),
-	}).Info("Reprocessed orphaned block")
+		"queue":        queue,
+	}).Info("Reprocessed orphaned block to high-priority queue")
 
 	return nil
 }
