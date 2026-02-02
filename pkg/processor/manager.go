@@ -564,15 +564,16 @@ func (m *Manager) processBlocks(ctx context.Context) bool {
 		} else {
 			workDone = true
 
-			// Track processing duration (block count is tracked by the processor itself)
+			// Track processing duration
 			duration := time.Since(startTime)
 
 			common.BlockProcessingDuration.WithLabelValues(m.network.Name, name).Observe(duration.Seconds())
+			common.BlocksProcessed.WithLabelValues(m.network.Name, name).Inc()
 
 			m.log.WithFields(logrus.Fields{
 				"processor": name,
 				"duration":  duration,
-			}).Debug("Successfully processed blocks")
+			}).Debug("Successfully processed block")
 		}
 
 		// Update head distance metric (regardless of success/failure to track current distance)

@@ -13,7 +13,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rpc"
-	"github.com/sirupsen/logrus"
 
 	pcommon "github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
@@ -74,56 +73,13 @@ func (n *RPCNode) blockByNumber(ctx context.Context, blockNumber *big.Int) (exec
 	return NewBlockAdapter(block), nil
 }
 
-// maxBatchSize is the maximum number of blocks to request in a single batch RPC call.
-// Most RPC nodes have a default limit of 100 (e.g., Erigon's --rpc.batch.limit).
-const maxBatchSize = 100
-
 // blocksByNumbers fetches multiple blocks using batch RPC calls.
 // Returns blocks up to the first not-found (contiguous only).
-// Large requests are automatically chunked to respect RPC batch limits.
 func (n *RPCNode) blocksByNumbers(ctx context.Context, numbers []*big.Int) ([]execution.Block, error) {
 	if len(numbers) == 0 {
 		return []execution.Block{}, nil
 	}
 
-	// If request exceeds batch limit, chunk it
-	if len(numbers) > maxBatchSize {
-		return n.blocksByNumbersChunked(ctx, numbers)
-	}
-
-	return n.blocksByNumbersBatch(ctx, numbers)
-}
-
-// blocksByNumbersChunked fetches blocks in chunks to respect RPC batch limits.
-func (n *RPCNode) blocksByNumbersChunked(ctx context.Context, numbers []*big.Int) ([]execution.Block, error) {
-	allBlocks := make([]execution.Block, 0, len(numbers))
-
-	for i := 0; i < len(numbers); i += maxBatchSize {
-		end := i + maxBatchSize
-		if end > len(numbers) {
-			end = len(numbers)
-		}
-
-		chunk := numbers[i:end]
-
-		blocks, err := n.blocksByNumbersBatch(ctx, chunk)
-		if err != nil {
-			return allBlocks, err
-		}
-
-		allBlocks = append(allBlocks, blocks...)
-
-		// If we got fewer blocks than requested, a block was not found - stop for contiguity
-		if len(blocks) < len(chunk) {
-			break
-		}
-	}
-
-	return allBlocks, nil
-}
-
-// blocksByNumbersBatch fetches a single batch of blocks (must be <= maxBatchSize).
-func (n *RPCNode) blocksByNumbersBatch(ctx context.Context, numbers []*big.Int) ([]execution.Block, error) {
 	start := time.Now()
 	network := n.Metadata().ChainID()
 
@@ -176,19 +132,12 @@ func (n *RPCNode) blocksByNumbersBatch(ctx context.Context, numbers []*big.Int) 
 		// Check for individual call error - stop at first error for contiguity
 		// We intentionally don't return this error as we want partial results
 		if elem.Error != nil {
-			n.log.WithError(elem.Error).WithField("block_index", i).Debug("Batch element error, stopping")
-
 			break
 		}
 
 		// Check for nil/not-found block (null JSON response)
 		if results[i] == nil || len(*results[i]) == 0 || string(*results[i]) == "null" {
 			// Block not found - stop here for contiguity
-			n.log.WithFields(logrus.Fields{
-				"block_index":  i,
-				"block_number": numbers[i].String(),
-			}).Debug("Block not found in batch, stopping")
-
 			break
 		}
 
@@ -196,18 +145,13 @@ func (n *RPCNode) blocksByNumbersBatch(ctx context.Context, numbers []*big.Int) 
 		block, parseErr := parseBlockFromJSON(*results[i])
 		if parseErr != nil {
 			// Parse error - stop here for contiguity
-			n.log.WithError(parseErr).WithFields(logrus.Fields{
-				"block_index":  i,
-				"block_number": numbers[i].String(),
-			}).Warn("Failed to parse block from JSON, stopping batch")
-
 			break
 		}
 
 		blocks = append(blocks, NewBlockAdapter(block))
 	}
 
-	return blocks, nil
+	return blocks, nil //nolint:nilerr // Intentionally returning partial results for contiguity
 }
 
 // toBlockNumArg converts a block number to the RPC argument format.
