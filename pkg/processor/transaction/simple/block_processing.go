@@ -137,24 +137,10 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 	}).Debug("Fetched batch of blocks")
 
 	// Process each block, stopping on first error
-	processedCount := 0
-
 	for _, block := range blocks {
 		if processErr := p.processBlock(ctx, block); processErr != nil {
-			// Record blocks that were successfully processed before the error
-			if processedCount > 0 {
-				common.BlocksProcessed.WithLabelValues(p.network.Name, p.Name()).Add(float64(processedCount))
-			}
-
 			return processErr
 		}
-
-		processedCount++
-	}
-
-	// Record all successfully processed blocks
-	if processedCount > 0 {
-		common.BlocksProcessed.WithLabelValues(p.network.Name, p.Name()).Add(float64(processedCount))
 	}
 
 	return nil

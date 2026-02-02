@@ -9,11 +9,8 @@ import (
 
 // Default buffer configuration values.
 const (
-	DefaultBufferMaxRows                   = 100000
-	DefaultBufferFlushInterval             = time.Second
-	DefaultBufferMaxConcurrentFlushes      = 10
-	DefaultBufferCircuitBreakerMaxFailures = 5
-	DefaultBufferCircuitBreakerTimeout     = 60 * time.Second
+	DefaultBufferMaxRows       = 100000
+	DefaultBufferFlushInterval = time.Second
 )
 
 // Config holds configuration for the simple transaction processor.
@@ -23,11 +20,8 @@ type Config struct {
 	Table             string `yaml:"table"`
 
 	// Row buffer settings for batched ClickHouse inserts
-	BufferMaxRows                   int           `yaml:"bufferMaxRows"`                   // Max rows before flush. Default: 100000
-	BufferFlushInterval             time.Duration `yaml:"bufferFlushInterval"`             // Max time before flush. Default: 1s
-	BufferMaxConcurrentFlushes      int           `yaml:"bufferMaxConcurrentFlushes"`      // Max parallel flush ops. Default: 10
-	BufferCircuitBreakerMaxFailures uint32        `yaml:"bufferCircuitBreakerMaxFailures"` // Consecutive failures to trip circuit. Default: 5
-	BufferCircuitBreakerTimeout     time.Duration `yaml:"bufferCircuitBreakerTimeout"`     // Open state duration before half-open. Default: 60s
+	BufferMaxRows       int           `yaml:"bufferMaxRows"`       // Max rows before flush. Default: 100000
+	BufferFlushInterval time.Duration `yaml:"bufferFlushInterval"` // Max time before flush. Default: 1s
 
 	// Block completion tracking
 	MaxPendingBlockRange int `yaml:"maxPendingBlockRange"` // Max distance between oldest incomplete and current block. Default: 2
