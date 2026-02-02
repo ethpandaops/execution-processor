@@ -272,8 +272,16 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 			// For successful transactions, refunds are applied to the final gas calculation.
 			// For failed transactions, refunds are accumulated during execution but NOT applied
 			// (all gas up to failure is consumed), so we set refund to nil.
+			//
+			// EIP-3529 caps the refund at gas_used/5. Since gas_used = receiptGas + actual_refund,
+			// solving gives: actual_refund = min(refund_counter, receiptGas / 4).
 			if summaryRow.ErrorCount == 0 {
-				summaryRow.GasRefund = &acc.MaxRefund
+				cappedRefund := acc.MaxRefund
+				if receiptGas > 0 && cappedRefund > receiptGas/4 {
+					cappedRefund = receiptGas / 4
+				}
+
+				summaryRow.GasRefund = &cappedRefund
 			}
 
 			// Intrinsic gas is ALWAYS charged (before EVM execution begins), regardless of

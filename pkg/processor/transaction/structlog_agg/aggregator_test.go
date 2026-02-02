@@ -555,8 +555,8 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 	}
 
 	// For successful tx, receipt gas = gas_used (after refund applied)
-	// Let's say receipt shows 15200 gas used
-	frames := aggregator.Finalize(trace, 15200)
+	// Use 20000 so the EIP-3529 cap (20000/4=5000) doesn't affect our 4800 refund
+	frames := aggregator.Finalize(trace, 20000)
 
 	assert.Equal(t, 1, countSummaryRows(frames))
 
@@ -573,6 +573,49 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 	// IntrinsicGas should be computed for successful transactions
 	// (exact value depends on the computation, just verify it's not nil)
 	// Note: might be nil if computed value is 0, so we just check the logic is exercised
+}
+
+func TestFrameAggregator_RefundCapEIP3529(t *testing.T) {
+	// Test that gas_refund is capped per EIP-3529.
+	// The EIP limits refund to gas_used/5. Since gas_used = receiptGas + actual_refund,
+	// solving gives: actual_refund = min(refund_counter, receiptGas / 4).
+	//
+	// Real example from TX 0x04d9e42f6ecc9d1a5739d5a9a45f273ab0209660198622477b2272a88c6b2d79:
+	// - refund_counter = 42600
+	// - receipt.GasUsed = 160497
+	// - cap = 160497 / 4 = 40124
+	// - actual_refund = min(42600, 40124) = 40124
+	aggregator := NewFrameAggregator()
+
+	refundValue := uint64(42600)
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "PUSH1",
+		Depth: 1,
+		Gas:   200000,
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:     "STOP",
+		Depth:  1,
+		Gas:    100000,
+		Refund: &refundValue,
+	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+
+	trace := &execution.TraceTransaction{
+		Gas:    200000,
+		Failed: false,
+	}
+
+	// receiptGas = 160497, so cap = 160497 / 4 = 40124
+	frames := aggregator.Finalize(trace, 160497)
+
+	summaryRow := getSummaryRow(frames, 0)
+	require.NotNil(t, summaryRow)
+	require.NotNil(t, summaryRow.GasRefund)
+
+	// Refund should be capped: min(42600, 40124) = 40124
+	assert.Equal(t, uint64(40124), *summaryRow.GasRefund, "Refund should be capped per EIP-3529")
 }
 
 func TestFrameAggregator_RevertWithoutOpcodeError(t *testing.T) {
