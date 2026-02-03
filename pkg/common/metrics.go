@@ -233,4 +233,26 @@ var (
 		Name: "execution_processor_row_buffer_pending_tasks",
 		Help: "Current number of tasks waiting for their rows to be flushed",
 	}, []string{"network", "processor", "table"})
+
+	// Gap detection metrics.
+	GapsDetected = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "execution_processor_gaps_detected_total",
+		Help: "Total number of gaps detected during gap scans",
+	}, []string{"network", "processor", "gap_type"}) // gap_type: "incomplete" or "missing"
+
+	GapsReprocessed = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "execution_processor_gaps_reprocessed_total",
+		Help: "Total number of gap blocks reprocessed",
+	}, []string{"network", "processor", "gap_type", "status"}) // status: "success" or "error"
+
+	GapScanDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "execution_processor_gap_scan_duration_seconds",
+		Help:    "Duration of gap detection scans",
+		Buckets: prometheus.ExponentialBuckets(0.01, 2, 12),
+	}, []string{"network", "processor"})
+
+	GapsFound = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "execution_processor_gaps_found",
+		Help: "Current count of gaps found in last scan",
+	}, []string{"network", "processor", "gap_type"})
 )

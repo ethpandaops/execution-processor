@@ -19,6 +19,7 @@ type MockClient struct {
 	DoFunc                func(ctx context.Context, query ch.Query) error
 	QueryUInt64Func       func(ctx context.Context, query string, columnName string) (*uint64, error)
 	QueryMinMaxUInt64Func func(ctx context.Context, query string) (minVal, maxVal *uint64, err error)
+	QueryUInt64SliceFunc  func(ctx context.Context, query string, columnName string) ([]uint64, error)
 
 	// Track calls for assertions
 	Calls []MockCall
@@ -54,6 +55,9 @@ func NewMockClient() *MockClient {
 		QueryMinMaxUInt64Func: func(ctx context.Context, query string) (minVal, maxVal *uint64, err error) {
 			return nil, nil, nil
 		},
+		QueryUInt64SliceFunc: func(ctx context.Context, query string, columnName string) ([]uint64, error) {
+			return []uint64{}, nil
+		},
 		Calls: make([]MockCall, 0),
 	}
 }
@@ -84,6 +88,20 @@ func (m *MockClient) QueryMinMaxUInt64(ctx context.Context, query string) (minVa
 	}
 
 	return nil, nil, nil
+}
+
+// QueryUInt64Slice implements ClientInterface.
+func (m *MockClient) QueryUInt64Slice(ctx context.Context, query string, columnName string) ([]uint64, error) {
+	m.Calls = append(m.Calls, MockCall{
+		Method: "QueryUInt64Slice",
+		Args:   []any{ctx, query, columnName},
+	})
+
+	if m.QueryUInt64SliceFunc != nil {
+		return m.QueryUInt64SliceFunc(ctx, query, columnName)
+	}
+
+	return []uint64{}, nil
 }
 
 // Execute implements ClientInterface.

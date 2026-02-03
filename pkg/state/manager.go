@@ -719,6 +719,50 @@ func (s *Manager) GetIncompleteBlocksInRange(
 	return blocks, nil
 }
 
+// GetMissingBlocksInRange returns block numbers that have no row in the database.
+// This finds blocks that were never processed, not incomplete blocks.
+// Uses ClickHouse's numbers() function to generate a sequence and LEFT JOIN to find gaps.
+func (s *Manager) GetMissingBlocksInRange(
+	ctx context.Context,
+	network, processor string,
+	minBlock, maxBlock uint64,
+	limit int,
+) ([]uint64, error) {
+	// Use numbers() to generate a sequence from minBlock to maxBlock,
+	// then LEFT JOIN to find blocks that don't exist in storage.
+	query := fmt.Sprintf(`
+		SELECT n.number AS block_number
+		FROM numbers(%d, %d) AS n
+		LEFT JOIN (
+			SELECT DISTINCT block_number
+			FROM %s FINAL
+			WHERE processor = '%s'
+			  AND meta_network_name = '%s'
+			  AND block_number >= %d
+			  AND block_number <= %d
+		) AS e ON n.number = e.block_number
+		WHERE e.block_number IS NULL
+		ORDER BY block_number ASC
+		LIMIT %d
+	`, minBlock, maxBlock-minBlock+1, s.storageTable, processor, network,
+		minBlock, maxBlock, limit)
+
+	s.log.WithFields(logrus.Fields{
+		"processor": processor,
+		"network":   network,
+		"min_block": minBlock,
+		"max_block": maxBlock,
+		"limit":     limit,
+	}).Debug("Querying for missing blocks in range")
+
+	blocks, err := s.storageClient.QueryUInt64Slice(ctx, query, "block_number")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get missing blocks in range: %w", err)
+	}
+
+	return blocks, nil
+}
+
 func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor string) (minBlock, maxBlock *big.Int, err error) {
 	query := fmt.Sprintf(`
 		SELECT min(block_number) as min, max(block_number) as max

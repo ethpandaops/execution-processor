@@ -138,7 +138,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 
 	// Process each block, stopping on first error
 	for _, block := range blocks {
-		if processErr := p.processBlock(ctx, block); processErr != nil {
+		if processErr := p.ProcessBlock(ctx, block); processErr != nil {
 			return processErr
 		}
 	}
@@ -156,8 +156,9 @@ func (p *Processor) handleBlockNotFound(_ context.Context, nextBlock *big.Int) e
 	return fmt.Errorf("block %s not yet available", nextBlock.String())
 }
 
-// processBlock processes a single block - the core logic extracted from the original ProcessNextBlock.
-func (p *Processor) processBlock(ctx context.Context, block execution.Block) error {
+// ProcessBlock processes a single block - fetches, marks enqueued, and enqueues tasks.
+// This is used for both normal processing and gap filling of missing blocks.
+func (p *Processor) ProcessBlock(ctx context.Context, block execution.Block) error {
 	blockNumber := block.Number()
 
 	p.log.WithFields(logrus.Fields{

@@ -1417,6 +1417,9 @@ func (m *Manager) checkStaleBlocks(ctx context.Context) {
 }
 
 // checkGaps checks for gaps in block processing across all processors and triggers reprocessing.
+// It detects two types of gaps:
+//   - Incomplete: blocks with a row in DB but complete=0 (use ReprocessBlock)
+//   - Missing: blocks with no row at all (use ProcessBlock)
 func (m *Manager) checkGaps(ctx context.Context) {
 	if !m.config.GapDetection.Enabled {
 		return
@@ -1464,7 +1467,7 @@ func (m *Manager) checkGaps(ctx context.Context) {
 			continue
 		}
 
-		gaps, gapErr := limiter.GetGaps(
+		gapResult, gapErr := limiter.GetGaps(
 			ctx,
 			currentBlock,
 			m.config.GapDetection.LookbackRange,
@@ -1476,22 +1479,74 @@ func (m *Manager) checkGaps(ctx context.Context) {
 			continue
 		}
 
-		if len(gaps) == 0 {
+		// Record scan duration metric
+		common.GapScanDuration.WithLabelValues(m.network.Name, processorName).Observe(gapResult.ScanDuration.Seconds())
+
+		// Record gap counts
+		common.GapsFound.WithLabelValues(m.network.Name, processorName, "incomplete").Set(float64(len(gapResult.Incomplete)))
+		common.GapsFound.WithLabelValues(m.network.Name, processorName, "missing").Set(float64(len(gapResult.Missing)))
+
+		if len(gapResult.Incomplete) > 0 {
+			common.GapsDetected.WithLabelValues(m.network.Name, processorName, "incomplete").Add(float64(len(gapResult.Incomplete)))
+		}
+
+		if len(gapResult.Missing) > 0 {
+			common.GapsDetected.WithLabelValues(m.network.Name, processorName, "missing").Add(float64(len(gapResult.Missing)))
+		}
+
+		totalGaps := len(gapResult.Incomplete) + len(gapResult.Missing)
+		if totalGaps == 0 {
 			continue
 		}
 
 		m.log.WithFields(logrus.Fields{
-			"processor":     processorName,
-			"gap_count":     len(gaps),
-			"current_block": currentBlock,
-		}).Info("Detected gaps, reprocessing")
+			"processor":        processorName,
+			"incomplete_count": len(gapResult.Incomplete),
+			"missing_count":    len(gapResult.Missing),
+			"current_block":    currentBlock,
+		}).Info("Detected gaps, processing")
 
-		for _, gapBlock := range gaps {
+		// Handle INCOMPLETE blocks -> ReprocessBlock (row exists, just stuck)
+		for _, gapBlock := range gapResult.Incomplete {
 			if reprocessErr := processor.ReprocessBlock(ctx, gapBlock); reprocessErr != nil {
 				m.log.WithError(reprocessErr).WithFields(logrus.Fields{
 					"processor": processorName,
 					"block":     gapBlock,
-				}).Warn("Failed to reprocess gap block")
+					"gap_type":  "incomplete",
+				}).Warn("Failed to reprocess incomplete block")
+
+				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "incomplete", "error").Inc()
+			} else {
+				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "incomplete", "success").Inc()
+			}
+		}
+
+		// Handle MISSING blocks -> ProcessBlock (no row, needs full processing)
+		for _, gapBlock := range gapResult.Missing {
+			// Fetch the block first
+			block, fetchErr := node.BlockByNumber(ctx, new(big.Int).SetUint64(gapBlock))
+			if fetchErr != nil {
+				m.log.WithError(fetchErr).WithFields(logrus.Fields{
+					"processor": processorName,
+					"block":     gapBlock,
+					"gap_type":  "missing",
+				}).Warn("Failed to fetch missing block")
+
+				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "error").Inc()
+
+				continue
+			}
+
+			if processErr := processor.ProcessBlock(ctx, block); processErr != nil {
+				m.log.WithError(processErr).WithFields(logrus.Fields{
+					"processor": processorName,
+					"block":     gapBlock,
+					"gap_type":  "missing",
+				}).Warn("Failed to process missing block")
+
+				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "error").Inc()
+			} else {
+				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "success").Inc()
 			}
 		}
 	}
