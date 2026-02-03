@@ -37,4 +37,13 @@ const (
 
 	// DefaultBackpressureJitterFraction is the fraction of backoff to add as random jitter (0.25 = 25%).
 	DefaultBackpressureJitterFraction = 0.25
+
+	// DefaultGapScanInterval is the default interval for scanning gaps.
+	DefaultGapScanInterval = 5 * time.Minute
+
+	// DefaultGapBatchSize is the default max gaps to process per scan.
+	DefaultGapBatchSize = 10
+
+	// DefaultGapLookbackRange is the default max blocks to look back for gaps.
+	DefaultGapLookbackRange = uint64(10000)
 )

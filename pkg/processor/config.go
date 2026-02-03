@@ -10,6 +10,21 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog_agg"
 )
 
+// GapDetectionConfig holds configuration for gap detection.
+type GapDetectionConfig struct {
+	// Enabled enables gap detection (default: false)
+	Enabled bool `yaml:"enabled"`
+
+	// ScanInterval is how often to scan for gaps (default: 5m)
+	ScanInterval time.Duration `yaml:"scanInterval"`
+
+	// BatchSize is max gaps to process per scan (default: 10)
+	BatchSize int `yaml:"batchSize"`
+
+	// LookbackRange is max blocks to look back, 0 = unlimited (default: 10000)
+	LookbackRange uint64 `yaml:"lookbackRange"`
+}
+
 // Config holds the unified processor configuration.
 type Config struct {
 	// Processing interval
@@ -30,6 +45,9 @@ type Config struct {
 
 	// Stale block detection configuration
 	StaleBlockDetection StaleBlockDetectionConfig `yaml:"staleBlockDetection"`
+
+	// Gap detection configuration
+	GapDetection GapDetectionConfig `yaml:"gapDetection"`
 
 	// Processor configurations
 	TransactionStructlog    structlog.Config     `yaml:"transactionStructlog"`
@@ -124,6 +142,19 @@ func (c *Config) Validate() error {
 
 	if c.StaleBlockDetection.CheckInterval == 0 {
 		c.StaleBlockDetection.CheckInterval = DefaultStaleBlockCheckInterval
+	}
+
+	// Set gap detection defaults (disabled by default, opt-in)
+	if c.GapDetection.ScanInterval == 0 {
+		c.GapDetection.ScanInterval = DefaultGapScanInterval
+	}
+
+	if c.GapDetection.BatchSize == 0 {
+		c.GapDetection.BatchSize = DefaultGapBatchSize
+	}
+
+	if c.GapDetection.LookbackRange == 0 {
+		c.GapDetection.LookbackRange = DefaultGapLookbackRange
 	}
 
 	if c.TransactionStructlog.Enabled {

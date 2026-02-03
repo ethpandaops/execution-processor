@@ -3,6 +3,7 @@ package tracker
 import (
 	"context"
 	"fmt"
+	"math/big"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/sirupsen/logrus"
@@ -13,6 +14,13 @@ type StateProvider interface {
 	GetOldestIncompleteBlock(ctx context.Context, network, processor string, minBlockNumber uint64) (*uint64, error)
 	GetNewestIncompleteBlock(ctx context.Context, network, processor string, maxBlockNumber uint64) (*uint64, error)
 	MarkBlockComplete(ctx context.Context, blockNumber uint64, network, processor string) error
+}
+
+// GapStateProvider extends StateProvider with gap detection capabilities.
+type GapStateProvider interface {
+	StateProvider
+	GetIncompleteBlocksInRange(ctx context.Context, network, processor string, minBlock, maxBlock uint64, limit int) ([]uint64, error)
+	GetMinMaxStoredBlocks(ctx context.Context, network, processor string) (*big.Int, *big.Int, error)
 }
 
 // LimiterConfig holds configuration for the Limiter.
@@ -206,4 +214,77 @@ func (l *Limiter) ValidateBatchWithinLeash(ctx context.Context, startBlock uint6
 	}
 
 	return nil
+}
+
+// GetGaps returns incomplete blocks outside the maxPendingBlockRange window.
+// If lookbackRange is 0, scans from the oldest stored block.
+// This performs a full-range scan for gap detection, excluding the recent window
+// that is already handled by IsBlockedByIncompleteBlocks.
+func (l *Limiter) GetGaps(ctx context.Context, currentBlock uint64, lookbackRange uint64, limit int) ([]uint64, error) {
+	gapProvider, ok := l.stateProvider.(GapStateProvider)
+	if !ok {
+		return nil, fmt.Errorf("state provider does not support gap detection")
+	}
+
+	var minBlock uint64
+
+	if lookbackRange == 0 {
+		// Unlimited: scan from oldest stored block
+		minStored, _, err := gapProvider.GetMinMaxStoredBlocks(ctx, l.network, l.processor)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get min stored block: %w", err)
+		}
+
+		if minStored == nil {
+			// No blocks stored yet
+			return nil, nil
+		}
+
+		minBlock = minStored.Uint64()
+	} else {
+		// Limited: scan from currentBlock - lookbackRange
+		if currentBlock > lookbackRange {
+			minBlock = currentBlock - lookbackRange
+		}
+	}
+
+	// Calculate maxBlock to exclude the window handled by IsBlockedByIncompleteBlocks.
+	// The limiter already handles blocks within [currentBlock - maxPendingBlockRange, currentBlock],
+	// so we only scan up to (currentBlock - maxPendingBlockRange - 1) to avoid double work.
+	maxBlock := currentBlock
+
+	if l.config.MaxPendingBlockRange > 0 {
+		exclusionWindow := uint64(l.config.MaxPendingBlockRange) //nolint:gosec // validated in config
+
+		if currentBlock > exclusionWindow {
+			maxBlock = currentBlock - exclusionWindow - 1
+		} else {
+			// Current block is within the exclusion window, nothing to scan
+			return nil, nil
+		}
+	}
+
+	// Ensure minBlock doesn't exceed maxBlock
+	if minBlock > maxBlock {
+		return nil, nil
+	}
+
+	gaps, err := gapProvider.GetIncompleteBlocksInRange(
+		ctx, l.network, l.processor,
+		minBlock, maxBlock, limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get incomplete blocks in range: %w", err)
+	}
+
+	if len(gaps) > 0 {
+		l.log.WithFields(logrus.Fields{
+			"min_block": minBlock,
+			"max_block": maxBlock,
+			"gap_count": len(gaps),
+			"first_gap": gaps[0],
+		}).Debug("Found gaps in block range")
+	}
+
+	return gaps, nil
 }

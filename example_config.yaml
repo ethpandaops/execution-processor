@@ -43,6 +43,13 @@ processors:
     staleThreshold: "5m"           # Time after which a block is considered stale
     checkInterval: "1m"            # How often to check for stale blocks
 
+  # Gap detection (optional, disabled by default)
+  gapDetection:
+    enabled: false
+    scanInterval: "5m"             # How often to scan for gaps
+    batchSize: 10                  # Max gaps to process per scan
+    lookbackRange: 10000           # Max blocks to look back, 0 = unlimited
+
   # Leader election configuration (optional, enabled by default)
   leaderElection:
     enabled: true
