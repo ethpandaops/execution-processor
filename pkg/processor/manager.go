@@ -709,11 +709,17 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 	staleBlockTicker := time.NewTicker(m.config.StaleBlockDetection.CheckInterval)
 	defer staleBlockTicker.Stop()
 
+	// Gap detection ticker
+	gapScanTicker := time.NewTicker(m.config.GapDetection.ScanInterval)
+	defer gapScanTicker.Stop()
+
 	m.log.WithFields(logrus.Fields{
 		"interval":             m.config.Interval,
 		"processors":           len(m.processors),
 		"stale_check_interval": m.config.StaleBlockDetection.CheckInterval,
 		"stale_threshold":      m.config.StaleBlockDetection.StaleThreshold,
+		"gap_scan_interval":    m.config.GapDetection.ScanInterval,
+		"gap_detection":        m.config.GapDetection.Enabled,
 	}).Info("Started block processing loop")
 
 	// Check if we have any processors
@@ -751,6 +757,9 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 		case <-staleBlockTicker.C:
 			m.log.Debug("Stale block detection ticker fired")
 			m.checkStaleBlocks(ctx)
+		case <-gapScanTicker.C:
+			m.log.Debug("Gap detection ticker fired")
+			m.checkGaps(ctx)
 		default:
 			if !m.isLeader {
 				m.log.Warn("No longer leader but block processing still running - stopping")
@@ -1403,6 +1412,87 @@ func (m *Manager) checkStaleBlocks(ctx context.Context) {
 				"stale_count":  len(staleBlocks),
 				"stale_blocks": staleBlocks,
 			}).Info("Cleared stale blocks for re-processing")
+		}
+	}
+}
+
+// checkGaps checks for gaps in block processing across all processors and triggers reprocessing.
+func (m *Manager) checkGaps(ctx context.Context) {
+	if !m.config.GapDetection.Enabled {
+		return
+	}
+
+	// Get current block from execution node
+	node := m.pool.GetHealthyExecutionNode()
+	if node == nil {
+		m.log.Warn("No healthy execution node for gap scan")
+
+		return
+	}
+
+	latestBlockNum, err := node.BlockNumber(ctx)
+	if err != nil || latestBlockNum == nil {
+		m.log.WithError(err).Warn("Failed to get current block for gap scan")
+
+		return
+	}
+
+	currentBlock := *latestBlockNum
+
+	// Check gaps for each enabled processor
+	for processorName, processor := range m.processors {
+		// Check for context cancellation between processors
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Get the limiter from each processor
+		var limiter *tracker.Limiter
+
+		switch p := processor.(type) {
+		case *transaction_structlog.Processor:
+			limiter = p.Limiter
+		case *transaction_simple.Processor:
+			limiter = p.Limiter
+		case *transaction_structlog_agg.Processor:
+			limiter = p.Limiter
+		}
+
+		if limiter == nil {
+			continue
+		}
+
+		gaps, gapErr := limiter.GetGaps(
+			ctx,
+			currentBlock,
+			m.config.GapDetection.LookbackRange,
+			m.config.GapDetection.BatchSize,
+		)
+		if gapErr != nil {
+			m.log.WithError(gapErr).WithField("processor", processorName).Warn("Failed to scan for gaps")
+
+			continue
+		}
+
+		if len(gaps) == 0 {
+			continue
+		}
+
+		m.log.WithFields(logrus.Fields{
+			"processor":     processorName,
+			"gap_count":     len(gaps),
+			"current_block": currentBlock,
+		}).Info("Detected gaps, reprocessing")
+
+		for _, gapBlock := range gaps {
+			if reprocessErr := processor.ReprocessBlock(ctx, gapBlock); reprocessErr != nil {
+				m.log.WithError(reprocessErr).WithFields(logrus.Fields{
+					"processor": processorName,
+					"block":     gapBlock,
+				}).Warn("Failed to reprocess gap block")
+			}
 		}
 	}
 }

@@ -683,6 +683,42 @@ func (s *Manager) GetIncompleteBlocks(ctx context.Context, network, processor st
 	return blocks, nil
 }
 
+// GetIncompleteBlocksInRange returns all incomplete blocks between minBlock and maxBlock.
+// This is used for gap detection across the full processed range.
+func (s *Manager) GetIncompleteBlocksInRange(
+	ctx context.Context,
+	network, processor string,
+	minBlock, maxBlock uint64,
+	limit int,
+) ([]uint64, error) {
+	query := fmt.Sprintf(`
+		SELECT block_number
+		FROM %s FINAL
+		WHERE processor = '%s'
+		  AND meta_network_name = '%s'
+		  AND complete = 0
+		  AND block_number >= %d
+		  AND block_number <= %d
+		ORDER BY block_number ASC
+		LIMIT %d
+	`, s.storageTable, processor, network, minBlock, maxBlock, limit)
+
+	s.log.WithFields(logrus.Fields{
+		"processor": processor,
+		"network":   network,
+		"min_block": minBlock,
+		"max_block": maxBlock,
+		"limit":     limit,
+	}).Debug("Querying for incomplete blocks in range")
+
+	blocks, err := s.storageClient.QueryUInt64Slice(ctx, query, "block_number")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get incomplete blocks in range: %w", err)
+	}
+
+	return blocks, nil
+}
+
 func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor string) (minBlock, maxBlock *big.Int, err error) {
 	query := fmt.Sprintf(`
 		SELECT min(block_number) as min, max(block_number) as max
