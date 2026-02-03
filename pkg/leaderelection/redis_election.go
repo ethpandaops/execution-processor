@@ -10,40 +10,48 @@ import (
 	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
+	"github.com/go-redsync/redsync/v4"
+	"github.com/go-redsync/redsync/v4/redis/goredis/v9"
 	"github.com/redis/go-redis/v9"
 	"github.com/sirupsen/logrus"
 )
 
-// RedisElector implements leader election using Redis.
+// RedisElector implements leader election using Redis with redsync.
 type RedisElector struct {
-	client  *redis.Client
+	rs      *redsync.Redsync
+	mutex   *redsync.Mutex
 	log     logrus.FieldLogger
 	config  *Config
 	nodeID  string
 	keyName string
-	network string // Network name for metrics
+	network string
 
 	mu                  sync.RWMutex
 	isLeader            bool
 	leadershipStartTime time.Time
 	stopped             bool
 
-	leadershipChan chan bool
-	stopChan       chan struct{}
-	wg             sync.WaitGroup
+	callbacksMu sync.RWMutex
+	callbacks   []LeadershipCallback
+
+	stopChan chan struct{}
+	wg       sync.WaitGroup
 }
 
-// NewRedisElector creates a new Redis-based leader elector.
-func NewRedisElector(client *redis.Client, log logrus.FieldLogger, keyName string, config *Config) (*RedisElector, error) {
+// NewRedisElector creates a new Redis-based leader elector using redsync.
+func NewRedisElector(
+	client *redis.Client,
+	log logrus.FieldLogger,
+	keyName string,
+	config *Config,
+) (*RedisElector, error) {
 	if config == nil {
 		config = DefaultConfig()
 	}
 
-	// Generate random node ID if not provided
 	nodeID := config.NodeID
 	if nodeID == "" {
 		bytes := make([]byte, 16)
-
 		if _, err := rand.Read(bytes); err != nil {
 			return nil, fmt.Errorf("failed to generate node ID: %w", err)
 		}
@@ -59,15 +67,16 @@ func NewRedisElector(client *redis.Client, log logrus.FieldLogger, keyName strin
 		network = parts[2]
 	}
 
+	pool := goredis.NewPool(client)
+
 	return &RedisElector{
-		client:         client,
-		log:            log.WithField("component", "leader-election").WithField("node_id", nodeID),
-		config:         config,
-		nodeID:         nodeID,
-		keyName:        keyName,
-		network:        network,
-		leadershipChan: make(chan bool, 10),
-		stopChan:       make(chan struct{}),
+		rs:       redsync.New(pool),
+		log:      log.WithField("component", "leader-election").WithField("node_id", nodeID),
+		config:   config,
+		nodeID:   nodeID,
+		keyName:  keyName,
+		network:  network,
+		stopChan: make(chan struct{}),
 	}, nil
 }
 
@@ -75,7 +84,6 @@ func NewRedisElector(client *redis.Client, log logrus.FieldLogger, keyName strin
 func (e *RedisElector) Start(ctx context.Context) error {
 	e.log.Info("Starting leader election")
 
-	// Initialize metrics
 	common.LeaderElectionStatus.WithLabelValues(e.network, e.nodeID).Set(0)
 
 	e.wg.Add(1)
@@ -103,23 +111,19 @@ func (e *RedisElector) Stop(ctx context.Context) error {
 	close(e.stopChan)
 	e.wg.Wait()
 
-	// Release leadership if we have it
 	if e.IsLeader() {
-		// Record final leadership duration
 		e.mu.RLock()
-		leadershipDuration := time.Since(e.leadershipStartTime).Seconds()
+		duration := time.Since(e.leadershipStartTime).Seconds()
 		e.mu.RUnlock()
 
-		common.LeaderElectionDuration.WithLabelValues(e.network, e.nodeID).Observe(leadershipDuration)
+		common.LeaderElectionDuration.WithLabelValues(e.network, e.nodeID).Observe(duration)
 		common.LeaderElectionStatus.WithLabelValues(e.network, e.nodeID).Set(0)
 
-		if err := e.releaseLeadership(ctx); err != nil {
+		if _, err := e.mutex.UnlockContext(ctx); err != nil {
 			e.log.WithError(err).Error("Failed to release leadership on stop")
 			common.LeaderElectionErrors.WithLabelValues(e.network, e.nodeID, "release").Inc()
 		}
 	}
-
-	close(e.leadershipChan)
 
 	return nil
 }
@@ -132,26 +136,12 @@ func (e *RedisElector) IsLeader() bool {
 	return e.isLeader
 }
 
-// LeadershipChannel returns a channel that receives leadership changes.
-func (e *RedisElector) LeadershipChannel() <-chan bool {
-	return e.leadershipChan
-}
+// OnLeadershipChange registers a callback for guaranteed leadership notification.
+func (e *RedisElector) OnLeadershipChange(callback LeadershipCallback) {
+	e.callbacksMu.Lock()
+	defer e.callbacksMu.Unlock()
 
-// GetLeaderID returns the current leader's ID.
-func (e *RedisElector) GetLeaderID() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	val, err := e.client.Get(ctx, e.keyName).Result()
-	if err == redis.Nil {
-		return "", fmt.Errorf("no leader elected")
-	}
-
-	if err != nil {
-		return "", fmt.Errorf("failed to get leader ID: %w", err)
-	}
-
-	return val, nil
+	e.callbacks = append(e.callbacks, callback)
 }
 
 // run is the main election loop.
@@ -161,9 +151,8 @@ func (e *RedisElector) run(ctx context.Context) {
 	ticker := time.NewTicker(e.config.RenewalInterval)
 	defer ticker.Stop()
 
-	// Try to acquire leadership immediately
-	if e.tryAcquireLeadership(ctx) {
-		e.handleLeadershipGain()
+	if e.tryAcquire(ctx) {
+		e.handleGain(ctx)
 	}
 
 	for {
@@ -174,165 +163,93 @@ func (e *RedisElector) run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			if e.IsLeader() {
-				// Try to renew leadership
-				if !e.renewLeadership(ctx) {
-					e.handleLeadershipLoss()
+				if !e.tryExtend(ctx) {
+					e.handleLoss(ctx)
 				}
 			} else {
-				// Try to acquire leadership
-				if e.tryAcquireLeadership(ctx) {
-					e.handleLeadershipGain()
+				if e.tryAcquire(ctx) {
+					e.handleGain(ctx)
 				}
 			}
 		}
 	}
 }
 
-// tryAcquireLeadership attempts to become the leader.
-func (e *RedisElector) tryAcquireLeadership(ctx context.Context) bool {
-	e.log.WithFields(logrus.Fields{
-		"key": e.keyName,
-		"ttl": e.config.TTL,
-	}).Debug("Attempting to acquire leadership")
+// tryAcquire attempts to acquire the leadership lock.
+func (e *RedisElector) tryAcquire(ctx context.Context) bool {
+	e.mutex = e.rs.NewMutex(
+		e.keyName,
+		redsync.WithExpiry(e.config.TTL),
+		redsync.WithTries(1),
+		redsync.WithDriftFactor(0.01),
+		redsync.WithSetNXOnExtend(),
+	)
 
-	// Use SET with NX (only set if not exists) and PX (expire in milliseconds)
-	ok, err := e.client.SetNX(ctx, e.keyName, e.nodeID, e.config.TTL).Result()
-	if err != nil {
-		e.log.WithError(err).Error("Failed to acquire leadership")
-
-		common.LeaderElectionErrors.WithLabelValues(e.network, e.nodeID, "acquire").Inc()
-
-		return false
-	}
-
-	if ok {
-		e.mu.Lock()
-		e.isLeader = true
-		e.leadershipStartTime = time.Now()
-		e.mu.Unlock()
-
-		common.LeaderElectionStatus.WithLabelValues(e.network, e.nodeID).Set(1)
-		common.LeaderElectionTransitions.WithLabelValues(e.network, e.nodeID, "gained").Inc()
-
-		e.log.Info("Acquired leadership")
-
-		return true
-	}
-
-	// Check who is the current leader
-	currentLeader, _ := e.client.Get(ctx, e.keyName).Result()
-	e.log.WithFields(logrus.Fields{
-		"current_leader": currentLeader,
-		"our_node_id":    e.nodeID,
-	}).Debug("Failed to acquire leadership, another node is leader")
-
-	return false
-}
-
-// renewLeadership attempts to extend the leadership lock.
-func (e *RedisElector) renewLeadership(ctx context.Context) bool {
-	// Lua script to atomically check ownership and extend TTL
-	script := `
-		if redis.call("get", KEYS[1]) == ARGV[1] then
-			return redis.call("pexpire", KEYS[1], ARGV[2])
-		else
-			return 0
-		end
-	`
-
-	result, err := e.client.Eval(ctx, script, []string{e.keyName}, e.nodeID, e.config.TTL.Milliseconds()).Result()
-	if err != nil {
-		e.log.WithError(err).Error("Failed to renew leadership")
-
-		common.LeaderElectionErrors.WithLabelValues(e.network, e.nodeID, "renew").Inc()
+	if err := e.mutex.TryLockContext(ctx); err != nil {
+		e.log.WithError(err).Info("Failed to acquire leadership")
 
 		return false
-	}
-
-	val, ok := result.(int64)
-	if !ok {
-		e.log.WithError(fmt.Errorf("failed to renew leadership: %w", err)).Error("Failed to renew leadership")
-
-		common.LeaderElectionErrors.WithLabelValues(e.network, e.nodeID, "renew").Inc()
-
-		return false
-	}
-
-	success := val == 1
-
-	if !success {
-		e.log.Warn("Failed to renew leadership - lock not owned by this node")
-
-		common.LeaderElectionErrors.WithLabelValues(e.network, e.nodeID, "renew").Inc()
-	}
-
-	return success
-}
-
-// releaseLeadership voluntarily gives up leadership.
-func (e *RedisElector) releaseLeadership(ctx context.Context) error {
-	// Lua script to atomically check ownership and delete
-	script := `
-		if redis.call("get", KEYS[1]) == ARGV[1] then
-			return redis.call("del", KEYS[1])
-		else
-			return 0
-		end
-	`
-
-	result, err := e.client.Eval(ctx, script, []string{e.keyName}, e.nodeID).Result()
-	if err != nil {
-		return fmt.Errorf("failed to release leadership: %w", err)
-	}
-
-	val, ok := result.(int64)
-	if !ok {
-		return fmt.Errorf("failed to release leadership: %w", err)
-	}
-
-	if val == 0 {
-		e.log.Warn("Could not release leadership - lock not owned by this node")
-	} else {
-		e.log.Info("Released leadership")
 	}
 
 	e.mu.Lock()
-	e.isLeader = false
+	e.isLeader = true
+	e.leadershipStartTime = time.Now()
 	e.mu.Unlock()
 
-	return nil
+	common.LeaderElectionStatus.WithLabelValues(e.network, e.nodeID).Set(1)
+	common.LeaderElectionTransitions.WithLabelValues(e.network, e.nodeID, "gained").Inc()
+	e.log.Info("Acquired leadership")
+
+	return true
 }
 
-// handleLeadershipGain is called when leadership is acquired.
-func (e *RedisElector) handleLeadershipGain() {
-	e.log.Info("Gained leadership")
+// tryExtend attempts to extend the leadership lock TTL.
+func (e *RedisElector) tryExtend(ctx context.Context) bool {
+	ok, err := e.mutex.ExtendContext(ctx)
+	if err != nil || !ok {
+		e.log.WithError(err).Warn("Failed to extend leadership")
+		common.LeaderElectionErrors.WithLabelValues(e.network, e.nodeID, "renew").Inc()
 
-	select {
-	case e.leadershipChan <- true:
-	default:
-		e.log.Warn("Leadership channel full, dropping leadership gain event")
+		return false
+	}
+
+	return true
+}
+
+// handleGain is called when leadership is acquired.
+func (e *RedisElector) handleGain(ctx context.Context) {
+	e.callbacksMu.RLock()
+	callbacks := make([]LeadershipCallback, len(e.callbacks))
+	copy(callbacks, e.callbacks)
+	e.callbacksMu.RUnlock()
+
+	for _, cb := range callbacks {
+		cb(ctx, true)
 	}
 }
 
-// handleLeadershipLoss is called when leadership is lost.
-func (e *RedisElector) handleLeadershipLoss() {
+// handleLoss is called when leadership is lost.
+func (e *RedisElector) handleLoss(ctx context.Context) {
 	e.mu.Lock()
 	wasLeader := e.isLeader
 	e.isLeader = false
-	leadershipDuration := time.Since(e.leadershipStartTime).Seconds()
+	duration := time.Since(e.leadershipStartTime).Seconds()
 	e.mu.Unlock()
 
 	if wasLeader {
 		common.LeaderElectionStatus.WithLabelValues(e.network, e.nodeID).Set(0)
 		common.LeaderElectionTransitions.WithLabelValues(e.network, e.nodeID, "lost").Inc()
-		common.LeaderElectionDuration.WithLabelValues(e.network, e.nodeID).Observe(leadershipDuration)
+		common.LeaderElectionDuration.WithLabelValues(e.network, e.nodeID).Observe(duration)
 	}
 
 	e.log.Info("Lost leadership")
 
-	select {
-	case e.leadershipChan <- false:
-	default:
-		e.log.Warn("Leadership channel full, dropping leadership loss event")
+	e.callbacksMu.RLock()
+	callbacks := make([]LeadershipCallback, len(e.callbacks))
+	copy(callbacks, e.callbacks)
+	e.callbacksMu.RUnlock()
+
+	for _, cb := range callbacks {
+		cb(ctx, false)
 	}
 }

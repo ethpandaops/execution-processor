@@ -7,6 +7,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
+	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog_agg"
 )
 
 // Config holds the unified processor configuration.
@@ -27,9 +28,25 @@ type Config struct {
 	MaxProcessQueueSize    int     `yaml:"maxProcessQueueSize"`
 	BackpressureHysteresis float64 `yaml:"backpressureHysteresis"`
 
+	// Stale block detection configuration
+	StaleBlockDetection StaleBlockDetectionConfig `yaml:"staleBlockDetection"`
+
 	// Processor configurations
-	TransactionStructlog structlog.Config `yaml:"transactionStructlog"`
-	TransactionSimple    simple.Config    `yaml:"transactionSimple"`
+	TransactionStructlog    structlog.Config     `yaml:"transactionStructlog"`
+	TransactionSimple       simple.Config        `yaml:"transactionSimple"`
+	TransactionStructlogAgg structlog_agg.Config `yaml:"transactionStructlogAgg"`
+}
+
+// StaleBlockDetectionConfig holds configuration for stale block detection.
+type StaleBlockDetectionConfig struct {
+	// Enabled enables stale block detection (default: true)
+	Enabled bool `yaml:"enabled"`
+
+	// StaleThreshold is the time after which a block is considered stale (default: 5m)
+	StaleThreshold time.Duration `yaml:"staleThreshold"`
+
+	// CheckInterval is how often to check for stale blocks (default: 1m)
+	CheckInterval time.Duration `yaml:"checkInterval"`
 }
 
 // LeaderElectionConfig holds configuration for leader election.
@@ -54,10 +71,7 @@ type WorkerConfig struct {
 }
 
 func (c *Config) Validate() error {
-	if c.Interval == 0 {
-		c.Interval = DefaultInterval
-	}
-
+	// Interval 0 = no delay (default), >0 = fixed interval between processing cycles
 	if c.Mode == "" {
 		c.Mode = tracker.FORWARDS_MODE
 	}
@@ -98,6 +112,20 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("leader election renewal interval must be less than TTL")
 	}
 
+	// Set stale block detection defaults
+	// Enable by default unless explicitly disabled
+	if !c.StaleBlockDetection.Enabled && c.StaleBlockDetection.StaleThreshold == 0 && c.StaleBlockDetection.CheckInterval == 0 {
+		c.StaleBlockDetection.Enabled = true
+	}
+
+	if c.StaleBlockDetection.StaleThreshold == 0 {
+		c.StaleBlockDetection.StaleThreshold = tracker.DefaultStaleThreshold
+	}
+
+	if c.StaleBlockDetection.CheckInterval == 0 {
+		c.StaleBlockDetection.CheckInterval = DefaultStaleBlockCheckInterval
+	}
+
 	if c.TransactionStructlog.Enabled {
 		if c.TransactionStructlog.Addr == "" {
 			return fmt.Errorf("transaction structlog addr is required when enabled")
@@ -110,6 +138,10 @@ func (c *Config) Validate() error {
 
 	if err := c.TransactionSimple.Validate(); err != nil {
 		return fmt.Errorf("transaction simple config validation failed: %w", err)
+	}
+
+	if err := c.TransactionStructlogAgg.Validate(); err != nil {
+		return fmt.Errorf("transaction structlog_agg config validation failed: %w", err)
 	}
 
 	return nil

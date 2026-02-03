@@ -5,11 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sync"
 	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	"github.com/sirupsen/logrus"
+)
+
+const (
+	limiterCacheRefreshInterval = 6 * time.Second
 )
 
 // Sentinel errors.
@@ -25,6 +30,12 @@ type Manager struct {
 	limiterTable   string
 	limiterEnabled bool
 	network        string
+
+	// Limiter cache fields
+	limiterCacheMu      sync.RWMutex
+	limiterCacheValue   map[string]*big.Int // network -> max block
+	limiterCacheStop    chan struct{}
+	limiterCacheStarted bool
 }
 
 func NewManager(log logrus.FieldLogger, config *Config) (*Manager, error) {
@@ -84,6 +95,9 @@ func (s *Manager) Start(ctx context.Context) error {
 		if err := s.startClientWithRetry(ctx, s.limiterClient, "limiter"); err != nil {
 			return fmt.Errorf("failed to start limiter client: %w", err)
 		}
+
+		// Start the limiter cache refresh goroutine
+		s.startLimiterCacheRefresh()
 	}
 
 	return nil
@@ -134,6 +148,16 @@ func (s *Manager) startClientWithRetry(ctx context.Context, client clickhouse.Cl
 
 func (s *Manager) Stop(ctx context.Context) error {
 	var err error
+
+	// Stop the limiter cache refresh goroutine
+	s.limiterCacheMu.Lock()
+
+	if s.limiterCacheStarted && s.limiterCacheStop != nil {
+		close(s.limiterCacheStop)
+		s.limiterCacheStarted = false
+	}
+
+	s.limiterCacheMu.Unlock()
 
 	if stopErr := s.storageClient.Stop(); stopErr != nil {
 		err = fmt.Errorf("failed to stop storage client: %w", stopErr)
@@ -251,6 +275,64 @@ func (s *Manager) NextBlock(ctx context.Context, processor, network, mode string
 	}).Warn("Progressive next block exceeds current limiter max, continuing sequential processing to avoid gaps")
 
 	return progressiveNext, nil
+}
+
+// NextBlocks returns up to `count` sequential block numbers starting from what NextBlock returns.
+// This is used for batch block fetching to get multiple consecutive blocks at once.
+func (s *Manager) NextBlocks(
+	ctx context.Context,
+	processor, network, mode string,
+	chainHead *big.Int,
+	count int,
+) ([]*big.Int, error) {
+	if count <= 0 {
+		return []*big.Int{}, nil
+	}
+
+	// Get the first block number
+	firstBlock, err := s.NextBlock(ctx, processor, network, mode, chainHead)
+	if err != nil {
+		return nil, err
+	}
+
+	if firstBlock == nil {
+		return []*big.Int{}, nil
+	}
+
+	// Generate sequential block numbers
+	blocks := make([]*big.Int, 0, count)
+	blocks = append(blocks, firstBlock)
+
+	for i := 1; i < count; i++ {
+		var nextBlock *big.Int
+		if mode == tracker.BACKWARDS_MODE {
+			// Backwards mode: decrement block numbers
+			nextBlock = new(big.Int).Sub(firstBlock, big.NewInt(int64(i)))
+			// Don't go below 0
+			if nextBlock.Sign() < 0 {
+				break
+			}
+		} else {
+			// Forwards mode: increment block numbers
+			nextBlock = new(big.Int).Add(firstBlock, big.NewInt(int64(i)))
+			// Don't exceed chain head if provided
+			if chainHead != nil && nextBlock.Cmp(chainHead) > 0 {
+				break
+			}
+		}
+
+		blocks = append(blocks, nextBlock)
+	}
+
+	s.log.WithFields(logrus.Fields{
+		"processor":   processor,
+		"network":     network,
+		"mode":        mode,
+		"first_block": firstBlock.String(),
+		"count":       len(blocks),
+	}).Debug("Generated batch of block numbers")
+
+	return blocks, nil
 }
 
 func (s *Manager) getProgressiveNextBlock(ctx context.Context, processor, network string, chainHead *big.Int) (*big.Int, bool, error) {
@@ -393,45 +475,32 @@ func (s *Manager) getProgressiveNextBlockBackwards(ctx context.Context, processo
 }
 
 func (s *Manager) getLimiterMaxBlock(ctx context.Context, network string) (*big.Int, error) {
-	query := fmt.Sprintf(`
-		SELECT max(execution_payload_block_number) AS block_number
-		FROM %s FINAL
-		WHERE meta_network_name = '%s'
-	`, s.limiterTable, network)
+	// Try to get from cache first
+	s.limiterCacheMu.RLock()
+	cachedValue, ok := s.limiterCacheValue[network]
+	s.limiterCacheMu.RUnlock()
 
+	if ok && cachedValue != nil {
+		s.log.WithFields(logrus.Fields{
+			"network":     network,
+			"limiter_max": cachedValue.String(),
+		}).Debug("Returning limiter max block from cache")
+
+		return cachedValue, nil
+	}
+
+	// Cache miss - query directly (this should be rare after startup)
 	s.log.WithFields(logrus.Fields{
 		"network": network,
-		"table":   s.limiterTable,
-	}).Debug("Querying for maximum execution payload block number")
+	}).Debug("Limiter cache miss, querying directly")
 
-	blockNumber, err := s.limiterClient.QueryUInt64(ctx, query, "block_number")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get max execution payload block from %s: %w", s.limiterTable, err)
-	}
-
-	// Check if we got a result
-	if blockNumber == nil {
-		// No blocks in limiter table, return genesis
-		s.log.WithFields(logrus.Fields{
-			"network": network,
-		}).Debug("No blocks found in limiter table, returning genesis block as max")
-
-		return big.NewInt(0), nil
-	}
-
-	maxBlock := new(big.Int).SetUint64(*blockNumber)
-	s.log.WithFields(logrus.Fields{
-		"network":     network,
-		"limiter_max": maxBlock.String(),
-	}).Debug("Found maximum execution payload block number")
-
-	return maxBlock, nil
+	return s.queryLimiterMaxBlock(ctx, network)
 }
 
 func (s *Manager) MarkBlockProcessed(ctx context.Context, blockNumber uint64, network, processor string) error {
 	// Insert using direct string substitution for table name
 	// Table name is validated during config initialization
-	query := fmt.Sprintf("INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name) VALUES ('%s', %d, '%s', '%s')", s.storageTable, time.Now().Format("2006-01-02 15:04:05"), blockNumber, processor, network)
+	query := fmt.Sprintf("INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name) VALUES ('%s', %d, '%s', '%s')", s.storageTable, time.Now().Format("2006-01-02 15:04:05.000"), blockNumber, processor, network)
 
 	err := s.storageClient.Execute(ctx, query)
 	if err != nil {
@@ -453,7 +522,7 @@ func (s *Manager) MarkBlockEnqueued(ctx context.Context, blockNumber uint64, tas
 	query := fmt.Sprintf(
 		"INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name, complete, task_count) VALUES ('%s', %d, '%s', '%s', 0, %d)",
 		s.storageTable,
-		time.Now().Format("2006-01-02 15:04:05"),
+		time.Now().Format("2006-01-02 15:04:05.000"),
 		blockNumber,
 		processor,
 		network,
@@ -482,7 +551,7 @@ func (s *Manager) MarkBlockComplete(ctx context.Context, blockNumber uint64, net
 	query := fmt.Sprintf(
 		"INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name, complete, task_count) VALUES ('%s', %d, '%s', '%s', 1, 0)",
 		s.storageTable,
-		time.Now().Format("2006-01-02 15:04:05"),
+		time.Now().Format("2006-01-02 15:04:05.000"),
 		blockNumber,
 		processor,
 		network,
@@ -755,4 +824,97 @@ func (s *Manager) GetHeadDistance(ctx context.Context, processor, network, mode 
 	}).Debug("Calculated head distance using beacon chain head")
 
 	return distance, headType, nil
+}
+
+// startLimiterCacheRefresh starts the background goroutine for limiter cache refresh.
+// It ensures only one refresh goroutine runs even if called multiple times.
+func (s *Manager) startLimiterCacheRefresh() {
+	s.limiterCacheMu.Lock()
+
+	if s.limiterCacheStarted {
+		s.limiterCacheMu.Unlock()
+
+		return
+	}
+
+	s.limiterCacheStarted = true
+	s.limiterCacheValue = make(map[string]*big.Int, 1)
+	s.limiterCacheStop = make(chan struct{})
+	s.limiterCacheMu.Unlock()
+
+	go s.refreshLimiterCacheLoop()
+}
+
+// refreshLimiterCacheLoop runs the cache refresh loop in a background goroutine.
+func (s *Manager) refreshLimiterCacheLoop() {
+	ticker := time.NewTicker(limiterCacheRefreshInterval)
+	defer ticker.Stop()
+
+	// Do initial refresh immediately
+	s.refreshLimiterCache()
+
+	for {
+		select {
+		case <-s.limiterCacheStop:
+			return
+		case <-ticker.C:
+			s.refreshLimiterCache()
+		}
+	}
+}
+
+// refreshLimiterCache queries ClickHouse and updates the cache.
+func (s *Manager) refreshLimiterCache() {
+	if s.network == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	maxBlock, err := s.queryLimiterMaxBlock(ctx, s.network)
+	if err != nil {
+		s.log.WithError(err).Warn("Failed to refresh limiter cache")
+
+		return
+	}
+
+	s.limiterCacheMu.Lock()
+	s.limiterCacheValue[s.network] = maxBlock
+	s.limiterCacheMu.Unlock()
+
+	s.log.WithFields(logrus.Fields{
+		"network":     s.network,
+		"limiter_max": maxBlock.String(),
+	}).Debug("Refreshed limiter cache")
+}
+
+// queryLimiterMaxBlock performs the actual ClickHouse query.
+// Uses ORDER BY slot_start_date_time DESC LIMIT 1 to leverage the table's index.
+func (s *Manager) queryLimiterMaxBlock(ctx context.Context, network string) (*big.Int, error) {
+	// Optimized query: uses ORDER BY index instead of MAX() which requires full table scan
+	query := fmt.Sprintf(`
+		SELECT toUInt64(ifNull(execution_payload_block_number, 0)) AS block_number
+		FROM %s
+		WHERE meta_network_name = '%s'
+		  AND execution_payload_block_number IS NOT NULL
+		ORDER BY slot_start_date_time DESC
+		LIMIT 1
+	`, s.limiterTable, network)
+
+	s.log.WithFields(logrus.Fields{
+		"network": network,
+		"table":   s.limiterTable,
+	}).Debug("Querying for maximum execution payload block number")
+
+	blockNumber, err := s.limiterClient.QueryUInt64(ctx, query, "block_number")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query max execution payload block from %s: %w", s.limiterTable, err)
+	}
+
+	if blockNumber == nil || *blockNumber == 0 {
+		return big.NewInt(0), nil
+	}
+
+	return new(big.Int).SetUint64(*blockNumber), nil
 }

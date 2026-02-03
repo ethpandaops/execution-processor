@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -105,45 +106,8 @@ func TestNewRedisElector(t *testing.T) {
 				if elector.IsLeader() {
 					t.Error("new elector should not be leader initially")
 				}
-
-				// Test that channel is created
-				ch := elector.LeadershipChannel()
-				if ch == nil {
-					t.Error("leadership channel should not be nil")
-				}
 			}
 		})
-	}
-}
-
-func TestRedisElector_GetLeaderID_NoLeader(t *testing.T) {
-	client := newTestRedis(t)
-
-	log := logrus.New()
-	log.SetLevel(logrus.ErrorLevel)
-
-	// Clean up any existing keys
-	ctx := context.Background()
-	client.Del(ctx, "test:leader:no-leader")
-
-	config := &leaderelection.Config{
-		TTL:             5 * time.Second,
-		RenewalInterval: 1 * time.Second,
-		NodeID:          "test-node",
-	}
-
-	elector, err := leaderelection.NewRedisElector(client, log, "test:leader:no-leader", config)
-	if err != nil {
-		t.Fatalf("failed to create elector: %v", err)
-	}
-
-	leaderID, err := elector.GetLeaderID()
-	if err == nil {
-		t.Error("expected error when no leader exists")
-	}
-
-	if leaderID != "" {
-		t.Errorf("expected empty leader ID, got %s", leaderID)
 	}
 }
 
@@ -214,6 +178,15 @@ func TestRedisElector_LeadershipAcquisition(t *testing.T) {
 		t.Fatalf("failed to create elector: %v", err)
 	}
 
+	// Track leadership via callback
+	var leadershipGained atomic.Bool
+
+	elector.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+		if isLeader {
+			leadershipGained.Store(true)
+		}
+	})
+
 	startCtx, startCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer startCancel()
 
@@ -224,30 +197,13 @@ func TestRedisElector_LeadershipAcquisition(t *testing.T) {
 	}
 
 	// Wait for leadership acquisition
-	leadershipChan := elector.LeadershipChannel()
-
-	select {
-	case isLeader := <-leadershipChan:
-		if !isLeader {
-			t.Error("expected to gain leadership")
-		}
-	case <-time.After(1 * time.Second):
-		t.Error("timeout waiting for leadership acquisition")
-	}
+	require.Eventually(t, func() bool {
+		return leadershipGained.Load()
+	}, 1*time.Second, 50*time.Millisecond, "should gain leadership via callback")
 
 	// Verify leadership status
 	if !elector.IsLeader() {
 		t.Error("elector should be leader")
-	}
-
-	// Verify leader ID
-	leaderID, err := elector.GetLeaderID()
-	if err != nil {
-		t.Errorf("failed to get leader ID: %v", err)
-	}
-
-	if leaderID != config.NodeID {
-		t.Errorf("expected leader ID %s, got %s", config.NodeID, leaderID)
 	}
 
 	// Stop and clean up
@@ -363,6 +319,14 @@ func TestRedisElector_LeadershipTransition(t *testing.T) {
 		t.Fatalf("failed to create elector1: %v", err)
 	}
 
+	var elector1Gained atomic.Bool
+
+	elector1.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+		if isLeader {
+			elector1Gained.Store(true)
+		}
+	})
+
 	startCtx, startCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer startCancel()
 
@@ -373,7 +337,9 @@ func TestRedisElector_LeadershipTransition(t *testing.T) {
 	}
 
 	// Wait for leadership
-	time.Sleep(200 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return elector1Gained.Load()
+	}, 1*time.Second, 50*time.Millisecond, "elector1 should gain leadership")
 
 	if !elector1.IsLeader() {
 		t.Error("elector1 should be leader")
@@ -400,6 +366,14 @@ func TestRedisElector_LeadershipTransition(t *testing.T) {
 		t.Fatalf("failed to create elector2: %v", err)
 	}
 
+	var elector2Gained atomic.Bool
+
+	elector2.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+		if isLeader {
+			elector2Gained.Store(true)
+		}
+	})
+
 	// Start second elector
 	err = elector2.Start(startCtx)
 	if err != nil {
@@ -407,29 +381,13 @@ func TestRedisElector_LeadershipTransition(t *testing.T) {
 	}
 
 	// Wait for leadership transition
-	leadershipChan := elector2.LeadershipChannel()
-
-	select {
-	case isLeader := <-leadershipChan:
-		if !isLeader {
-			t.Error("elector2 should gain leadership")
-		}
-	case <-time.After(3 * time.Second):
-		t.Error("timeout waiting for leadership transition")
-	}
+	require.Eventually(t, func() bool {
+		return elector2Gained.Load()
+	}, 3*time.Second, 100*time.Millisecond, "elector2 should gain leadership")
 
 	// Verify new leader
 	if !elector2.IsLeader() {
 		t.Error("elector2 should be leader")
-	}
-
-	leaderID, err := elector2.GetLeaderID()
-	if err != nil {
-		t.Errorf("failed to get leader ID: %v", err)
-	}
-
-	if leaderID != "node-2" {
-		t.Errorf("expected leader ID node-2, got %s", leaderID)
 	}
 
 	// Clean up
@@ -467,6 +425,19 @@ func TestRedisElector_RenewalFailure(t *testing.T) {
 	elector, err := leaderelection.NewRedisElector(client, log, "test:leader:renewal-failure", config)
 	require.NoError(t, err)
 
+	var (
+		gained atomic.Bool
+		lost   atomic.Bool
+	)
+
+	elector.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+		if isLeader {
+			gained.Store(true)
+		} else {
+			lost.Store(true)
+		}
+	})
+
 	startCtx, startCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer startCancel()
 
@@ -475,27 +446,21 @@ func TestRedisElector_RenewalFailure(t *testing.T) {
 	require.NoError(t, err)
 
 	// Wait for leadership acquisition
-	leadershipChan := elector.LeadershipChannel()
-	select {
-	case isLeader := <-leadershipChan:
-		assert.True(t, isLeader, "Should gain leadership")
-	case <-time.After(1 * time.Second):
-		t.Fatal("Timeout waiting for leadership")
-	}
+	require.Eventually(t, func() bool {
+		return gained.Load()
+	}, 1*time.Second, 50*time.Millisecond, "Should gain leadership")
 
 	// Verify leadership
 	assert.True(t, elector.IsLeader())
 
-	// Simulate external interference - delete the key
-	client.Del(ctx, "test:leader:renewal-failure")
+	// Simulate external interference - set a different value to simulate another node holding lock
+	// (just deleting doesn't work because WithSetNXOnExtend recreates the key)
+	client.Set(ctx, "test:leader:renewal-failure", "different-node-value", config.TTL)
 
 	// Wait for leadership loss detection
-	select {
-	case isLeader := <-leadershipChan:
-		assert.False(t, isLeader, "Should lose leadership")
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for leadership loss")
-	}
+	require.Eventually(t, func() bool {
+		return lost.Load()
+	}, 2*time.Second, 50*time.Millisecond, "Should lose leadership")
 
 	// Verify leadership loss
 	assert.False(t, elector.IsLeader())
@@ -530,7 +495,7 @@ func TestRedisElector_ConcurrentElectors(t *testing.T) {
 	}
 
 	// Create multiple electors
-	for i := 0; i < numElectors; i++ {
+	for i := range numElectors {
 		nodeConfig := *config
 		nodeConfig.NodeID = fmt.Sprintf("node-%d", i)
 
@@ -545,6 +510,7 @@ func TestRedisElector_ConcurrentElectors(t *testing.T) {
 
 	// Start all electors simultaneously
 	var wg sync.WaitGroup
+
 	for i, elector := range electors {
 		wg.Add(1)
 
@@ -566,24 +532,15 @@ func TestRedisElector_ConcurrentElectors(t *testing.T) {
 	// Exactly one should be leader
 	leaderCount := 0
 
-	var leader *leaderelection.RedisElector
-
 	for i, elector := range electors {
 		if elector.IsLeader() {
 			leaderCount++
-			leader = elector
 
 			t.Logf("Elector %d is leader", i)
 		}
 	}
 
 	assert.Equal(t, 1, leaderCount, "Exactly one elector should be leader")
-	require.NotNil(t, leader)
-
-	// Verify leader ID
-	leaderID, err := leader.GetLeaderID()
-	assert.NoError(t, err)
-	assert.NotEmpty(t, leaderID)
 
 	// Stop all electors
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -732,14 +689,387 @@ func TestRedisElector_InvalidRedisAddress(t *testing.T) {
 	isLeader := elector.IsLeader()
 	assert.False(t, isLeader)
 
-	leaderID, err := elector.GetLeaderID()
-	assert.Error(t, err) // Should error due to connection failure
-	assert.Empty(t, leaderID)
-
 	// Stop should work even with connection issues
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer stopCancel()
 
 	err = elector.Stop(stopCtx)
 	assert.NoError(t, err)
+}
+
+// =====================================
+// CALLBACK-BASED NOTIFICATION TESTS
+// =====================================
+
+// TestOnLeadershipChange_CallbackInvocation verifies that registered callbacks
+// are invoked when leadership status changes.
+func TestOnLeadershipChange_CallbackInvocation(t *testing.T) {
+	client := newTestRedis(t)
+
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	ctx := context.Background()
+	keyName := "test:leader:callback-invocation"
+	client.Del(ctx, keyName)
+
+	config := &leaderelection.Config{
+		TTL:             500 * time.Millisecond,
+		RenewalInterval: 100 * time.Millisecond,
+		NodeID:          "callback-test-node",
+	}
+
+	elector, err := leaderelection.NewRedisElector(client, log, keyName, config)
+	require.NoError(t, err)
+
+	// Track callback invocations
+	var (
+		callbackInvocations []bool
+		callbackMu          sync.Mutex
+	)
+
+	elector.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+		callbackMu.Lock()
+		defer callbackMu.Unlock()
+
+		callbackInvocations = append(callbackInvocations, isLeader)
+	})
+
+	startCtx, startCancel := context.WithCancel(context.Background())
+	defer startCancel()
+
+	err = elector.Start(startCtx)
+	require.NoError(t, err)
+
+	// Wait for leadership acquisition
+	time.Sleep(200 * time.Millisecond)
+
+	// Should have gained leadership
+	require.True(t, elector.IsLeader(), "Should be leader")
+
+	// Force leadership loss by setting a different value to simulate another node holding lock
+	// (just deleting doesn't work because WithSetNXOnExtend recreates the key)
+	client.Set(ctx, keyName, "different-node-value", config.TTL)
+	time.Sleep(300 * time.Millisecond) // Wait for renewal cycle to detect loss
+
+	// Should have lost leadership
+	require.False(t, elector.IsLeader(), "Should have lost leadership")
+
+	// Check callback invocations
+	callbackMu.Lock()
+	defer callbackMu.Unlock()
+
+	require.GreaterOrEqual(t, len(callbackInvocations), 2,
+		"Should have at least 2 callback invocations (gain + loss)")
+
+	// First should be gain (true), last should be loss (false)
+	assert.True(t, callbackInvocations[0], "First callback should be leadership gain")
+	assert.False(t, callbackInvocations[len(callbackInvocations)-1], "Last callback should be leadership loss")
+
+	// Cleanup
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer stopCancel()
+
+	_ = elector.Stop(stopCtx)
+}
+
+// TestOnLeadershipChange_MultipleCallbacks verifies that multiple callbacks
+// are all invoked in registration order.
+func TestOnLeadershipChange_MultipleCallbacks(t *testing.T) {
+	client := newTestRedis(t)
+
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	ctx := context.Background()
+	keyName := "test:leader:multiple-callbacks"
+	client.Del(ctx, keyName)
+
+	config := &leaderelection.Config{
+		TTL:             500 * time.Millisecond,
+		RenewalInterval: 100 * time.Millisecond,
+		NodeID:          "multi-callback-node",
+	}
+
+	elector, err := leaderelection.NewRedisElector(client, log, keyName, config)
+	require.NoError(t, err)
+
+	// Track callback order
+	var (
+		invocationOrder []int
+		orderMu         sync.Mutex
+	)
+
+	// Register multiple callbacks
+	for i := range 3 {
+		callbackID := i
+
+		elector.OnLeadershipChange(func(_ context.Context, _ bool) {
+			orderMu.Lock()
+			defer orderMu.Unlock()
+
+			invocationOrder = append(invocationOrder, callbackID)
+		})
+	}
+
+	startCtx, startCancel := context.WithCancel(context.Background())
+	defer startCancel()
+
+	err = elector.Start(startCtx)
+	require.NoError(t, err)
+
+	// Wait for leadership acquisition
+	time.Sleep(200 * time.Millisecond)
+
+	// Check invocation order
+	orderMu.Lock()
+	defer orderMu.Unlock()
+
+	// Should have 3 invocations for the leadership gain
+	require.GreaterOrEqual(t, len(invocationOrder), 3, "All 3 callbacks should be invoked")
+
+	// First 3 should be in order 0, 1, 2
+	assert.Equal(t, 0, invocationOrder[0], "First callback should be invoked first")
+	assert.Equal(t, 1, invocationOrder[1], "Second callback should be invoked second")
+	assert.Equal(t, 2, invocationOrder[2], "Third callback should be invoked third")
+
+	// Cleanup
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer stopCancel()
+
+	_ = elector.Stop(stopCtx)
+}
+
+// TestOnLeadershipChange_GuaranteedDelivery verifies that callbacks receive
+// ALL leadership events, even when they would overflow a channel buffer.
+func TestOnLeadershipChange_GuaranteedDelivery(t *testing.T) {
+	client := newTestRedis(t)
+
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	ctx := context.Background()
+	keyName := "test:leader:callback-guaranteed"
+	client.Del(ctx, keyName)
+
+	// Very fast renewal to generate many events
+	config := &leaderelection.Config{
+		TTL:             200 * time.Millisecond,
+		RenewalInterval: 50 * time.Millisecond,
+		NodeID:          "guaranteed-callback-node",
+	}
+
+	elector, err := leaderelection.NewRedisElector(client, log, keyName, config)
+	require.NoError(t, err)
+
+	// Track ALL callback invocations
+	var (
+		callbackEvents []bool
+		eventsMu       sync.Mutex
+	)
+
+	elector.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+
+		callbackEvents = append(callbackEvents, isLeader)
+	})
+
+	startCtx, startCancel := context.WithCancel(context.Background())
+	defer startCancel()
+
+	err = elector.Start(startCtx)
+	require.NoError(t, err)
+
+	// Wait for initial leadership
+	time.Sleep(100 * time.Millisecond)
+
+	// Rapidly toggle leadership by setting different values and deleting
+	// This generates more events than a channel buffer (10) could hold
+	for range 15 {
+		// Set a different value to simulate another node taking the lock
+		client.Set(ctx, keyName, "different-node-value", config.TTL)
+		time.Sleep(60 * time.Millisecond) // Let it detect loss
+
+		// Delete to allow re-acquire
+		client.Del(ctx, keyName)
+		time.Sleep(60 * time.Millisecond) // Let it re-acquire
+	}
+
+	// Final - set different value to ensure not leader
+	client.Set(ctx, keyName, "different-node-value", config.TTL)
+	time.Sleep(100 * time.Millisecond)
+
+	// Check final state
+	finalIsLeader := elector.IsLeader()
+
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+
+	t.Logf("Callback events received: %d, Final IsLeader(): %v", len(callbackEvents), finalIsLeader)
+
+	// CRITICAL: Callback should have received many events
+	// More than the channel buffer size (10) proves guaranteed delivery
+	assert.Greater(t, len(callbackEvents), 10,
+		"Callbacks should receive more events than channel buffer size")
+
+	// If final state is not leader, the last callback event must be false
+	if !finalIsLeader && len(callbackEvents) > 0 {
+		lastEvent := callbackEvents[len(callbackEvents)-1]
+		assert.False(t, lastEvent,
+			"CRITICAL: IsLeader()=false but last callback event was 'true' - events were lost!")
+	}
+
+	// Cleanup
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer stopCancel()
+
+	_ = elector.Stop(stopCtx)
+}
+
+// TestOnLeadershipChange_SlowCallback verifies that slow callbacks work correctly
+// (though they may delay leadership renewal).
+func TestOnLeadershipChange_SlowCallback(t *testing.T) {
+	client := newTestRedis(t)
+
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	ctx := context.Background()
+	keyName := "test:leader:slow-callback"
+	client.Del(ctx, keyName)
+
+	config := &leaderelection.Config{
+		TTL:             1 * time.Second,
+		RenewalInterval: 200 * time.Millisecond,
+		NodeID:          "slow-callback-node",
+	}
+
+	elector, err := leaderelection.NewRedisElector(client, log, keyName, config)
+	require.NoError(t, err)
+
+	// Track callback invocations with a slow callback
+	var (
+		callbackEvents []bool
+		eventsMu       sync.Mutex
+	)
+
+	elector.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+		// Slow callback - takes 150ms (less than renewal interval for safety)
+		// This simulates a callback that does significant work
+		time.Sleep(150 * time.Millisecond)
+
+		eventsMu.Lock()
+		defer eventsMu.Unlock()
+
+		callbackEvents = append(callbackEvents, isLeader)
+	})
+
+	startCtx, startCancel := context.WithCancel(context.Background())
+	defer startCancel()
+
+	err = elector.Start(startCtx)
+	require.NoError(t, err)
+
+	// Wait for leadership (callback takes 150ms, so wait longer)
+	time.Sleep(500 * time.Millisecond)
+
+	// Should have gained leadership despite slow callback
+	require.True(t, elector.IsLeader(), "Should be leader")
+
+	// Force leadership loss by setting a different value to simulate another node
+	client.Set(ctx, keyName, "different-node-value", config.TTL)
+	time.Sleep(600 * time.Millisecond) // Wait for renewal + slow callback
+
+	// Should have lost leadership
+	require.False(t, elector.IsLeader(), "Should have lost leadership")
+
+	// Check callback invocations
+	eventsMu.Lock()
+	defer eventsMu.Unlock()
+
+	require.GreaterOrEqual(t, len(callbackEvents), 2,
+		"Should have at least 2 callback invocations despite slow callback")
+
+	assert.True(t, callbackEvents[0], "First event should be leadership gain")
+	assert.False(t, callbackEvents[len(callbackEvents)-1], "Last event should be leadership loss")
+
+	// Cleanup
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer stopCancel()
+
+	_ = elector.Stop(stopCtx)
+}
+
+// TestCallback_GuaranteedDelivery verifies that leadership loss events
+// are ALWAYS delivered, even under contention.
+//
+// This is the contract that distributed systems depend on:
+// If IsLeader() returns false, the consumer MUST have been notified.
+func TestCallback_GuaranteedDelivery(t *testing.T) {
+	client := newTestRedis(t)
+
+	log := logrus.New()
+	log.SetLevel(logrus.ErrorLevel)
+
+	ctx := context.Background()
+
+	// Run multiple iterations to catch race conditions
+	for iteration := range 10 {
+		keyName := "test:leader:guaranteed"
+		client.Del(ctx, keyName)
+
+		config := &leaderelection.Config{
+			TTL:             300 * time.Millisecond,
+			RenewalInterval: 50 * time.Millisecond,
+			NodeID:          "guaranteed-node",
+		}
+
+		elector, err := leaderelection.NewRedisElector(client, log, keyName, config)
+		require.NoError(t, err)
+
+		startCtx, startCancel := context.WithCancel(context.Background())
+
+		// Track whether we've been notified of loss
+		var notifiedOfLoss atomic.Bool
+
+		elector.OnLeadershipChange(func(_ context.Context, isLeader bool) {
+			if !isLeader {
+				notifiedOfLoss.Store(true)
+			}
+		})
+
+		err = elector.Start(startCtx)
+		require.NoError(t, err)
+
+		// Wait for leadership
+		time.Sleep(100 * time.Millisecond)
+
+		if elector.IsLeader() {
+			// Force leadership loss by setting a different value to simulate another node
+			client.Set(ctx, keyName, "different-node-value", config.TTL)
+			time.Sleep(150 * time.Millisecond)
+
+			// If we're no longer leader, we MUST have been notified
+			if !elector.IsLeader() {
+				// Give callback a moment to process
+				time.Sleep(50 * time.Millisecond)
+
+				if !notifiedOfLoss.Load() {
+					t.Fatalf("CRITICAL (iteration %d): IsLeader()=false but consumer was NOT notified of loss!",
+						iteration)
+				}
+			}
+		}
+
+		// Cleanup
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+
+		_ = elector.Stop(stopCtx)
+
+		stopCancel()
+		startCancel()
+
+		client.Del(ctx, keyName)
+	}
 }

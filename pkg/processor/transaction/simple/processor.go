@@ -12,6 +12,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/clickhouse"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
+	"github.com/ethpandaops/execution-processor/pkg/rowbuffer"
 	"github.com/ethpandaops/execution-processor/pkg/state"
 )
 
@@ -43,10 +44,15 @@ type Processor struct {
 	asynqClient    *asynq.Client
 	processingMode string
 	redisPrefix    string
-	pendingTracker *tracker.PendingTracker
+
+	// Row buffer for batched ClickHouse inserts
+	rowBuffer *rowbuffer.Buffer[Transaction]
 
 	// Embedded limiter for shared blocking/completion logic
 	*tracker.Limiter
+
+	// Block completion tracker for SET-based task deduplication
+	completionTracker *tracker.BlockCompletionTracker
 }
 
 // New creates a new simple transaction processor.
@@ -70,36 +76,77 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 		config.MaxPendingBlockRange = tracker.DefaultMaxPendingBlockRange
 	}
 
+	// Set buffer defaults
+	if config.BufferMaxRows <= 0 {
+		config.BufferMaxRows = DefaultBufferMaxRows
+	}
+
+	if config.BufferFlushInterval <= 0 {
+		config.BufferFlushInterval = DefaultBufferFlushInterval
+	}
+
 	log := deps.Log.WithField("processor", ProcessorName)
-	pendingTracker := tracker.NewPendingTracker(deps.RedisClient, deps.RedisPrefix, log)
 
 	// Create the limiter for shared functionality
 	limiter := tracker.NewLimiter(
 		&tracker.LimiterDeps{
-			Log:            log,
-			StateProvider:  deps.State,
-			PendingTracker: pendingTracker,
-			Network:        deps.Network.Name,
-			Processor:      ProcessorName,
+			Log:           log,
+			StateProvider: deps.State,
+			Network:       deps.Network.Name,
+			Processor:     ProcessorName,
 		},
 		tracker.LimiterConfig{
 			MaxPendingBlockRange: config.MaxPendingBlockRange,
 		},
 	)
 
-	return &Processor{
-		log:            log,
-		pool:           deps.Pool,
-		stateManager:   deps.State,
-		clickhouse:     clickhouseClient,
-		config:         config,
-		network:        deps.Network,
-		asynqClient:    deps.AsynqClient,
-		processingMode: tracker.FORWARDS_MODE, // Default mode
-		redisPrefix:    deps.RedisPrefix,
-		pendingTracker: pendingTracker,
-		Limiter:        limiter,
-	}, nil
+	// Create the block completion tracker for SET-based task deduplication
+	completionTracker := tracker.NewBlockCompletionTracker(
+		deps.RedisClient,
+		deps.RedisPrefix,
+		log,
+		deps.State,
+		tracker.BlockCompletionTrackerConfig{
+			StaleThreshold: tracker.DefaultStaleThreshold,
+			AutoRetryStale: true,
+		},
+	)
+
+	processor := &Processor{
+		log:               log,
+		pool:              deps.Pool,
+		stateManager:      deps.State,
+		clickhouse:        clickhouseClient,
+		config:            config,
+		network:           deps.Network,
+		asynqClient:       deps.AsynqClient,
+		processingMode:    tracker.FORWARDS_MODE, // Default mode
+		redisPrefix:       deps.RedisPrefix,
+		Limiter:           limiter,
+		completionTracker: completionTracker,
+	}
+
+	// Create the row buffer with the flush function
+	processor.rowBuffer = rowbuffer.New(
+		rowbuffer.Config{
+			MaxRows:       config.BufferMaxRows,
+			FlushInterval: config.BufferFlushInterval,
+			Network:       deps.Network.Name,
+			Processor:     ProcessorName,
+			Table:         config.Table,
+		},
+		processor.flushRows,
+		log,
+	)
+
+	processor.log.WithFields(logrus.Fields{
+		"network":                 processor.network.Name,
+		"max_pending_block_range": config.MaxPendingBlockRange,
+		"buffer_max_rows":         config.BufferMaxRows,
+		"buffer_flush_interval":   config.BufferFlushInterval,
+	}).Info("Simple transaction processor initialized")
+
+	return processor, nil
 }
 
 // Name returns the processor name.
@@ -115,6 +162,11 @@ func (p *Processor) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
 	}
 
+	// Start the row buffer
+	if err := p.rowBuffer.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start row buffer: %w", err)
+	}
+
 	p.log.WithFields(logrus.Fields{
 		"network": p.network.Name,
 	}).Info("Transaction simple processor ready")
@@ -126,6 +178,11 @@ func (p *Processor) Start(ctx context.Context) error {
 func (p *Processor) Stop(ctx context.Context) error {
 	p.log.Info("Stopping transaction simple processor")
 
+	// Stop the row buffer first (flushes remaining rows)
+	if err := p.rowBuffer.Stop(ctx); err != nil {
+		p.log.WithError(err).Error("Failed to stop row buffer")
+	}
+
 	return p.clickhouse.Stop()
 }
 
@@ -133,6 +190,11 @@ func (p *Processor) Stop(ctx context.Context) error {
 func (p *Processor) SetProcessingMode(mode string) {
 	p.processingMode = mode
 	p.log.WithField("mode", mode).Info("Processing mode updated")
+}
+
+// GetCompletionTracker returns the block completion tracker.
+func (p *Processor) GetCompletionTracker() *tracker.BlockCompletionTracker {
+	return p.completionTracker
 }
 
 // EnqueueTask enqueues a task to the specified queue with infinite retries.
@@ -148,12 +210,20 @@ func (p *Processor) EnqueueTask(ctx context.Context, task *asynq.Task, opts ...a
 func (p *Processor) GetQueues() []tracker.QueueInfo {
 	return []tracker.QueueInfo{
 		{
+			Name:     tracker.PrefixedProcessReprocessForwardsQueue(ProcessorName, p.redisPrefix),
+			Priority: 20, // Highest priority for reprocessed/orphaned blocks (forwards)
+		},
+		{
+			Name:     tracker.PrefixedProcessReprocessBackwardsQueue(ProcessorName, p.redisPrefix),
+			Priority: 15, // High priority for reprocessed/orphaned blocks (backwards)
+		},
+		{
 			Name:     tracker.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix),
-			Priority: 10,
+			Priority: 10, // Medium priority for forwards processing
 		},
 		{
 			Name:     tracker.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix),
-			Priority: 5,
+			Priority: 5, // Lower priority for backwards processing
 		},
 	}
 }
@@ -166,4 +236,14 @@ func (p *Processor) getProcessForwardsQueue() string {
 // getProcessBackwardsQueue returns the prefixed process backwards queue name.
 func (p *Processor) getProcessBackwardsQueue() string {
 	return tracker.PrefixedProcessBackwardsQueue(ProcessorName, p.redisPrefix)
+}
+
+// getProcessReprocessForwardsQueue returns the prefixed reprocess forwards queue name.
+func (p *Processor) getProcessReprocessForwardsQueue() string {
+	return tracker.PrefixedProcessReprocessForwardsQueue(ProcessorName, p.redisPrefix)
+}
+
+// getProcessReprocessBackwardsQueue returns the prefixed reprocess backwards queue name.
+func (p *Processor) getProcessReprocessBackwardsQueue() string {
+	return tracker.PrefixedProcessReprocessBackwardsQueue(ProcessorName, p.redisPrefix)
 }

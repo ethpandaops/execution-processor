@@ -1,9 +1,12 @@
-package execution
+//go:build !embedded
+
+package geth
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"sync"
@@ -11,9 +14,14 @@ import (
 
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
-	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution/services"
 	"github.com/sirupsen/logrus"
+
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution/geth/services"
 )
+
+// Compile-time check that RPCNode implements execution.Node interface.
+var _ execution.Node = (*RPCNode)(nil)
 
 // headerTransport adds custom headers to requests and respects context cancellation.
 type headerTransport struct {
@@ -36,8 +44,9 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(req)
 }
 
-type Node struct {
-	config    *Config
+// RPCNode implements execution.Node using JSON-RPC connections.
+type RPCNode struct {
+	config    *execution.Config
 	log       logrus.FieldLogger
 	client    *ethclient.Client
 	rpcClient *rpc.Client
@@ -53,19 +62,20 @@ type Node struct {
 	cancel context.CancelFunc
 }
 
-func NewNode(log logrus.FieldLogger, conf *Config) *Node {
-	return &Node{
+// NewRPCNode creates a new RPC-based execution node.
+func NewRPCNode(log logrus.FieldLogger, conf *execution.Config) *RPCNode {
+	return &RPCNode{
 		config:   conf,
 		log:      log.WithFields(logrus.Fields{"type": "execution", "source": conf.Name}),
 		services: []services.Service{},
 	}
 }
 
-func (n *Node) OnReady(_ context.Context, callback func(ctx context.Context) error) {
+func (n *RPCNode) OnReady(_ context.Context, callback func(ctx context.Context) error) {
 	n.onReadyCallbacks = append(n.onReadyCallbacks, callback)
 }
 
-func (n *Node) Start(ctx context.Context) error {
+func (n *RPCNode) Start(ctx context.Context) error {
 	n.log.WithFields(logrus.Fields{
 		"node_name": n.name,
 	}).Info("Starting execution node")
@@ -193,7 +203,7 @@ func (n *Node) Start(ctx context.Context) error {
 	return nil
 }
 
-func (n *Node) Stop(ctx context.Context) error {
+func (n *RPCNode) Stop(ctx context.Context) error {
 	n.log.Info("Stopping execution node")
 
 	// Cancel the node context to signal all goroutines to stop
@@ -230,7 +240,7 @@ func (n *Node) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (n *Node) getServiceByName(name services.Name) (services.Service, error) {
+func (n *RPCNode) getServiceByName(name services.Name) (services.Service, error) {
 	for _, service := range n.services {
 		if service.Name() == name {
 			return service, nil
@@ -240,7 +250,8 @@ func (n *Node) getServiceByName(name services.Name) (services.Service, error) {
 	return nil, errors.New("service not found")
 }
 
-func (n *Node) Metadata() *services.MetadataService {
+// Metadata returns the metadata service for this node.
+func (n *RPCNode) Metadata() *services.MetadataService {
 	service, err := n.getServiceByName("metadata")
 	if err != nil {
 		// This should never happen. If it does, good luck.
@@ -255,6 +266,70 @@ func (n *Node) Metadata() *services.MetadataService {
 	return svc
 }
 
-func (n *Node) Name() string {
+// Name returns the configured name for this node.
+func (n *RPCNode) Name() string {
 	return n.config.Name
+}
+
+// ChainID returns the chain ID from the metadata service.
+func (n *RPCNode) ChainID() int64 {
+	if meta := n.Metadata(); meta != nil {
+		return meta.ChainID()
+	}
+
+	return 0
+}
+
+// ClientType returns the client type from the metadata service.
+func (n *RPCNode) ClientType() string {
+	if meta := n.Metadata(); meta != nil {
+		return meta.ClientVersion()
+	}
+
+	return ""
+}
+
+// IsSynced returns true if the node is synced.
+func (n *RPCNode) IsSynced() bool {
+	if meta := n.Metadata(); meta != nil {
+		return meta.IsSynced()
+	}
+
+	return false
+}
+
+// BlockNumber returns the current block number.
+func (n *RPCNode) BlockNumber(ctx context.Context) (*uint64, error) {
+	return n.blockNumber(ctx)
+}
+
+// BlockByNumber returns the block at the given number.
+func (n *RPCNode) BlockByNumber(ctx context.Context, number *big.Int) (execution.Block, error) {
+	return n.blockByNumber(ctx, number)
+}
+
+// BlocksByNumbers returns blocks at the given numbers using batch RPC.
+// Returns blocks up to the first not-found (contiguous only).
+func (n *RPCNode) BlocksByNumbers(ctx context.Context, numbers []*big.Int) ([]execution.Block, error) {
+	return n.blocksByNumbers(ctx, numbers)
+}
+
+// BlockReceipts returns all receipts for the block at the given number.
+func (n *RPCNode) BlockReceipts(ctx context.Context, number *big.Int) ([]execution.Receipt, error) {
+	return n.blockReceipts(ctx, number)
+}
+
+// TransactionReceipt returns the receipt for the transaction with the given hash.
+func (n *RPCNode) TransactionReceipt(ctx context.Context, hash string) (execution.Receipt, error) {
+	return n.transactionReceipt(ctx, hash)
+}
+
+// DebugTraceTransaction returns the execution trace for the transaction.
+func (n *RPCNode) DebugTraceTransaction(
+	ctx context.Context,
+	hash string,
+	blockNumber *big.Int,
+	opts execution.TraceOptions,
+) (*execution.TraceTransaction, error) {
+	return n.debugTraceTransaction(ctx, hash, blockNumber, opts)
 }

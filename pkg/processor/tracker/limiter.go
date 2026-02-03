@@ -2,6 +2,7 @@ package tracker
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/sirupsen/logrus"
@@ -21,42 +22,44 @@ type LimiterConfig struct {
 
 // LimiterDeps holds dependencies for the Limiter.
 type LimiterDeps struct {
-	Log            logrus.FieldLogger
-	StateProvider  StateProvider
-	PendingTracker *PendingTracker
-	Network        string
-	Processor      string
+	Log           logrus.FieldLogger
+	StateProvider StateProvider
+	Network       string
+	Processor     string
 }
 
 // Limiter provides shared blocking and completion functionality for processors.
 type Limiter struct {
-	log            logrus.FieldLogger
-	stateProvider  StateProvider
-	pendingTracker *PendingTracker
-	config         LimiterConfig
-	network        string
-	processor      string
+	log           logrus.FieldLogger
+	stateProvider StateProvider
+	config        LimiterConfig
+	network       string
+	processor     string
 }
 
 // NewLimiter creates a new Limiter.
 func NewLimiter(deps *LimiterDeps, config LimiterConfig) *Limiter {
 	return &Limiter{
-		log:            deps.Log,
-		stateProvider:  deps.StateProvider,
-		pendingTracker: deps.PendingTracker,
-		config:         config,
-		network:        deps.Network,
-		processor:      deps.Processor,
+		log:           deps.Log,
+		stateProvider: deps.StateProvider,
+		config:        config,
+		network:       deps.Network,
+		processor:     deps.Processor,
 	}
 }
 
 // IsBlockedByIncompleteBlocks checks if processing should be blocked based on distance
 // from the oldest/newest incomplete block (depending on processing mode).
-// Returns true if blocked, false if processing can proceed.
-func (l *Limiter) IsBlockedByIncompleteBlocks(ctx context.Context, nextBlock uint64, mode string) (bool, error) {
+// Returns: blocked status, blocking block number (if blocked), error.
+// The blocking block number can be used to check if the block is orphaned (no Redis tracking).
+func (l *Limiter) IsBlockedByIncompleteBlocks(
+	ctx context.Context,
+	nextBlock uint64,
+	mode string,
+) (bool, *uint64, error) {
 	// Safe conversion: MaxPendingBlockRange is validated to be > 0 during config validation
 	if l.config.MaxPendingBlockRange <= 0 {
-		return false, nil
+		return false, nil, nil
 	}
 
 	maxPendingBlockRange := uint64(l.config.MaxPendingBlockRange) //nolint:gosec // validated above
@@ -70,7 +73,7 @@ func (l *Limiter) IsBlockedByIncompleteBlocks(ctx context.Context, nextBlock uin
 			ctx, l.network, l.processor, searchMaxBlock,
 		)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 
 		if newestIncomplete != nil && (*newestIncomplete-nextBlock) >= maxPendingBlockRange {
@@ -83,7 +86,7 @@ func (l *Limiter) IsBlockedByIncompleteBlocks(ctx context.Context, nextBlock uin
 
 			common.BlockProcessingSkipped.WithLabelValues(l.network, l.processor, "max_pending_block_range").Inc()
 
-			return true, nil
+			return true, newestIncomplete, nil
 		}
 	} else {
 		// Forwards mode: check distance from oldest incomplete block
@@ -97,7 +100,7 @@ func (l *Limiter) IsBlockedByIncompleteBlocks(ctx context.Context, nextBlock uin
 			ctx, l.network, l.processor, searchMinBlock,
 		)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 
 		if oldestIncomplete != nil && (nextBlock-*oldestIncomplete) >= maxPendingBlockRange {
@@ -110,9 +113,97 @@ func (l *Limiter) IsBlockedByIncompleteBlocks(ctx context.Context, nextBlock uin
 
 			common.BlockProcessingSkipped.WithLabelValues(l.network, l.processor, "max_pending_block_range").Inc()
 
-			return true, nil
+			return true, oldestIncomplete, nil
 		}
 	}
 
-	return false, nil
+	return false, nil, nil
+}
+
+// GetAvailableCapacity returns how many more blocks can be enqueued before hitting
+// the maxPendingBlockRange limit. Returns 0 if at or over capacity.
+func (l *Limiter) GetAvailableCapacity(ctx context.Context, nextBlock uint64, mode string) (int, error) {
+	if l.config.MaxPendingBlockRange <= 0 {
+		// No limit configured, return max capacity
+		return l.config.MaxPendingBlockRange, nil
+	}
+
+	maxPendingBlockRange := uint64(l.config.MaxPendingBlockRange) //nolint:gosec // validated above
+
+	if mode == BACKWARDS_MODE {
+		// Backwards mode: check distance from newest incomplete block
+		searchMaxBlock := nextBlock + maxPendingBlockRange
+
+		newestIncomplete, err := l.stateProvider.GetNewestIncompleteBlock(
+			ctx, l.network, l.processor, searchMaxBlock,
+		)
+		if err != nil {
+			return 0, err
+		}
+
+		if newestIncomplete == nil {
+			// No incomplete blocks, full capacity available
+			return l.config.MaxPendingBlockRange, nil
+		}
+
+		distance := *newestIncomplete - nextBlock
+		if distance >= maxPendingBlockRange {
+			return 0, nil
+		}
+
+		//nolint:gosec // Result is bounded by MaxPendingBlockRange which is an int
+		return int(maxPendingBlockRange - distance), nil
+	}
+
+	// Forwards mode: check distance from oldest incomplete block
+	var searchMinBlock uint64
+	if nextBlock > maxPendingBlockRange {
+		searchMinBlock = nextBlock - maxPendingBlockRange
+	}
+
+	oldestIncomplete, err := l.stateProvider.GetOldestIncompleteBlock(
+		ctx, l.network, l.processor, searchMinBlock,
+	)
+	if err != nil {
+		return 0, err
+	}
+
+	if oldestIncomplete == nil {
+		// No incomplete blocks, full capacity available
+		return l.config.MaxPendingBlockRange, nil
+	}
+
+	distance := nextBlock - *oldestIncomplete
+	if distance >= maxPendingBlockRange {
+		return 0, nil
+	}
+
+	//nolint:gosec // Result is bounded by MaxPendingBlockRange which is an int
+	return int(maxPendingBlockRange - distance), nil
+}
+
+// ValidateBatchWithinLeash ensures a batch of blocks won't exceed the maxPendingBlockRange.
+// Returns an error if the batch would violate the constraint.
+func (l *Limiter) ValidateBatchWithinLeash(ctx context.Context, startBlock uint64, count int, mode string) error {
+	if l.config.MaxPendingBlockRange <= 0 || count <= 0 {
+		return nil
+	}
+
+	// The batch spans from startBlock to startBlock + count - 1
+	// We need to ensure this range doesn't exceed maxPendingBlockRange
+	if count > l.config.MaxPendingBlockRange {
+		return fmt.Errorf("batch size %d exceeds max pending block range %d", count, l.config.MaxPendingBlockRange)
+	}
+
+	// Check available capacity
+	capacity, err := l.GetAvailableCapacity(ctx, startBlock, mode)
+	if err != nil {
+		return fmt.Errorf("failed to get available capacity: %w", err)
+	}
+
+	if count > capacity {
+		return fmt.Errorf("batch size %d exceeds available capacity %d", count, capacity)
+	}
+
+	return nil
 }

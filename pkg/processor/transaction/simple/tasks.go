@@ -2,6 +2,7 @@ package simple
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/big"
 
 	"github.com/hibiken/asynq"
@@ -35,26 +36,39 @@ func (p *ProcessPayload) UnmarshalBinary(data []byte) error {
 	return json.Unmarshal(data, p)
 }
 
+// GenerateTaskID creates a deterministic task ID for deduplication.
+// Format: {processor}:{network}:{blockNum}:block.
+// For block-based processors, we use "block" as the identifier since there's one task per block.
+func GenerateTaskID(network string, blockNumber uint64) string {
+	return fmt.Sprintf("%s:%s:%d:block", ProcessorName, network, blockNumber)
+}
+
 // NewProcessForwardsTask creates a new forwards process task.
-func NewProcessForwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
+// Returns the task, taskID for deduplication, and any error.
+func NewProcessForwardsTask(payload *ProcessPayload) (*asynq.Task, string, error) {
 	payload.ProcessingMode = tracker.FORWARDS_MODE
 
 	data, err := payload.MarshalBinary()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return asynq.NewTask(ProcessForwardsTaskType, data), nil
+	taskID := GenerateTaskID(payload.NetworkName, payload.BlockNumber.Uint64())
+
+	return asynq.NewTask(ProcessForwardsTaskType, data), taskID, nil
 }
 
 // NewProcessBackwardsTask creates a new backwards process task.
-func NewProcessBackwardsTask(payload *ProcessPayload) (*asynq.Task, error) {
+// Returns the task, taskID for deduplication, and any error.
+func NewProcessBackwardsTask(payload *ProcessPayload) (*asynq.Task, string, error) {
 	payload.ProcessingMode = tracker.BACKWARDS_MODE
 
 	data, err := payload.MarshalBinary()
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	return asynq.NewTask(ProcessBackwardsTaskType, data), nil
+	taskID := GenerateTaskID(payload.NetworkName, payload.BlockNumber.Uint64())
+
+	return asynq.NewTask(ProcessBackwardsTaskType, data), taskID, nil
 }

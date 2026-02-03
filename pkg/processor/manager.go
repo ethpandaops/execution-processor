@@ -27,6 +27,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	transaction_simple "github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
+	transaction_structlog_agg "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog_agg"
 	s "github.com/ethpandaops/execution-processor/pkg/state"
 	"github.com/hibiken/asynq"
 	r "github.com/redis/go-redis/v9"
@@ -80,9 +82,8 @@ type Manager struct {
 	network *ethereum.Network
 
 	// Leader election
-	leaderElector    leaderelection.Elector
-	isLeader         bool
-	leadershipChange chan bool
+	leaderElector leaderelection.Elector
+	isLeader      bool
 
 	stopChan         chan struct{}
 	blockProcessStop chan struct{}
@@ -101,6 +102,9 @@ type Manager struct {
 	// Track queue high water marks
 	queueHighWaterMarks map[string]int
 	queueMetricsMutex   sync.RWMutex
+
+	// Backpressure backoff tracking
+	backpressureBackoff time.Duration
 }
 
 func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, state *s.Manager, redis *r.Client, redisPrefix string) (*Manager, error) {
@@ -125,6 +129,7 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 	asynqServer = asynq.NewServer(asynqRedisOpt, asynq.Config{
 		Concurrency:    config.Concurrency,
 		Queues:         queues,
+		StrictPriority: true,
 		LogLevel:       asynq.InfoLevel,
 		Logger:         log,
 		RetryDelayFunc: retryDelayFunc,
@@ -140,7 +145,6 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 		redisPrefix:         redisPrefix,
 		asynqClient:         asynqClient,
 		asynqServer:         asynqServer,
-		leadershipChange:    make(chan bool, 1),
 		stopChan:            make(chan struct{}),
 		blockProcessStop:    make(chan struct{}),
 		queueHighWaterMarks: make(map[string]int),
@@ -149,6 +153,13 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 
 func (m *Manager) Start(ctx context.Context) error {
 	m.log.Info("Starting processor manager")
+
+	// Start state manager (idempotent - safe to call even if already started by server.go).
+	// This ensures ClickHouse connections are established for embedded mode where
+	// the processor is started directly without the server wrapper.
+	if err := m.state.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start state manager: %w", err)
+	}
 
 	// wait for execution node to be healthy
 	node, err := m.pool.WaitForHealthyExecutionNode(ctx)
@@ -160,7 +171,7 @@ func (m *Manager) Start(ctx context.Context) error {
 		return fmt.Errorf("no healthy execution node available")
 	}
 
-	m.network, err = m.pool.GetNetworkByChainID(node.Metadata().ChainID())
+	m.network, err = m.pool.GetNetworkByChainID(node.ChainID())
 	if err != nil {
 		return fmt.Errorf("failed to get network by chain ID: %w", err)
 	}
@@ -209,21 +220,21 @@ func (m *Manager) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to create leader elector: %w", err)
 		}
 
+		// Register callback for guaranteed leadership notification
+		m.leaderElector.OnLeadershipChange(func(ctx context.Context, isLeader bool) {
+			if isLeader {
+				m.handleLeadershipGain(ctx)
+			} else {
+				m.handleLeadershipLoss()
+			}
+		})
+
 		// Start leader election
 		if err := m.leaderElector.Start(ctx); err != nil {
 			return fmt.Errorf("failed to start leader election: %w", err)
 		}
 
-		// Monitor leadership changes
-		m.wg.Add(1)
-
-		go func() {
-			defer m.wg.Done()
-
-			m.monitorLeadership(ctx)
-		}()
-
-		m.log.Debug("Leader election started, monitoring for leadership changes")
+		m.log.Debug("Leader election started with callback-based notification")
 	} else {
 		// If leader election is disabled, always act as leader
 		m.isLeader = true
@@ -430,6 +441,37 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 		m.log.Debug("Transaction simple processor is disabled")
 	}
 
+	// Initialize transaction structlog_agg processor if enabled
+	if m.config.TransactionStructlogAgg.Enabled {
+		m.log.Debug("Transaction structlog_agg processor is enabled, initializing...")
+
+		processor, err := transaction_structlog_agg.New(&transaction_structlog_agg.Dependencies{
+			Log:         m.log.WithField("processor", "transaction_structlog_agg"),
+			Pool:        m.pool,
+			State:       m.state,
+			AsynqClient: m.asynqClient,
+			RedisClient: m.redisClient,
+			Network:     m.network,
+			RedisPrefix: m.redisPrefix,
+		}, &m.config.TransactionStructlogAgg)
+		if err != nil {
+			return fmt.Errorf("failed to create transaction_structlog_agg processor: %w", err)
+		}
+
+		m.processors["transaction_structlog_agg"] = processor
+
+		// Set processing mode from config
+		processor.SetProcessingMode(m.config.Mode)
+
+		m.log.WithField("processor", "transaction_structlog_agg").Info("Initialized processor")
+
+		if err := m.startProcessorWithRetry(ctx, processor, "transaction_structlog_agg"); err != nil {
+			return fmt.Errorf("failed to start transaction_structlog_agg processor: %w", err)
+		}
+	} else {
+		m.log.Debug("Transaction structlog_agg processor is disabled")
+	}
+
 	m.log.WithField("total_processors", len(m.processors)).Info("Completed processor initialization")
 
 	return nil
@@ -478,7 +520,9 @@ func (m *Manager) startProcessorWithRetry(ctx context.Context, processor tracker
 	}
 }
 
-func (m *Manager) processBlocks(ctx context.Context) {
+// processBlocks processes the next block for all registered processors.
+// Returns true if any processor successfully processed a block, false otherwise.
+func (m *Manager) processBlocks(ctx context.Context) bool {
 	m.log.WithField("processor_count", len(m.processors)).Debug("Starting to process blocks")
 
 	// Check if we should skip due to queue backpressure
@@ -488,7 +532,7 @@ func (m *Manager) processBlocks(ctx context.Context) {
 			"max_queue_size": m.config.MaxProcessQueueSize,
 		}).Warn("Skipping block processing due to queue backpressure")
 
-		return
+		return false
 	}
 
 	// Get execution node head for head distance calculation
@@ -500,6 +544,8 @@ func (m *Manager) processBlocks(ctx context.Context) {
 			executionHead = new(big.Int).SetUint64(*latestBlockNum)
 		}
 	}
+
+	workDone := false
 
 	for name, processor := range m.processors {
 		m.log.WithField("processor", name).Debug("Processing next block for processor")
@@ -516,6 +562,8 @@ func (m *Manager) processBlocks(ctx context.Context) {
 
 			common.ProcessorErrors.WithLabelValues(m.network.Name, name, "process_block", "processing").Inc()
 		} else {
+			workDone = true
+
 			// Track processing duration
 			duration := time.Since(startTime)
 
@@ -531,6 +579,8 @@ func (m *Manager) processBlocks(ctx context.Context) {
 		// Update head distance metric (regardless of success/failure to track current distance)
 		m.updateHeadDistanceMetric(ctx, name, executionHead)
 	}
+
+	return workDone
 }
 
 // updateHeadDistanceMetric calculates and updates the head distance metric for a processor.
@@ -575,35 +625,6 @@ func (m *Manager) setupWorkerHandlers() (*asynq.ServeMux, error) {
 	}
 
 	return mux, nil
-}
-
-func (m *Manager) monitorLeadership(ctx context.Context) {
-	m.log.Debug("Started monitoring leadership changes")
-
-	leadershipChan := m.leaderElector.LeadershipChannel()
-
-	for {
-		select {
-		case <-ctx.Done():
-			m.log.Debug("Context cancelled in monitorLeadership")
-
-			return
-		case isLeader, ok := <-leadershipChan:
-			if !ok {
-				m.log.Debug("Leadership channel closed")
-
-				return
-			}
-
-			m.log.WithField("isLeader", isLeader).Debug("Received leadership change event")
-
-			if isLeader {
-				m.handleLeadershipGain(ctx)
-			} else {
-				m.handleLeadershipLoss()
-			}
-		}
-	}
 }
 
 func (m *Manager) handleLeadershipGain(ctx context.Context) {
@@ -681,15 +702,18 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 		m.log.Debug("Context is active, proceeding with block processing")
 	}
 
-	blockTicker := time.NewTicker(m.config.Interval)
 	queueMonitorTicker := time.NewTicker(30 * time.Second) // Monitor queues every 30s
-
-	defer blockTicker.Stop()
 	defer queueMonitorTicker.Stop()
 
+	// Stale block detection ticker
+	staleBlockTicker := time.NewTicker(m.config.StaleBlockDetection.CheckInterval)
+	defer staleBlockTicker.Stop()
+
 	m.log.WithFields(logrus.Fields{
-		"interval":   m.config.Interval,
-		"processors": len(m.processors),
+		"interval":             m.config.Interval,
+		"processors":           len(m.processors),
+		"stale_check_interval": m.config.StaleBlockDetection.CheckInterval,
+		"stale_threshold":      m.config.StaleBlockDetection.StaleThreshold,
 	}).Info("Started block processing loop")
 
 	// Check if we have any processors
@@ -721,22 +745,66 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 			m.log.Info("Block processing stopped")
 
 			return
-		case <-blockTicker.C:
-			// Only process if we're still the leader
-			if m.isLeader {
-				m.log.Debug("Block processing ticker fired")
-				m.processBlocks(ctx)
-			} else {
+		case <-queueMonitorTicker.C:
+			m.log.Debug("Queue monitoring ticker fired")
+			m.startQueueMonitoring(ctx)
+		case <-staleBlockTicker.C:
+			m.log.Debug("Stale block detection ticker fired")
+			m.checkStaleBlocks(ctx)
+		default:
+			if !m.isLeader {
 				m.log.Warn("No longer leader but block processing still running - stopping")
 
 				return
 			}
-		case <-queueMonitorTicker.C:
-			// Monitor queue health
-			m.log.Debug("Queue monitoring ticker fired")
-			m.startQueueMonitoring(ctx)
+
+			workDone := m.processBlocks(ctx)
+
+			if m.config.Interval > 0 {
+				// Fixed interval mode - always sleep the configured duration
+				time.Sleep(m.config.Interval)
+				m.backpressureBackoff = 0 // Reset backoff in fixed interval mode
+			} else if !workDone {
+				// Zero interval mode with no work - exponential backoff with jitter
+				m.backpressureBackoff = m.calculateBackpressureBackoff(m.backpressureBackoff)
+				time.Sleep(m.backpressureBackoff)
+			} else {
+				// Zero interval with work done - reset backoff and loop immediately
+				m.backpressureBackoff = 0
+			}
 		}
 	}
+}
+
+// calculateBackpressureBackoff calculates the next backoff duration using exponential backoff with jitter.
+func (m *Manager) calculateBackpressureBackoff(current time.Duration) time.Duration {
+	var next time.Duration
+
+	if current == 0 {
+		// Start with minimum backoff
+		next = DefaultBackpressureBackoffMin
+	} else {
+		// Double the current backoff (exponential)
+		next = current * 2
+	}
+
+	// Cap at maximum backoff
+	if next > DefaultBackpressureBackoffMax {
+		next = DefaultBackpressureBackoffMax
+	}
+
+	// Add jitter (up to 25% of the backoff duration)
+	//nolint:gosec // G404: Weak RNG is fine for backoff jitter - no security requirement
+	jitter := time.Duration(rand.Float64() * DefaultBackpressureJitterFraction * float64(next))
+	next += jitter
+
+	m.log.WithFields(logrus.Fields{
+		"previous_backoff": current,
+		"next_backoff":     next,
+		"jitter":           jitter,
+	}).Debug("Calculated backpressure backoff")
+
+	return next
 }
 
 // monitorQueues monitors queue health and archived items.
@@ -780,14 +848,19 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 			default:
 			}
 
-			// Only monitor queues that match the current processing mode
+			// Only monitor queues that match the current processing mode or reprocess queue
 			shouldMonitor := false
 
-			switch m.config.Mode {
-			case tracker.FORWARDS_MODE:
-				shouldMonitor = strings.Contains(queue.Name, "forwards")
-			case tracker.BACKWARDS_MODE:
-				shouldMonitor = strings.Contains(queue.Name, "backwards")
+			// Always monitor the reprocess queue (high priority for orphaned/stale blocks)
+			if strings.Contains(queue.Name, "reprocess") {
+				shouldMonitor = true
+			} else {
+				switch m.config.Mode {
+				case tracker.FORWARDS_MODE:
+					shouldMonitor = strings.Contains(queue.Name, "forwards")
+				case tracker.BACKWARDS_MODE:
+					shouldMonitor = strings.Contains(queue.Name, "backwards")
+				}
 			}
 
 			if !shouldMonitor {
@@ -802,6 +875,16 @@ func (m *Manager) monitorQueues(ctx context.Context) {
 			// Queue name is already prefixed from GetQueues()
 			info, err := inspector.GetQueueInfo(queue.Name)
 			if err != nil {
+				// Queue doesn't exist yet (no tasks enqueued) - this is normal for reprocess queue
+				if strings.Contains(err.Error(), "NOT_FOUND") || strings.Contains(err.Error(), "does not exist") {
+					m.log.WithFields(logrus.Fields{
+						"processor": name,
+						"queue":     queue.Name,
+					}).Debug("Queue does not exist yet, skipping monitoring")
+
+					continue
+				}
+
 				m.log.WithError(err).WithFields(logrus.Fields{
 					"processor": name,
 					"queue":     queue.Name,
@@ -902,14 +985,19 @@ func (m *Manager) updateAsynqQueues() error {
 
 	for _, processor := range m.processors {
 		for _, queue := range processor.GetQueues() {
-			// Only register queues that match the current processing mode
+			// Register queues that match the current processing mode or the reprocess queue
 			shouldInclude := false
 
-			switch m.config.Mode {
-			case tracker.FORWARDS_MODE:
-				shouldInclude = strings.Contains(queue.Name, "forwards")
-			case tracker.BACKWARDS_MODE:
-				shouldInclude = strings.Contains(queue.Name, "backwards")
+			// Always include the reprocess queue (high priority for orphaned/stale blocks)
+			if strings.Contains(queue.Name, "reprocess") {
+				shouldInclude = true
+			} else {
+				switch m.config.Mode {
+				case tracker.FORWARDS_MODE:
+					shouldInclude = strings.Contains(queue.Name, "forwards")
+				case tracker.BACKWARDS_MODE:
+					shouldInclude = strings.Contains(queue.Name, "backwards")
+				}
 			}
 
 			if shouldInclude {
@@ -945,6 +1033,7 @@ func (m *Manager) updateAsynqQueues() error {
 	m.asynqServer = asynq.NewServer(asynqRedisOpt, asynq.Config{
 		Concurrency:    m.config.Concurrency,
 		Queues:         queues,
+		StrictPriority: true,
 		LogLevel:       asynq.InfoLevel,
 		Logger:         m.log,
 		RetryDelayFunc: retryDelayFunc,
@@ -1001,21 +1090,33 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 			return true, "context cancelled"
 		default:
 		}
-		// Check all queues based on mode
+		// Check all queues based on mode (including mode-specific reprocess queue)
 		var queuesToCheck []string
 		if m.config.Mode == tracker.FORWARDS_MODE {
 			queuesToCheck = []string{
 				tracker.PrefixedProcessForwardsQueue(name, m.redisPrefix),
+				tracker.PrefixedProcessReprocessForwardsQueue(name, m.redisPrefix),
 			}
 		} else {
 			queuesToCheck = []string{
 				tracker.PrefixedProcessBackwardsQueue(name, m.redisPrefix),
+				tracker.PrefixedProcessReprocessBackwardsQueue(name, m.redisPrefix),
 			}
 		}
 
 		for _, queueName := range queuesToCheck {
 			info, err := inspector.GetQueueInfo(queueName)
 			if err != nil {
+				// Queue doesn't exist yet (no tasks enqueued) - this is normal for reprocess queue
+				if strings.Contains(err.Error(), "NOT_FOUND") || strings.Contains(err.Error(), "does not exist") {
+					m.log.WithFields(logrus.Fields{
+						"processor": name,
+						"queue":     queueName,
+					}).Debug("Queue does not exist yet, skipping backpressure check")
+
+					continue
+				}
+
 				m.log.WithError(err).WithFields(logrus.Fields{
 					"processor": name,
 					"queue":     queueName,
@@ -1070,7 +1171,7 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 // GetQueueName returns the current queue name based on processing mode.
 func (m *Manager) GetQueueName() string {
 	// For now we only have one processor
-	processorName := "transaction-structlog"
+	processorName := "transaction_structlog"
 	if m.config.Mode == tracker.BACKWARDS_MODE {
 		return tracker.PrefixedProcessBackwardsQueue(processorName, m.redisPrefix)
 	}
@@ -1122,6 +1223,13 @@ func (m *Manager) QueueBlockManually(ctx context.Context, processorName string, 
 			return nil, fmt.Errorf("failed to enqueue block task for block %d: %w", blockNumber, err)
 		}
 
+	case *transaction_structlog_agg.Processor:
+		// Enqueue transaction tasks using the processor's method
+		tasksCreated, err = p.EnqueueTransactionTasks(ctx, block)
+		if err != nil {
+			return nil, fmt.Errorf("failed to enqueue tasks for block %d: %w", blockNumber, err)
+		}
+
 	default:
 		return nil, fmt.Errorf("processor %s has unsupported type", processorName)
 	}
@@ -1151,10 +1259,10 @@ func (m *Manager) enqueueSimpleBlockTask(ctx context.Context, p *transaction_sim
 	var err error
 
 	if m.config.Mode == tracker.BACKWARDS_MODE {
-		task, err = transaction_simple.NewProcessBackwardsTask(payload)
+		task, _, err = transaction_simple.NewProcessBackwardsTask(payload)
 		queue = tracker.PrefixedProcessBackwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
 	} else {
-		task, err = transaction_simple.NewProcessForwardsTask(payload)
+		task, _, err = transaction_simple.NewProcessForwardsTask(payload)
 		queue = tracker.PrefixedProcessForwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
 	}
 
@@ -1229,6 +1337,72 @@ func (m *Manager) updateBlocksStoredMetrics(ctx context.Context) {
 		if minBlock != nil && maxBlock != nil {
 			common.BlocksStored.WithLabelValues(m.network.Name, processorName, "min").Set(float64(minBlock.Int64()))
 			common.BlocksStored.WithLabelValues(m.network.Name, processorName, "max").Set(float64(maxBlock.Int64()))
+		}
+	}
+}
+
+// checkStaleBlocks checks for stale blocks across all processors and triggers retries.
+func (m *Manager) checkStaleBlocks(ctx context.Context) {
+	if !m.config.StaleBlockDetection.Enabled {
+		return
+	}
+
+	for processorName, processor := range m.processors {
+		// Check for context cancellation between processors
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		// Get the completion tracker based on processor type
+		var completionTracker *tracker.BlockCompletionTracker
+
+		switch p := processor.(type) {
+		case *transaction_structlog.Processor:
+			completionTracker = p.GetCompletionTracker()
+		case *transaction_simple.Processor:
+			completionTracker = p.GetCompletionTracker()
+		case *transaction_structlog_agg.Processor:
+			completionTracker = p.GetCompletionTracker()
+		default:
+			m.log.WithField("processor", processorName).Warn("Unknown processor type for stale block detection")
+
+			continue
+		}
+
+		if completionTracker == nil {
+			continue
+		}
+
+		staleBlocks, err := completionTracker.GetStaleBlocks(ctx, m.network.Name, processorName, m.config.Mode)
+		if err != nil {
+			m.log.WithError(err).WithField("processor", processorName).Warn("Failed to get stale blocks")
+
+			continue
+		}
+
+		for _, blockNum := range staleBlocks {
+			m.log.WithFields(logrus.Fields{
+				"processor":    processorName,
+				"block_number": blockNum,
+			}).Warn("Stale block detected - clearing for re-processing")
+
+			// Clear the stale block tracking (it will be re-enqueued on next ProcessNextBlock cycle)
+			if clearErr := completionTracker.ClearBlock(ctx, blockNum, m.network.Name, processorName, m.config.Mode); clearErr != nil {
+				m.log.WithError(clearErr).WithFields(logrus.Fields{
+					"processor":    processorName,
+					"block_number": blockNum,
+				}).Error("Failed to clear stale block")
+			}
+		}
+
+		if len(staleBlocks) > 0 {
+			m.log.WithFields(logrus.Fields{
+				"processor":    processorName,
+				"stale_count":  len(staleBlocks),
+				"stale_blocks": staleBlocks,
+			}).Info("Cleared stale blocks for re-processing")
 		}
 	}
 }

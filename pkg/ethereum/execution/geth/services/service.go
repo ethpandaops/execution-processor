@@ -1,3 +1,5 @@
+//go:build !embedded
+
 package services
 
 import "context"

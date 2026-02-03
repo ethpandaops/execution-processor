@@ -22,7 +22,6 @@ func TestProcessor_Creation(t *testing.T) {
 		Config: clickhouse.Config{
 			Addr: "localhost:9000",
 		},
-		ChunkSize: 10000,
 	}
 
 	// Test config validation
@@ -44,7 +43,6 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 				Config: clickhouse.Config{
 					Addr: "localhost:9000",
 				},
-				ChunkSize: 10000,
 			},
 			expectError: false,
 		},
@@ -58,9 +56,8 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 		{
 			name: "missing addr",
 			config: transaction_structlog.Config{
-				Enabled:   true,
-				Table:     "test_table",
-				ChunkSize: 10000,
+				Enabled: true,
+				Table:   "test_table",
 			},
 			expectError: true,
 		},
@@ -71,7 +68,6 @@ func TestProcessor_ConfigValidation(t *testing.T) {
 				Config: clickhouse.Config{
 					Addr: "localhost:9000",
 				},
-				ChunkSize: 10000,
 			},
 			expectError: true,
 		},
@@ -104,7 +100,6 @@ func TestProcessor_ConcurrentConfigValidation(t *testing.T) {
 				Config: clickhouse.Config{
 					Addr: "localhost:9000",
 				},
-				ChunkSize: 10000,
 			}
 			results <- cfg.Validate()
 		}()
@@ -150,16 +145,18 @@ func TestStructlogCountReturn(t *testing.T) {
 			mockTrace.Failed,      // txFailed
 			mockTrace.ReturnValue, // txReturnValue
 			uint32(i),             // index
-			structLog.PC,          // pc
 			structLog.Op,          // op
 			structLog.Gas,         // gas
 			structLog.GasCost,     // gasCost
 			structLog.GasCost,     // gasUsed (simplified)
+			structLog.GasCost,     // gasSelf (simplified)
 			structLog.Depth,       // depth
 			structLog.ReturnData,  // returnData
 			structLog.Refund,      // refund
 			structLog.Error,       // error
 			nil,                   // callTo
+			uint32(0),             // callFrameID
+			[]uint32{},            // callFramePath
 			"test",                // network
 		)
 	}
@@ -228,52 +225,27 @@ func TestMemoryManagement(t *testing.T) {
 			uint64(i), // blockNumber
 			"0x1234567890abcdef1234567890abcdef12345678", // txHash
 			uint32(i%100),   // txIndex
-			21000,           // txGas
+			uint64(21000),   // txGas
 			false,           // txFailed
 			nil,             // txReturnValue
 			uint32(i),       // index
-			uint32(i*2),     // pc
 			"SSTORE",        // op
 			uint64(21000-i), // gas
-			5000,            // gasCost
-			5000,            // gasUsed
-			1,               // depth
+			uint64(5000),    // gasCost
+			uint64(5000),    // gasUsed
+			uint64(5000),    // gasSelf
+			uint64(1),       // depth
 			nil,             // returnData
 			nil,             // refund
 			nil,             // error
 			nil,             // callTo
+			uint32(0),       // callFrameID
+			[]uint32{},      // callFramePath
 			"mainnet",       // network
 		)
 	}
 
 	assert.Equal(t, rowCount, cols.Rows(), "Should have correct row count")
-
-	// Test that chunking calculations work properly
-	const chunkSize = 100
-
-	expectedChunks := (rowCount + chunkSize - 1) / chunkSize
-
-	// Verify chunking logic
-	actualChunks := 0
-
-	for i := 0; i < rowCount; i += chunkSize {
-		actualChunks++
-
-		end := i + chunkSize
-		if end > rowCount {
-			end = rowCount
-		}
-
-		// Verify chunk size constraints
-		chunkLen := end - i
-		if chunkLen <= 0 || chunkLen > chunkSize {
-			t.Errorf("Invalid chunk size: %d (expected 1-%d)", chunkLen, chunkSize)
-		}
-	}
-
-	if actualChunks != expectedChunks {
-		t.Errorf("Expected %d chunks, got %d", expectedChunks, actualChunks)
-	}
 
 	// Reset columns to free memory
 	cols.Reset()
@@ -298,86 +270,6 @@ func TestMemoryManagement(t *testing.T) {
 	}
 }
 
-func TestChunkProcessing(t *testing.T) {
-	tests := []struct {
-		name           string
-		inputSize      int
-		expectedChunks int
-		chunkSize      int
-	}{
-		{
-			name:           "small input",
-			inputSize:      50,
-			expectedChunks: 1,
-			chunkSize:      100,
-		},
-		{
-			name:           "exact chunk size",
-			inputSize:      100,
-			expectedChunks: 1,
-			chunkSize:      100,
-		},
-		{
-			name:           "multiple chunks",
-			inputSize:      250,
-			expectedChunks: 3,
-			chunkSize:      100,
-		},
-		{
-			name:           "large input",
-			inputSize:      1500,
-			expectedChunks: 15,
-			chunkSize:      100,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Test chunking logic using Columns
-			cols := transaction_structlog.NewColumns()
-			now := time.Now()
-
-			// Fill columns with test data
-			for i := 0; i < tt.inputSize; i++ {
-				cols.Append(
-					now, uint64(i), "0xtest", 0, 21000, false, nil,
-					uint32(i), uint32(i), "PUSH1", 20000, 3, 3, 1,
-					nil, nil, nil, nil, "test",
-				)
-			}
-
-			assert.Equal(t, tt.inputSize, cols.Rows(), "Should have correct row count")
-
-			// Calculate expected chunks
-			expectedChunks := (tt.inputSize + tt.chunkSize - 1) / tt.chunkSize
-
-			if expectedChunks != tt.expectedChunks {
-				t.Errorf("Expected %d chunks for %d items, got %d", tt.expectedChunks, tt.inputSize, expectedChunks)
-			}
-
-			// Test that the chunking logic would work correctly
-			chunkCount := 0
-
-			for i := 0; i < tt.inputSize; i += tt.chunkSize {
-				chunkCount++
-
-				end := i + tt.chunkSize
-				if end > tt.inputSize {
-					end = tt.inputSize
-				}
-				// Verify chunk boundaries
-				if end <= i {
-					t.Errorf("Invalid chunk boundaries: start=%d, end=%d", i, end)
-				}
-			}
-
-			if chunkCount != tt.expectedChunks {
-				t.Errorf("Chunking produced %d chunks, expected %d", chunkCount, tt.expectedChunks)
-			}
-		})
-	}
-}
-
 func TestColumnsAppendAndReset(t *testing.T) {
 	cols := transaction_structlog.NewColumns()
 	now := time.Now()
@@ -390,9 +282,9 @@ func TestColumnsAppendAndReset(t *testing.T) {
 	num := uint64(42)
 
 	cols.Append(
-		now, 100, "0xabc", 0, 21000, false, &str,
-		0, 100, "PUSH1", 20000, 3, 3, 1,
-		nil, &num, nil, nil, "mainnet",
+		now, uint64(100), "0xabc", uint32(0), uint64(21000), false, &str,
+		uint32(0), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
+		nil, &num, nil, nil, uint32(0), []uint32{}, "mainnet",
 	)
 
 	assert.Equal(t, 1, cols.Rows())
@@ -400,9 +292,9 @@ func TestColumnsAppendAndReset(t *testing.T) {
 	// Append more rows
 	for i := 0; i < 99; i++ {
 		cols.Append(
-			now, 100, "0xabc", 0, 21000, false, nil,
-			uint32(i+1), 100, "PUSH1", 20000, 3, 3, 1,
-			nil, nil, nil, nil, "mainnet",
+			now, uint64(100), "0xabc", uint32(0), uint64(21000), false, nil,
+			uint32(i+1), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
+			nil, nil, nil, nil, uint32(0), []uint32{}, "mainnet",
 		)
 	}
 
@@ -417,10 +309,10 @@ func TestColumnsInput(t *testing.T) {
 	cols := transaction_structlog.NewColumns()
 	input := cols.Input()
 
-	// Verify all 19 columns are present
-	assert.Len(t, input, 19)
+	// Verify all 21 columns are present
+	assert.Len(t, input, 21)
 	assert.Equal(t, "updated_date_time", input[0].Name)
-	assert.Equal(t, "meta_network_name", input[18].Name)
+	assert.Equal(t, "meta_network_name", input[20].Name)
 }
 
 // Tests from tasks_test.go
@@ -483,13 +375,19 @@ func TestNewProcessForwardsTask(t *testing.T) {
 		Network:          "mainnet",
 	}
 
-	task, err := transaction_structlog.NewProcessForwardsTask(payload)
+	task, taskID, err := transaction_structlog.NewProcessForwardsTask(payload)
 	if err != nil {
 		t.Fatalf("failed to create task: %v", err)
 	}
 
 	if task.Type() != transaction_structlog.ProcessForwardsTaskType {
 		t.Errorf("expected task type %s, got %s", transaction_structlog.ProcessForwardsTaskType, task.Type())
+	}
+
+	// Verify taskID is generated correctly
+	expectedTaskID := transaction_structlog.GenerateTaskID(payload.NetworkName, payload.BlockNumber.Uint64(), payload.TransactionHash)
+	if taskID != expectedTaskID {
+		t.Errorf("expected taskID %s, got %s", expectedTaskID, taskID)
 	}
 
 	// Verify payload can be unmarshaled from task
@@ -518,13 +416,19 @@ func TestNewProcessBackwardsTask(t *testing.T) {
 		Network:          "mainnet",
 	}
 
-	task, err := transaction_structlog.NewProcessBackwardsTask(payload)
+	task, taskID, err := transaction_structlog.NewProcessBackwardsTask(payload)
 	if err != nil {
 		t.Fatalf("failed to create task: %v", err)
 	}
 
 	if task.Type() != transaction_structlog.ProcessBackwardsTaskType {
 		t.Errorf("expected task type %s, got %s", transaction_structlog.ProcessBackwardsTaskType, task.Type())
+	}
+
+	// Verify taskID is generated correctly
+	expectedTaskID := transaction_structlog.GenerateTaskID(payload.NetworkName, payload.BlockNumber.Uint64(), payload.TransactionHash)
+	if taskID != expectedTaskID {
+		t.Errorf("expected taskID %s, got %s", expectedTaskID, taskID)
 	}
 
 	// Verify payload can be unmarshaled from task

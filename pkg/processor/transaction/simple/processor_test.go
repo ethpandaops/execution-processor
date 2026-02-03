@@ -132,10 +132,14 @@ func TestNewProcessForwardsTask(t *testing.T) {
 		NetworkName: "mainnet",
 	}
 
-	task, err := transaction_simple.NewProcessForwardsTask(payload)
+	task, taskID, err := transaction_simple.NewProcessForwardsTask(payload)
 	assert.NoError(t, err)
 	assert.NotNil(t, task)
 	assert.Equal(t, transaction_simple.ProcessForwardsTaskType, task.Type())
+
+	// Verify taskID is generated correctly
+	expectedTaskID := transaction_simple.GenerateTaskID(payload.NetworkName, payload.BlockNumber.Uint64())
+	assert.Equal(t, expectedTaskID, taskID)
 
 	// Verify payload can be unmarshaled from task
 	var unmarshaled transaction_simple.ProcessPayload
@@ -153,10 +157,14 @@ func TestNewProcessBackwardsTask(t *testing.T) {
 		NetworkName: "mainnet",
 	}
 
-	task, err := transaction_simple.NewProcessBackwardsTask(payload)
+	task, taskID, err := transaction_simple.NewProcessBackwardsTask(payload)
 	assert.NoError(t, err)
 	assert.NotNil(t, task)
 	assert.Equal(t, transaction_simple.ProcessBackwardsTaskType, task.Type())
+
+	// Verify taskID is generated correctly
+	expectedTaskID := transaction_simple.GenerateTaskID(payload.NetworkName, payload.BlockNumber.Uint64())
+	assert.Equal(t, expectedTaskID, taskID)
 
 	// Verify payload can be unmarshaled from task
 	var unmarshaled transaction_simple.ProcessPayload
