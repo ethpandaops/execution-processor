@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -19,6 +18,30 @@ const (
 	// DefaultStaleThreshold is the default time after which a block is considered stale.
 	DefaultStaleThreshold = 5 * time.Minute
 )
+
+// trackTaskCompletionScript is a Lua script for atomic task completion tracking.
+// It adds a task to the completed set and returns both the completed count and expected count
+// in a single round trip, ensuring atomicity.
+//
+//nolint:gochecknoglobals // Lua scripts are safely shared across goroutines
+var trackTaskCompletionScript = redis.NewScript(`
+local completedKey = KEYS[1]
+local expectedKey = KEYS[2]
+local taskID = ARGV[1]
+local ttlSeconds = tonumber(ARGV[2])
+
+redis.call('SADD', completedKey, taskID)
+redis.call('EXPIRE', completedKey, ttlSeconds)
+
+local completedCount = redis.call('SCARD', completedKey)
+local expectedStr = redis.call('GET', expectedKey)
+
+if expectedStr == false then
+    return {completedCount, -1}
+end
+
+return {completedCount, tonumber(expectedStr)}
+`)
 
 // BlockCompletionTrackerConfig holds configuration for the BlockCompletionTracker.
 type BlockCompletionTrackerConfig struct {
@@ -95,13 +118,14 @@ func (t *BlockCompletionTracker) metaKey(network, processor, mode string, blockN
 	return fmt.Sprintf("%s:block_meta:%s:%s:%s:%d", t.prefix, processor, network, mode, blockNum)
 }
 
-// metaKeyPattern returns a pattern for scanning block_meta keys.
-func (t *BlockCompletionTracker) metaKeyPattern(network, processor, mode string) string {
+// pendingBlocksKey returns the key for the sorted set of pending blocks.
+// The sorted set uses enqueue timestamps as scores for O(log N) stale detection.
+func (t *BlockCompletionTracker) pendingBlocksKey(network, processor, mode string) string {
 	if t.prefix == "" {
-		return fmt.Sprintf("block_meta:%s:%s:%s:*", processor, network, mode)
+		return fmt.Sprintf("pending_blocks:%s:%s:%s", processor, network, mode)
 	}
 
-	return fmt.Sprintf("%s:block_meta:%s:%s:%s:*", t.prefix, processor, network, mode)
+	return fmt.Sprintf("%s:pending_blocks:%s:%s:%s", t.prefix, processor, network, mode)
 }
 
 // RegisterBlock initializes tracking for a new block.
@@ -116,16 +140,24 @@ func (t *BlockCompletionTracker) RegisterBlock(
 	completedKey := t.completedKey(network, processor, mode, blockNum)
 	expectedKey := t.expectedKey(network, processor, mode, blockNum)
 	metaKey := t.metaKey(network, processor, mode, blockNum)
+	pendingKey := t.pendingBlocksKey(network, processor, mode)
+
+	now := time.Now()
 
 	pipe := t.redis.Pipeline()
 	pipe.Del(ctx, completedKey)                                    // Clear old completions
 	pipe.Set(ctx, expectedKey, expectedCount, DefaultBlockMetaTTL) // Set expected count
 	pipe.HSet(ctx, metaKey, map[string]any{
-		"enqueued_at": time.Now().Unix(),
+		"enqueued_at": now.Unix(),
 		"queue":       queue,
 		"expected":    expectedCount,
 	})
 	pipe.Expire(ctx, metaKey, DefaultBlockMetaTTL)
+	// Add to pending blocks sorted set with timestamp as score for O(log N) stale detection
+	pipe.ZAdd(ctx, pendingKey, redis.Z{
+		Score:  float64(now.Unix()),
+		Member: blockNum,
+	})
 
 	_, err := pipe.Exec(ctx)
 	if err != nil {
@@ -146,6 +178,7 @@ func (t *BlockCompletionTracker) RegisterBlock(
 
 // TrackTaskCompletion records a task completion and checks if block is done.
 // Returns true if all tasks are now complete.
+// Uses a Lua script for atomic completion tracking in a single round trip.
 func (t *BlockCompletionTracker) TrackTaskCompletion(
 	ctx context.Context,
 	taskID string,
@@ -155,25 +188,31 @@ func (t *BlockCompletionTracker) TrackTaskCompletion(
 	completedKey := t.completedKey(network, processor, mode, blockNum)
 	expectedKey := t.expectedKey(network, processor, mode, blockNum)
 
-	// Add to completed set (idempotent - same task completing twice is fine)
-	// Set TTL to ensure cleanup if block never completes
-	pipe := t.redis.Pipeline()
-	pipe.SAdd(ctx, completedKey, taskID)
-	pipe.Expire(ctx, completedKey, DefaultBlockMetaTTL)
-
-	if _, err := pipe.Exec(ctx); err != nil {
-		return false, fmt.Errorf("failed to add task to completed set: %w", err)
-	}
-
-	// Get counts
-	completedCount, err := t.redis.SCard(ctx, completedKey).Result()
+	// Execute Lua script for atomic task completion tracking
+	result, err := trackTaskCompletionScript.Run(ctx, t.redis,
+		[]string{completedKey, expectedKey},
+		taskID, int(DefaultBlockMetaTTL.Seconds()),
+	).Slice()
 	if err != nil {
-		return false, fmt.Errorf("failed to get completed count: %w", err)
+		return false, fmt.Errorf("failed to track task completion: %w", err)
 	}
 
-	expectedStr, err := t.redis.Get(ctx, expectedKey).Result()
-	if err == redis.Nil {
-		// Block not registered - might be old task from before retry, or already cleaned up
+	if len(result) != 2 {
+		return false, fmt.Errorf("unexpected result length from Lua script: %d", len(result))
+	}
+
+	completedCount, ok := result[0].(int64)
+	if !ok {
+		return false, fmt.Errorf("failed to parse completed count from Lua script result")
+	}
+
+	expected, ok := result[1].(int64)
+	if !ok {
+		return false, fmt.Errorf("failed to parse expected count from Lua script result")
+	}
+
+	// -1 indicates block not registered (expected key doesn't exist)
+	if expected == -1 {
 		t.log.WithFields(logrus.Fields{
 			"block_number": blockNum,
 			"task_id":      taskID,
@@ -183,15 +222,6 @@ func (t *BlockCompletionTracker) TrackTaskCompletion(
 		}).Debug("Block not registered for completion tracking (may be old task or already complete)")
 
 		return false, nil
-	}
-
-	if err != nil {
-		return false, fmt.Errorf("failed to get expected count: %w", err)
-	}
-
-	expected, err := strconv.ParseInt(expectedStr, 10, 64)
-	if err != nil {
-		return false, fmt.Errorf("failed to parse expected count: %w", err)
 	}
 
 	t.log.WithFields(logrus.Fields{
@@ -222,8 +252,13 @@ func (t *BlockCompletionTracker) MarkBlockComplete(
 	completedKey := t.completedKey(network, processor, mode, blockNum)
 	expectedKey := t.expectedKey(network, processor, mode, blockNum)
 	metaKey := t.metaKey(network, processor, mode, blockNum)
+	pendingKey := t.pendingBlocksKey(network, processor, mode)
 
-	if err := t.redis.Del(ctx, completedKey, expectedKey, metaKey).Err(); err != nil {
+	pipe := t.redis.Pipeline()
+	pipe.Del(ctx, completedKey, expectedKey, metaKey)
+	pipe.ZRem(ctx, pendingKey, blockNum)
+
+	if _, err := pipe.Exec(ctx); err != nil {
 		// Log but don't fail - keys will expire anyway
 		t.log.WithError(err).WithFields(logrus.Fields{
 			"block_number": blockNum,
@@ -244,45 +279,85 @@ func (t *BlockCompletionTracker) MarkBlockComplete(
 }
 
 // GetStaleBlocks returns blocks that have been processing longer than the stale threshold.
+// Uses ZRANGEBYSCORE on the pending blocks sorted set for O(log N + M) complexity.
 func (t *BlockCompletionTracker) GetStaleBlocks(
 	ctx context.Context,
 	network, processor, mode string,
 ) ([]uint64, error) {
-	pattern := t.metaKeyPattern(network, processor, mode)
-	staleBlocks := make([]uint64, 0)
+	pendingKey := t.pendingBlocksKey(network, processor, mode)
+	staleThreshold := time.Now().Add(-t.config.StaleThreshold).Unix()
 
-	iter := t.redis.Scan(ctx, 0, pattern, 100).Iterator()
-	for iter.Next(ctx) {
-		key := iter.Val()
-
-		enqueuedAtStr, err := t.redis.HGet(ctx, key, "enqueued_at").Result()
-		if err != nil {
-			t.log.WithError(err).WithField("key", key).Debug("Failed to get enqueued_at")
-
-			continue
-		}
-
-		enqueuedAt, err := strconv.ParseInt(enqueuedAtStr, 10, 64)
-		if err != nil {
-			t.log.WithError(err).WithField("key", key).Debug("Failed to parse enqueued_at")
-
-			continue
-		}
-
-		if time.Since(time.Unix(enqueuedAt, 0)) > t.config.StaleThreshold {
-			// Extract block number from key
-			blockNum := extractBlockNumFromKey(key)
-			if blockNum != 0 {
-				staleBlocks = append(staleBlocks, blockNum)
-			}
-		}
+	members, err := t.redis.ZRangeByScore(ctx, pendingKey, &redis.ZRangeBy{
+		Min: "-inf",
+		Max: fmt.Sprintf("%d", staleThreshold),
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get stale blocks: %w", err)
 	}
 
-	if err := iter.Err(); err != nil {
-		return nil, fmt.Errorf("failed to scan for stale blocks: %w", err)
+	staleBlocks := make([]uint64, 0, len(members))
+
+	for _, member := range members {
+		blockNum, err := strconv.ParseUint(member, 10, 64)
+		if err != nil {
+			t.log.WithError(err).WithField("member", member).Debug("Failed to parse block number")
+
+			continue
+		}
+
+		staleBlocks = append(staleBlocks, blockNum)
 	}
 
 	return staleBlocks, nil
+}
+
+// ClearStaleBlocks removes all stale blocks and their associated tracking data.
+// Uses ZRANGEBYSCORE to identify stale blocks and a pipeline to efficiently delete all related keys.
+// Returns the number of blocks cleared.
+func (t *BlockCompletionTracker) ClearStaleBlocks(
+	ctx context.Context,
+	network, processor, mode string,
+) (int, error) {
+	staleBlocks, err := t.GetStaleBlocks(ctx, network, processor, mode)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get stale blocks: %w", err)
+	}
+
+	if len(staleBlocks) == 0 {
+		return 0, nil
+	}
+
+	pendingKey := t.pendingBlocksKey(network, processor, mode)
+	pipe := t.redis.Pipeline()
+
+	// Collect all keys to delete and members to remove from sorted set
+	members := make([]any, 0, len(staleBlocks))
+
+	for _, blockNum := range staleBlocks {
+		completedKey := t.completedKey(network, processor, mode, blockNum)
+		expectedKey := t.expectedKey(network, processor, mode, blockNum)
+		metaKey := t.metaKey(network, processor, mode, blockNum)
+
+		pipe.Del(ctx, completedKey, expectedKey, metaKey)
+
+		members = append(members, blockNum)
+	}
+
+	// Remove all stale blocks from the sorted set in one operation
+	pipe.ZRem(ctx, pendingKey, members...)
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, fmt.Errorf("failed to clear stale blocks: %w", err)
+	}
+
+	t.log.WithFields(logrus.Fields{
+		"count":     len(staleBlocks),
+		"network":   network,
+		"processor": processor,
+		"mode":      mode,
+	}).Debug("Cleared stale blocks")
+
+	return len(staleBlocks), nil
 }
 
 // GetBlockStatus returns the completion status of a block.
@@ -330,8 +405,13 @@ func (t *BlockCompletionTracker) ClearBlock(
 	completedKey := t.completedKey(network, processor, mode, blockNum)
 	expectedKey := t.expectedKey(network, processor, mode, blockNum)
 	metaKey := t.metaKey(network, processor, mode, blockNum)
+	pendingKey := t.pendingBlocksKey(network, processor, mode)
 
-	if err := t.redis.Del(ctx, completedKey, expectedKey, metaKey).Err(); err != nil {
+	pipe := t.redis.Pipeline()
+	pipe.Del(ctx, completedKey, expectedKey, metaKey)
+	pipe.ZRem(ctx, pendingKey, blockNum)
+
+	if _, err := pipe.Exec(ctx); err != nil {
 		return fmt.Errorf("failed to clear block tracking: %w", err)
 	}
 
@@ -343,26 +423,6 @@ func (t *BlockCompletionTracker) ClearBlock(
 	}).Debug("Cleared block tracking data")
 
 	return nil
-}
-
-// extractBlockNumFromKey extracts the block number from a Redis key.
-// Key format: block_meta:{prefix}:{processor}:{network}:{mode}:{blockNum}
-// or: block_meta:{processor}:{network}:{mode}:{blockNum}
-func extractBlockNumFromKey(key string) uint64 {
-	parts := strings.Split(key, ":")
-	if len(parts) < 2 {
-		return 0
-	}
-
-	// Block number is always the last part
-	blockNumStr := parts[len(parts)-1]
-
-	blockNum, err := strconv.ParseUint(blockNumStr, 10, 64)
-	if err != nil {
-		return 0
-	}
-
-	return blockNum
 }
 
 // HasBlockTracking checks if a block has Redis tracking data.
