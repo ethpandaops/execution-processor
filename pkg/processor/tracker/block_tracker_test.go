@@ -14,6 +14,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	testNetwork   = "test_network"
+	testProcessor = "test_processor"
+)
+
 // mockStateProviderForTracker implements StateProvider for testing.
 type mockStateProviderForTracker struct {
 	oldestIncomplete *uint64
@@ -51,7 +56,7 @@ func TestBlockCompletionTracker_HasBlockTracking(t *testing.T) {
 			blockNum: 100,
 			setupRedis: func(mr *miniredis.Miniredis, blockNum uint64) {
 				mr.HSet(
-					fmt.Sprintf("block_meta:test_processor:test_network:forwards:%d", blockNum),
+					fmt.Sprintf("block_meta:%s:%s:%s:%d", testProcessor, testNetwork, FORWARDS_MODE, blockNum),
 					"enqueued_at", fmt.Sprintf("%d", time.Now().Unix()),
 				)
 			},
@@ -69,7 +74,7 @@ func TestBlockCompletionTracker_HasBlockTracking(t *testing.T) {
 			setupRedis: func(mr *miniredis.Miniredis, _ uint64) {
 				// Set up tracking for a DIFFERENT block
 				mr.HSet(
-					"block_meta:test_processor:test_network:forwards:999",
+					fmt.Sprintf("block_meta:%s:%s:%s:999", testProcessor, testNetwork, FORWARDS_MODE),
 					"enqueued_at", fmt.Sprintf("%d", time.Now().Unix()),
 				)
 			},
@@ -81,7 +86,7 @@ func TestBlockCompletionTracker_HasBlockTracking(t *testing.T) {
 			setupRedis: func(mr *miniredis.Miniredis, blockNum uint64) {
 				// Note: prefix is empty in this test, so key format doesn't include prefix
 				mr.HSet(
-					fmt.Sprintf("block_meta:test_processor:test_network:forwards:%d", blockNum),
+					fmt.Sprintf("block_meta:%s:%s:%s:%d", testProcessor, testNetwork, FORWARDS_MODE, blockNum),
 					"enqueued_at", fmt.Sprintf("%d", time.Now().Unix()),
 				)
 			},
@@ -108,7 +113,7 @@ func TestBlockCompletionTracker_HasBlockTracking(t *testing.T) {
 
 			got, err := tracker.HasBlockTracking(
 				context.Background(), tt.blockNum,
-				"test_network", "test_processor", "forwards",
+				testNetwork, testProcessor, FORWARDS_MODE,
 			)
 
 			require.NoError(t, err)
@@ -135,13 +140,13 @@ func TestBlockCompletionTracker_HasBlockTracking_WithPrefix(t *testing.T) {
 	// Set up tracking with prefix
 	blockNum := uint64(100)
 	mr.HSet(
-		fmt.Sprintf("%s:block_meta:test_processor:test_network:forwards:%d", prefix, blockNum),
+		fmt.Sprintf("%s:block_meta:%s:%s:%s:%d", prefix, testProcessor, testNetwork, FORWARDS_MODE, blockNum),
 		"enqueued_at", fmt.Sprintf("%d", time.Now().Unix()),
 	)
 
 	got, err := tracker.HasBlockTracking(
 		context.Background(), blockNum,
-		"test_network", "test_processor", "forwards",
+		testNetwork, testProcessor, FORWARDS_MODE,
 	)
 
 	require.NoError(t, err)
@@ -163,9 +168,9 @@ func TestBlockCompletionTracker_HasBlockTracking_AfterRegisterBlock(t *testing.T
 	)
 
 	blockNum := uint64(100)
-	network := "test_network"
-	processor := "test_processor"
-	mode := "forwards"
+	network := testNetwork
+	processor := testProcessor
+	mode := FORWARDS_MODE
 
 	// Verify block has no tracking initially
 	hasTracking, err := tracker.HasBlockTracking(context.Background(), blockNum, network, processor, mode)
@@ -289,9 +294,9 @@ func TestBlockCompletionTracker_PendingBlocksSortedSet(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	network := "test_network"
-	processor := "test_processor"
-	mode := "forwards"
+	network := testNetwork
+	processor := testProcessor
+	mode := FORWARDS_MODE
 
 	t.Run("RegisterBlock adds to sorted set", func(t *testing.T) {
 		blockNum := uint64(100)
@@ -350,9 +355,9 @@ func TestBlockCompletionTracker_PendingBlocksSortedSet(t *testing.T) {
 
 func TestBlockCompletionTracker_GetStaleBlocks_SortedSet(t *testing.T) {
 	ctx := context.Background()
-	network := "test_network"
-	processor := "test_processor"
-	mode := "forwards"
+	network := testNetwork
+	processor := testProcessor
+	mode := FORWARDS_MODE
 
 	t.Run("returns empty when no blocks registered", func(t *testing.T) {
 		mr, err := miniredis.Run()
@@ -462,9 +467,9 @@ func TestBlockCompletionTracker_TrackTaskCompletion_LuaScript(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	network := "test_network"
-	processor := "test_processor"
-	mode := "forwards"
+	network := testNetwork
+	processor := testProcessor
+	mode := FORWARDS_MODE
 	blockNum := uint64(500)
 
 	t.Run("returns false when block not registered", func(t *testing.T) {
@@ -531,9 +536,9 @@ func TestBlockCompletionTracker_ClearStaleBlocks_Bulk(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	network := "test_network"
-	processor := "test_processor"
-	mode := "forwards"
+	network := testNetwork
+	processor := testProcessor
+	mode := FORWARDS_MODE
 
 	t.Run("returns 0 when no stale blocks", func(t *testing.T) {
 		cleared, err := tracker.ClearStaleBlocks(ctx, network, processor, mode)
@@ -590,9 +595,9 @@ func TestBlockCompletionTracker_LuaScript_Concurrent(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	network := "test_network"
-	processor := "test_processor"
-	mode := "forwards"
+	network := testNetwork
+	processor := testProcessor
+	mode := FORWARDS_MODE
 	blockNum := uint64(700)
 	expectedTasks := 100
 
@@ -655,9 +660,9 @@ func TestBlockCompletionTracker_PendingBlocksKey_WithPrefix(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	network := "test_network"
-	processor := "test_processor"
-	mode := "forwards"
+	network := testNetwork
+	processor := testProcessor
+	mode := FORWARDS_MODE
 	blockNum := uint64(800)
 
 	err = tracker.RegisterBlock(ctx, blockNum, 1, network, processor, mode, "test_queue")

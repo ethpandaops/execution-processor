@@ -6,6 +6,8 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const testProcessorName = "test_processor"
+
 func TestProcessReprocessForwardsQueue(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -212,7 +214,7 @@ func TestPrefixedProcessReprocessBackwardsQueue_EmptyPrefix(t *testing.T) {
 
 func TestQueueConsistency(t *testing.T) {
 	// Ensure all queue functions follow consistent naming conventions
-	processorName := "test_processor"
+	processorName := testProcessorName
 	prefix := "prefix"
 
 	forwardsUnprefixed := ProcessForwardsQueue(processorName)
