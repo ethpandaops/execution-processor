@@ -364,6 +364,45 @@ func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block execution
 	return enqueuedCount + skippedCount, nil
 }
 
+// deleteTaskFromMainQueue attempts to delete a task from the main processing queue.
+// Returns nil if deleted, not found, or active (acceptable to skip active tasks).
+func (p *Processor) deleteTaskFromMainQueue(taskID string) error {
+	if p.asynqInspector == nil {
+		return nil
+	}
+
+	var mainQueue string
+	if p.processingMode == tracker.BACKWARDS_MODE {
+		mainQueue = p.getProcessBackwardsQueue()
+	} else {
+		mainQueue = p.getProcessForwardsQueue()
+	}
+
+	err := p.asynqInspector.DeleteTask(mainQueue, taskID)
+	if err == nil {
+		p.log.WithFields(logrus.Fields{
+			"task_id": taskID,
+			"queue":   mainQueue,
+		}).Debug("Deleted task from main queue before reprocess")
+
+		return nil
+	}
+
+	// Task not found or queue not found - fine, proceed
+	if errors.Is(err, asynq.ErrTaskNotFound) || errors.Is(err, asynq.ErrQueueNotFound) {
+		return nil
+	}
+
+	// Active tasks can't be deleted - that's OK, they'll complete naturally
+	p.log.WithFields(logrus.Fields{
+		"task_id": taskID,
+		"queue":   mainQueue,
+		"error":   err,
+	}).Debug("Could not delete task from main queue (may be active)")
+
+	return nil
+}
+
 // ReprocessBlock re-enqueues tasks for an orphaned block.
 // Used when a block is in ClickHouse (complete=0) but has no Redis tracking.
 // TaskID deduplication ensures no duplicate tasks are created.
@@ -414,6 +453,8 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 
 	var skippedCount int
 
+	var deletedCount int
+
 	for index, tx := range block.Transactions() {
 		payload := &ProcessPayload{
 			BlockNumber:      *block.Number(),
@@ -436,6 +477,11 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 
 		if err != nil {
 			return fmt.Errorf("failed to create task for tx %s: %w", tx.Hash().String(), err)
+		}
+
+		// Try to delete existing task from main queue before re-enqueueing
+		if delErr := p.deleteTaskFromMainQueue(taskID); delErr == nil {
+			deletedCount++
 		}
 
 		// Enqueue to the high-priority reprocess queue
@@ -462,6 +508,7 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 		"expected_count": expectedCount,
 		"enqueued_count": enqueuedCount,
 		"skipped_count":  skippedCount,
+		"deleted_count":  deletedCount,
 		"queue":          queue,
 	}).Info("Reprocessed orphaned block to high-priority queue")
 

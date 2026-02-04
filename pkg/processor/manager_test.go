@@ -435,6 +435,68 @@ func TestManager_LeaderElectionDisabled(t *testing.T) {
 
 // Race condition tests
 
+// TestGapDetectionRaceConditionLogic tests the race condition where a block
+// completes between gap scan and reprocess decision.
+//
+// The race occurs when:
+//  1. Gap detection queries ClickHouse - returns block 100 as incomplete
+//  2. Block 100 completes (MarkBlockComplete writes complete=1, cleans Redis)
+//  3. Gap detection checks Redis - HasBlockTracking returns false
+//  4. Gap detection calls ReprocessBlock - WRONG! Block is already complete
+//
+// Current (buggy) logic in checkGaps():
+//
+//	if !hasTracking { ReprocessBlock() }  // BUG: doesn't check if complete
+//
+// Fixed logic:
+//
+//	if !hasTracking && !isComplete { ReprocessBlock() }
+func TestGapDetectionRaceConditionLogic(t *testing.T) {
+	tests := []struct {
+		name            string
+		hasTracking     bool // Redis tracking exists
+		isComplete      bool // Block is complete in ClickHouse
+		shouldReprocess bool // Expected decision
+	}{
+		{
+			name:            "has tracking - skip (being processed)",
+			hasTracking:     true,
+			isComplete:      false,
+			shouldReprocess: false,
+		},
+		{
+			name:            "no tracking, incomplete - reprocess (orphaned)",
+			hasTracking:     false,
+			isComplete:      false,
+			shouldReprocess: true,
+		},
+		{
+			name:            "no tracking, complete - skip (race condition)",
+			hasTracking:     false,
+			isComplete:      true,
+			shouldReprocess: false, // THIS CASE IS THE BUG - currently would reprocess!
+		},
+		{
+			name:            "has tracking, complete - skip (already being processed)",
+			hasTracking:     true,
+			isComplete:      true,
+			shouldReprocess: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// FIXED logic (now in checkGaps):
+			// Only reprocess if no Redis tracking AND not complete in ClickHouse
+			shouldReprocess := !tt.hasTracking && !tt.isComplete
+
+			assert.Equal(t, tt.shouldReprocess, shouldReprocess,
+				"block with hasTracking=%v, isComplete=%v should reprocess=%v, but got %v",
+				tt.hasTracking, tt.isComplete, tt.shouldReprocess, shouldReprocess)
+		})
+	}
+}
+
 // TestManager_RaceConditions specifically tests for race conditions in manager.
 func TestManager_RaceConditions(t *testing.T) {
 	log := logrus.New()

@@ -246,7 +246,7 @@ func TestGetGaps_ErrorFromGetMinMax(t *testing.T) {
 
 	require.Error(t, err)
 	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "failed to get min stored block")
+	assert.Contains(t, err.Error(), "failed to get min/max stored blocks")
 }
 
 func TestGetGaps_NoBlocksStored(t *testing.T) {
@@ -431,7 +431,9 @@ func TestGetGaps_ScanDurationTracked(t *testing.T) {
 
 func TestGetGaps_RespectsLookbackRange(t *testing.T) {
 	mockProvider := &mockGapStateProvider{
-		// GetMinMaxStoredBlocks should NOT be called when lookbackRange is set
+		// minStoredBlock is always needed now to constrain the search range
+		minStoredBlock:          big.NewInt(50), // Matches the calculated min from lookback
+		maxStoredBlock:          big.NewInt(100),
 		incompleteBlocksInRange: []uint64{75, 80},
 		missingBlocksInRange:    []uint64{77},
 	}
@@ -459,9 +461,12 @@ func TestGetGaps_RespectsLookbackRange(t *testing.T) {
 
 func TestGetGaps_LookbackRangeGreaterThanCurrentBlock(t *testing.T) {
 	// When lookbackRange is greater than currentBlock, minBlock should be 0
+	// but constrained to minStoredBlock
 	mockProvider := &mockGapStateProvider{
 		incompleteBlocksInRange: []uint64{3},
 		missingBlocksInRange:    []uint64{5},
+		minStoredBlock:          big.NewInt(0), // Set min stored to 0 so gaps at 3,5 are valid
+		maxStoredBlock:          big.NewInt(10),
 	}
 
 	limiter := NewLimiter(&LimiterDeps{

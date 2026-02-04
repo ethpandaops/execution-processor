@@ -126,6 +126,9 @@ type BlockProcessor interface {
 	// ProcessBlock processes a single block - fetches, marks enqueued, and enqueues tasks.
 	// This is used for gap filling of missing blocks (blocks with no row in DB).
 	ProcessBlock(ctx context.Context, block execution.Block) error
+
+	// GetCompletionTracker returns the block completion tracker for checking tracking status.
+	GetCompletionTracker() *BlockCompletionTracker
 }
 
 // QueueInfo contains information about a processor queue.

@@ -240,40 +240,51 @@ func (l *Limiter) GetGaps(ctx context.Context, currentBlock uint64, lookbackRang
 		return nil, fmt.Errorf("state provider does not support gap detection")
 	}
 
+	// Get min and max stored blocks to constrain our search range.
+	// We can only find gaps within blocks that have actually been stored.
+	minStored, maxStored, err := gapProvider.GetMinMaxStoredBlocks(ctx, l.network, l.processor)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get min/max stored blocks: %w", err)
+	}
+
+	if minStored == nil || maxStored == nil {
+		// No blocks stored yet
+		return &GapResult{ScanDuration: time.Since(startTime)}, nil
+	}
+
+	// Use the stored max as reference point, not the chain head.
+	// We can only find gaps within data we've actually stored.
+	referenceBlock := maxStored.Uint64()
+
 	var minBlock uint64
 
 	if lookbackRange == 0 {
 		// Unlimited: scan from oldest stored block
-		minStored, _, err := gapProvider.GetMinMaxStoredBlocks(ctx, l.network, l.processor)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get min stored block: %w", err)
-		}
-
-		if minStored == nil {
-			// No blocks stored yet
-			return &GapResult{ScanDuration: time.Since(startTime)}, nil
-		}
-
 		minBlock = minStored.Uint64()
 	} else {
-		// Limited: scan from currentBlock - lookbackRange
-		if currentBlock > lookbackRange {
-			minBlock = currentBlock - lookbackRange
+		// Limited: scan from referenceBlock - lookbackRange
+		if referenceBlock > lookbackRange {
+			minBlock = referenceBlock - lookbackRange
+		}
+
+		// Constrain to actual stored range - can't find gaps before the first stored block
+		if minBlock < minStored.Uint64() {
+			minBlock = minStored.Uint64()
 		}
 	}
 
 	// Calculate maxBlock to exclude the window handled by IsBlockedByIncompleteBlocks.
 	// The limiter already handles blocks within [currentBlock - maxPendingBlockRange, currentBlock],
-	// so we only scan up to (currentBlock - maxPendingBlockRange - 1) to avoid double work.
-	maxBlock := currentBlock
+	// so we only scan up to (referenceBlock - maxPendingBlockRange - 1) to avoid double work.
+	maxBlock := referenceBlock
 
 	if l.config.MaxPendingBlockRange > 0 {
 		exclusionWindow := uint64(l.config.MaxPendingBlockRange) //nolint:gosec // validated in config
 
-		if currentBlock > exclusionWindow {
-			maxBlock = currentBlock - exclusionWindow - 1
+		if referenceBlock > exclusionWindow {
+			maxBlock = referenceBlock - exclusionWindow - 1
 		} else {
-			// Current block is within the exclusion window, nothing to scan
+			// Reference block is within the exclusion window, nothing to scan
 			return &GapResult{ScanDuration: time.Since(startTime)}, nil
 		}
 	}
