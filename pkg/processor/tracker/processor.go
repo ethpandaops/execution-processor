@@ -55,6 +55,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 	"github.com/hibiken/asynq"
 )
 
@@ -121,6 +122,13 @@ type BlockProcessor interface {
 	// Used when a block is in ClickHouse (complete=0) but has no Redis tracking.
 	// This can happen due to Redis TTL expiry, Redis restart, or crashes.
 	ReprocessBlock(ctx context.Context, blockNum uint64) error
+
+	// ProcessBlock processes a single block - fetches, marks enqueued, and enqueues tasks.
+	// This is used for gap filling of missing blocks (blocks with no row in DB).
+	ProcessBlock(ctx context.Context, block execution.Block) error
+
+	// GetCompletionTracker returns the block completion tracker for checking tracking status.
+	GetCompletionTracker() *BlockCompletionTracker
 }
 
 // QueueInfo contains information about a processor queue.

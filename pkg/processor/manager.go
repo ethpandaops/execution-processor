@@ -74,10 +74,11 @@ type Manager struct {
 	processors map[string]tracker.BlockProcessor
 
 	// Redis/Asynq for distributed processing
-	redisClient *r.Client
-	redisPrefix string
-	asynqClient *asynq.Client
-	asynqServer *asynq.Server
+	redisClient    *r.Client
+	redisPrefix    string
+	asynqClient    *asynq.Client
+	asynqServer    *asynq.Server
+	asynqInspector *asynq.Inspector
 
 	network *ethereum.Network
 
@@ -121,6 +122,9 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 	// Initialize Asynq client with its own Redis connection
 	asynqClient := asynq.NewClient(asynqRedisOpt)
 
+	// Initialize Asynq inspector for task management (deletion before reprocessing)
+	asynqInspector := asynq.NewInspector(asynqRedisOpt)
+
 	var asynqServer *asynq.Server
 	// Setup queue priorities dynamically based on processors
 	// This will be populated after processors are initialized
@@ -145,6 +149,7 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 		redisPrefix:         redisPrefix,
 		asynqClient:         asynqClient,
 		asynqServer:         asynqServer,
+		asynqInspector:      asynqInspector,
 		stopChan:            make(chan struct{}),
 		blockProcessStop:    make(chan struct{}),
 		queueHighWaterMarks: make(map[string]int),
@@ -369,6 +374,13 @@ func (m *Manager) Stop(ctx context.Context) error {
 		}
 	}
 
+	// Close Asynq inspector
+	if m.asynqInspector != nil {
+		if err := m.asynqInspector.Close(); err != nil {
+			m.log.WithError(err).Error("Failed to close Asynq inspector")
+		}
+	}
+
 	// Wait for all goroutines to complete
 	m.wg.Wait()
 	m.log.Info("All goroutines stopped")
@@ -384,13 +396,14 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 		m.log.Debug("Transaction structlog processor is enabled, initializing...")
 
 		processor, err := transaction_structlog.New(&transaction_structlog.Dependencies{
-			Log:         m.log.WithField("processor", "transaction_structlog"),
-			Pool:        m.pool,
-			State:       m.state,
-			AsynqClient: m.asynqClient,
-			RedisClient: m.redisClient,
-			Network:     m.network,
-			RedisPrefix: m.redisPrefix,
+			Log:            m.log.WithField("processor", "transaction_structlog"),
+			Pool:           m.pool,
+			State:          m.state,
+			AsynqClient:    m.asynqClient,
+			AsynqInspector: m.asynqInspector,
+			RedisClient:    m.redisClient,
+			Network:        m.network,
+			RedisPrefix:    m.redisPrefix,
 		}, &m.config.TransactionStructlog)
 		if err != nil {
 			return fmt.Errorf("failed to create transaction_structlog processor: %w", err)
@@ -415,13 +428,14 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 		m.log.Debug("Transaction simple processor is enabled, initializing...")
 
 		processor, err := transaction_simple.New(&transaction_simple.Dependencies{
-			Log:         m.log.WithField("processor", "transaction_simple"),
-			Pool:        m.pool,
-			State:       m.state,
-			AsynqClient: m.asynqClient,
-			RedisClient: m.redisClient,
-			Network:     m.network,
-			RedisPrefix: m.redisPrefix,
+			Log:            m.log.WithField("processor", "transaction_simple"),
+			Pool:           m.pool,
+			State:          m.state,
+			AsynqClient:    m.asynqClient,
+			AsynqInspector: m.asynqInspector,
+			RedisClient:    m.redisClient,
+			Network:        m.network,
+			RedisPrefix:    m.redisPrefix,
 		}, &m.config.TransactionSimple)
 		if err != nil {
 			return fmt.Errorf("failed to create transaction_simple processor: %w", err)
@@ -446,13 +460,14 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 		m.log.Debug("Transaction structlog_agg processor is enabled, initializing...")
 
 		processor, err := transaction_structlog_agg.New(&transaction_structlog_agg.Dependencies{
-			Log:         m.log.WithField("processor", "transaction_structlog_agg"),
-			Pool:        m.pool,
-			State:       m.state,
-			AsynqClient: m.asynqClient,
-			RedisClient: m.redisClient,
-			Network:     m.network,
-			RedisPrefix: m.redisPrefix,
+			Log:            m.log.WithField("processor", "transaction_structlog_agg"),
+			Pool:           m.pool,
+			State:          m.state,
+			AsynqClient:    m.asynqClient,
+			AsynqInspector: m.asynqInspector,
+			RedisClient:    m.redisClient,
+			Network:        m.network,
+			RedisPrefix:    m.redisPrefix,
 		}, &m.config.TransactionStructlogAgg)
 		if err != nil {
 			return fmt.Errorf("failed to create transaction_structlog_agg processor: %w", err)
@@ -1417,6 +1432,9 @@ func (m *Manager) checkStaleBlocks(ctx context.Context) {
 }
 
 // checkGaps checks for gaps in block processing across all processors and triggers reprocessing.
+// It detects two types of gaps:
+//   - Incomplete: blocks with a row in DB but complete=0 (use ReprocessBlock)
+//   - Missing: blocks with no row at all (use ProcessBlock)
 func (m *Manager) checkGaps(ctx context.Context) {
 	if !m.config.GapDetection.Enabled {
 		return
@@ -1464,7 +1482,7 @@ func (m *Manager) checkGaps(ctx context.Context) {
 			continue
 		}
 
-		gaps, gapErr := limiter.GetGaps(
+		gapResult, gapErr := limiter.GetGaps(
 			ctx,
 			currentBlock,
 			m.config.GapDetection.LookbackRange,
@@ -1476,22 +1494,107 @@ func (m *Manager) checkGaps(ctx context.Context) {
 			continue
 		}
 
-		if len(gaps) == 0 {
+		// Record scan duration metric
+		common.GapScanDuration.WithLabelValues(m.network.Name, processorName).Observe(gapResult.ScanDuration.Seconds())
+
+		// Record gap counts
+		common.GapsFound.WithLabelValues(m.network.Name, processorName, "incomplete").Set(float64(len(gapResult.Incomplete)))
+		common.GapsFound.WithLabelValues(m.network.Name, processorName, "missing").Set(float64(len(gapResult.Missing)))
+
+		if len(gapResult.Incomplete) > 0 {
+			common.GapsDetected.WithLabelValues(m.network.Name, processorName, "incomplete").Add(float64(len(gapResult.Incomplete)))
+		}
+
+		if len(gapResult.Missing) > 0 {
+			common.GapsDetected.WithLabelValues(m.network.Name, processorName, "missing").Add(float64(len(gapResult.Missing)))
+		}
+
+		totalGaps := len(gapResult.Incomplete) + len(gapResult.Missing)
+		if totalGaps == 0 {
 			continue
 		}
 
 		m.log.WithFields(logrus.Fields{
-			"processor":     processorName,
-			"gap_count":     len(gaps),
-			"current_block": currentBlock,
-		}).Info("Detected gaps, reprocessing")
+			"processor":        processorName,
+			"incomplete_count": len(gapResult.Incomplete),
+			"missing_count":    len(gapResult.Missing),
+			"current_block":    currentBlock,
+		}).Info("Detected gaps, processing")
 
-		for _, gapBlock := range gaps {
+		// Handle INCOMPLETE blocks -> ReprocessBlock (row exists, just stuck)
+		for _, gapBlock := range gapResult.Incomplete {
+			// Skip if block already has active Redis tracking (being processed)
+			hasTracking, trackErr := processor.GetCompletionTracker().HasBlockTracking(
+				ctx, gapBlock, m.network.Name, processorName, m.config.Mode)
+			if trackErr != nil {
+				m.log.WithError(trackErr).WithField("block", gapBlock).Debug("Failed to check block tracking")
+			}
+
+			if hasTracking {
+				m.log.WithFields(logrus.Fields{
+					"processor": processorName,
+					"block":     gapBlock,
+				}).Debug("Skipping incomplete block - already has active Redis tracking")
+
+				continue
+			}
+
+			// Re-verify block is still incomplete in ClickHouse.
+			// This closes a race window where a block completes between
+			// the gap scan query and now (Redis tracking cleaned up).
+			isComplete, completeErr := m.state.IsBlockComplete(ctx, gapBlock, m.network.Name, processorName)
+			if completeErr != nil {
+				m.log.WithError(completeErr).WithField("block", gapBlock).Debug("Failed to verify block complete status")
+			}
+
+			if isComplete {
+				m.log.WithFields(logrus.Fields{
+					"processor": processorName,
+					"block":     gapBlock,
+				}).Debug("Skipping incomplete block - completed during gap scan (race avoided)")
+
+				continue
+			}
+
 			if reprocessErr := processor.ReprocessBlock(ctx, gapBlock); reprocessErr != nil {
 				m.log.WithError(reprocessErr).WithFields(logrus.Fields{
 					"processor": processorName,
 					"block":     gapBlock,
-				}).Warn("Failed to reprocess gap block")
+					"gap_type":  "incomplete",
+				}).Warn("Failed to reprocess incomplete block")
+
+				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "incomplete", "error").Inc()
+			} else {
+				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "incomplete", "success").Inc()
+			}
+		}
+
+		// Handle MISSING blocks -> ProcessBlock (no row, needs full processing)
+		for _, gapBlock := range gapResult.Missing {
+			// Fetch the block first
+			block, fetchErr := node.BlockByNumber(ctx, new(big.Int).SetUint64(gapBlock))
+			if fetchErr != nil {
+				m.log.WithError(fetchErr).WithFields(logrus.Fields{
+					"processor": processorName,
+					"block":     gapBlock,
+					"gap_type":  "missing",
+				}).Warn("Failed to fetch missing block")
+
+				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "error").Inc()
+
+				continue
+			}
+
+			if processErr := processor.ProcessBlock(ctx, block); processErr != nil {
+				m.log.WithError(processErr).WithFields(logrus.Fields{
+					"processor": processorName,
+					"block":     gapBlock,
+					"gap_type":  "missing",
+				}).Warn("Failed to process missing block")
+
+				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "error").Inc()
+			} else {
+				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "success").Inc()
 			}
 		}
 	}

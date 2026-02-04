@@ -719,6 +719,52 @@ func (s *Manager) GetIncompleteBlocksInRange(
 	return blocks, nil
 }
 
+// GetMissingBlocksInRange returns block numbers that have no row in the database.
+// This finds blocks that were never processed, not incomplete blocks.
+// Uses ClickHouse's numbers() function to generate a sequence and NOT IN to find gaps.
+func (s *Manager) GetMissingBlocksInRange(
+	ctx context.Context,
+	network, processor string,
+	minBlock, maxBlock uint64,
+	limit int,
+) ([]uint64, error) {
+	// Use numbers() to generate a sequence from minBlock to maxBlock,
+	// then NOT IN to find blocks that don't exist in storage.
+	// NOTE: We use NOT IN instead of LEFT JOIN + IS NULL because ClickHouse's
+	// UInt64 columns can't be NULL - LEFT JOIN produces 0 instead of NULL for
+	// non-matching rows, which breaks the IS NULL check.
+	query := fmt.Sprintf(`
+		SELECT number AS block_number
+		FROM numbers(%d, %d)
+		WHERE number NOT IN (
+			SELECT DISTINCT block_number
+			FROM %s FINAL
+			WHERE processor = '%s'
+			  AND meta_network_name = '%s'
+			  AND block_number >= %d
+			  AND block_number <= %d
+		)
+		ORDER BY block_number ASC
+		LIMIT %d
+	`, minBlock, maxBlock-minBlock+1, s.storageTable, processor, network,
+		minBlock, maxBlock, limit)
+
+	s.log.WithFields(logrus.Fields{
+		"processor": processor,
+		"network":   network,
+		"min_block": minBlock,
+		"max_block": maxBlock,
+		"limit":     limit,
+	}).Debug("Querying for missing blocks in range")
+
+	blocks, err := s.storageClient.QueryUInt64Slice(ctx, query, "block_number")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get missing blocks in range: %w", err)
+	}
+
+	return blocks, nil
+}
+
 func (s *Manager) GetMinMaxStoredBlocks(ctx context.Context, network, processor string) (minBlock, maxBlock *big.Int, err error) {
 	query := fmt.Sprintf(`
 		SELECT min(block_number) as min, max(block_number) as max
@@ -784,6 +830,40 @@ func (s *Manager) IsBlockRecentlyProcessed(ctx context.Context, blockNumber uint
 	}
 
 	return count != nil && *count > 0, nil
+}
+
+// IsBlockComplete checks if a block is marked complete in ClickHouse.
+// Uses FINAL to get the latest state after ReplacingMergeTree deduplication.
+// This is used to prevent race conditions where a block completes between
+// gap detection scan and the reprocess decision.
+func (s *Manager) IsBlockComplete(ctx context.Context, blockNumber uint64, network, processor string) (bool, error) {
+	query := fmt.Sprintf(`
+		SELECT toUInt64(complete) as complete
+		FROM %s FINAL
+		WHERE processor = '%s'
+		  AND meta_network_name = '%s'
+		  AND block_number = %d
+		LIMIT 1
+	`, s.storageTable, processor, network, blockNumber)
+
+	s.log.WithFields(logrus.Fields{
+		"network":      network,
+		"processor":    processor,
+		"block_number": blockNumber,
+		"table":        s.storageTable,
+	}).Debug("Checking if block is complete")
+
+	complete, err := s.storageClient.QueryUInt64(ctx, query, "complete")
+	if err != nil {
+		return false, fmt.Errorf("failed to check block complete status: %w", err)
+	}
+
+	// No row found = not complete
+	if complete == nil {
+		return false, nil
+	}
+
+	return *complete == 1, nil
 }
 
 // GetHeadDistance calculates the distance between current processing block and the relevant head.

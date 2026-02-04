@@ -24,13 +24,14 @@ var _ tracker.BlockProcessor = (*Processor)(nil)
 
 // Dependencies contains the dependencies needed for the processor.
 type Dependencies struct {
-	Log         logrus.FieldLogger
-	Pool        *ethereum.Pool
-	Network     *ethereum.Network
-	State       *state.Manager
-	AsynqClient *asynq.Client
-	RedisClient *redis.Client
-	RedisPrefix string
+	Log            logrus.FieldLogger
+	Pool           *ethereum.Pool
+	Network        *ethereum.Network
+	State          *state.Manager
+	AsynqClient    *asynq.Client
+	AsynqInspector *asynq.Inspector
+	RedisClient    *redis.Client
+	RedisPrefix    string
 }
 
 // Processor handles simple transaction processing.
@@ -42,6 +43,7 @@ type Processor struct {
 	config         *Config
 	network        *ethereum.Network
 	asynqClient    *asynq.Client
+	asynqInspector *asynq.Inspector
 	processingMode string
 	redisPrefix    string
 
@@ -120,6 +122,7 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 		config:            config,
 		network:           deps.Network,
 		asynqClient:       deps.AsynqClient,
+		asynqInspector:    deps.AsynqInspector,
 		processingMode:    tracker.FORWARDS_MODE, // Default mode
 		redisPrefix:       deps.RedisPrefix,
 		Limiter:           limiter,

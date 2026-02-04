@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"time"
 
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/sirupsen/logrus"
@@ -20,7 +21,15 @@ type StateProvider interface {
 type GapStateProvider interface {
 	StateProvider
 	GetIncompleteBlocksInRange(ctx context.Context, network, processor string, minBlock, maxBlock uint64, limit int) ([]uint64, error)
+	GetMissingBlocksInRange(ctx context.Context, network, processor string, minBlock, maxBlock uint64, limit int) ([]uint64, error)
 	GetMinMaxStoredBlocks(ctx context.Context, network, processor string) (*big.Int, *big.Int, error)
+}
+
+// GapResult contains the results of a gap scan.
+type GapResult struct {
+	Incomplete   []uint64      // Blocks with row but complete=0
+	Missing      []uint64      // Blocks with no row at all
+	ScanDuration time.Duration // Time taken to perform the scan
 }
 
 // LimiterConfig holds configuration for the Limiter.
@@ -216,60 +225,77 @@ func (l *Limiter) ValidateBatchWithinLeash(ctx context.Context, startBlock uint6
 	return nil
 }
 
-// GetGaps returns incomplete blocks outside the maxPendingBlockRange window.
+// GetGaps returns both incomplete and missing blocks outside the maxPendingBlockRange window.
 // If lookbackRange is 0, scans from the oldest stored block.
 // This performs a full-range scan for gap detection, excluding the recent window
 // that is already handled by IsBlockedByIncompleteBlocks.
-func (l *Limiter) GetGaps(ctx context.Context, currentBlock uint64, lookbackRange uint64, limit int) ([]uint64, error) {
+// Returns a GapResult containing:
+//   - Incomplete: blocks with a row in DB but complete=0
+//   - Missing: blocks with no row in DB at all
+func (l *Limiter) GetGaps(ctx context.Context, currentBlock uint64, lookbackRange uint64, limit int) (*GapResult, error) {
+	startTime := time.Now()
+
 	gapProvider, ok := l.stateProvider.(GapStateProvider)
 	if !ok {
 		return nil, fmt.Errorf("state provider does not support gap detection")
 	}
 
+	// Get min and max stored blocks to constrain our search range.
+	// We can only find gaps within blocks that have actually been stored.
+	minStored, maxStored, err := gapProvider.GetMinMaxStoredBlocks(ctx, l.network, l.processor)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get min/max stored blocks: %w", err)
+	}
+
+	if minStored == nil || maxStored == nil {
+		// No blocks stored yet
+		return &GapResult{ScanDuration: time.Since(startTime)}, nil
+	}
+
+	// Use the stored max as reference point, not the chain head.
+	// We can only find gaps within data we've actually stored.
+	referenceBlock := maxStored.Uint64()
+
 	var minBlock uint64
 
 	if lookbackRange == 0 {
 		// Unlimited: scan from oldest stored block
-		minStored, _, err := gapProvider.GetMinMaxStoredBlocks(ctx, l.network, l.processor)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get min stored block: %w", err)
-		}
-
-		if minStored == nil {
-			// No blocks stored yet
-			return nil, nil
-		}
-
 		minBlock = minStored.Uint64()
 	} else {
-		// Limited: scan from currentBlock - lookbackRange
-		if currentBlock > lookbackRange {
-			minBlock = currentBlock - lookbackRange
+		// Limited: scan from referenceBlock - lookbackRange
+		if referenceBlock > lookbackRange {
+			minBlock = referenceBlock - lookbackRange
+		}
+
+		// Constrain to actual stored range - can't find gaps before the first stored block
+		if minBlock < minStored.Uint64() {
+			minBlock = minStored.Uint64()
 		}
 	}
 
 	// Calculate maxBlock to exclude the window handled by IsBlockedByIncompleteBlocks.
 	// The limiter already handles blocks within [currentBlock - maxPendingBlockRange, currentBlock],
-	// so we only scan up to (currentBlock - maxPendingBlockRange - 1) to avoid double work.
-	maxBlock := currentBlock
+	// so we only scan up to (referenceBlock - maxPendingBlockRange - 1) to avoid double work.
+	maxBlock := referenceBlock
 
 	if l.config.MaxPendingBlockRange > 0 {
 		exclusionWindow := uint64(l.config.MaxPendingBlockRange) //nolint:gosec // validated in config
 
-		if currentBlock > exclusionWindow {
-			maxBlock = currentBlock - exclusionWindow - 1
+		if referenceBlock > exclusionWindow {
+			maxBlock = referenceBlock - exclusionWindow - 1
 		} else {
-			// Current block is within the exclusion window, nothing to scan
-			return nil, nil
+			// Reference block is within the exclusion window, nothing to scan
+			return &GapResult{ScanDuration: time.Since(startTime)}, nil
 		}
 	}
 
 	// Ensure minBlock doesn't exceed maxBlock
 	if minBlock > maxBlock {
-		return nil, nil
+		return &GapResult{ScanDuration: time.Since(startTime)}, nil
 	}
 
-	gaps, err := gapProvider.GetIncompleteBlocksInRange(
+	// Get incomplete blocks (have row, complete=0)
+	incomplete, err := gapProvider.GetIncompleteBlocksInRange(
 		ctx, l.network, l.processor,
 		minBlock, maxBlock, limit,
 	)
@@ -277,14 +303,36 @@ func (l *Limiter) GetGaps(ctx context.Context, currentBlock uint64, lookbackRang
 		return nil, fmt.Errorf("failed to get incomplete blocks in range: %w", err)
 	}
 
-	if len(gaps) > 0 {
+	// Calculate remaining limit for missing blocks
+	remainingLimit := limit - len(incomplete)
+
+	var missing []uint64
+
+	if remainingLimit > 0 {
+		missing, err = gapProvider.GetMissingBlocksInRange(
+			ctx, l.network, l.processor,
+			minBlock, maxBlock, remainingLimit,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get missing blocks in range: %w", err)
+		}
+	}
+
+	result := &GapResult{
+		Incomplete:   incomplete,
+		Missing:      missing,
+		ScanDuration: time.Since(startTime),
+	}
+
+	if len(incomplete) > 0 || len(missing) > 0 {
 		l.log.WithFields(logrus.Fields{
-			"min_block": minBlock,
-			"max_block": maxBlock,
-			"gap_count": len(gaps),
-			"first_gap": gaps[0],
+			"min_block":        minBlock,
+			"max_block":        maxBlock,
+			"incomplete_count": len(incomplete),
+			"missing_count":    len(missing),
+			"scan_duration":    result.ScanDuration,
 		}).Debug("Found gaps in block range")
 	}
 
-	return gaps, nil
+	return result, nil
 }

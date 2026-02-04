@@ -138,7 +138,7 @@ func (p *Processor) ProcessNextBlock(ctx context.Context) error {
 
 	// Process each block, stopping on first error
 	for _, block := range blocks {
-		if processErr := p.processBlock(ctx, block); processErr != nil {
+		if processErr := p.ProcessBlock(ctx, block); processErr != nil {
 			return processErr
 		}
 	}
@@ -156,8 +156,9 @@ func (p *Processor) handleBlockNotFound(_ context.Context, nextBlock *big.Int) e
 	return fmt.Errorf("block %s not yet available", nextBlock.String())
 }
 
-// processBlock processes a single block - the core logic extracted from the original ProcessNextBlock.
-func (p *Processor) processBlock(ctx context.Context, block execution.Block) error {
+// ProcessBlock processes a single block - fetches, marks enqueued, and enqueues tasks.
+// This is used for both normal processing and gap filling of missing blocks.
+func (p *Processor) ProcessBlock(ctx context.Context, block execution.Block) error {
 	blockNumber := block.Number()
 
 	p.log.WithFields(logrus.Fields{
@@ -264,6 +265,45 @@ func (p *Processor) processBlock(ctx context.Context, block execution.Block) err
 	return nil
 }
 
+// deleteTaskFromMainQueue attempts to delete a task from the main processing queue.
+// Returns nil if deleted, not found, or active (acceptable to skip active tasks).
+func (p *Processor) deleteTaskFromMainQueue(taskID string) error {
+	if p.asynqInspector == nil {
+		return nil
+	}
+
+	var mainQueue string
+	if p.processingMode == tracker.BACKWARDS_MODE {
+		mainQueue = p.getProcessBackwardsQueue()
+	} else {
+		mainQueue = p.getProcessForwardsQueue()
+	}
+
+	err := p.asynqInspector.DeleteTask(mainQueue, taskID)
+	if err == nil {
+		p.log.WithFields(logrus.Fields{
+			"task_id": taskID,
+			"queue":   mainQueue,
+		}).Debug("Deleted task from main queue before reprocess")
+
+		return nil
+	}
+
+	// Task not found or queue not found - fine, proceed
+	if errors.Is(err, asynq.ErrTaskNotFound) || errors.Is(err, asynq.ErrQueueNotFound) {
+		return nil
+	}
+
+	// Active tasks can't be deleted - that's OK, they'll complete naturally
+	p.log.WithFields(logrus.Fields{
+		"task_id": taskID,
+		"queue":   mainQueue,
+		"error":   err,
+	}).Debug("Could not delete task from main queue (may be active)")
+
+	return nil
+}
+
 // ReprocessBlock re-enqueues tasks for an orphaned block.
 // Used when a block is in ClickHouse (complete=0) but has no Redis tracking.
 // TaskID deduplication ensures no duplicate tasks are created.
@@ -329,6 +369,13 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 		return fmt.Errorf("failed to create task: %w", err)
 	}
 
+	// Try to delete existing task from main queue before re-enqueueing
+	var deletedFromMain bool
+
+	if delErr := p.deleteTaskFromMainQueue(taskID); delErr == nil {
+		deletedFromMain = true
+	}
+
 	// Enqueue to the high-priority reprocess queue
 	err = p.EnqueueTask(ctx, task,
 		asynq.Queue(queue),
@@ -348,9 +395,10 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 	}
 
 	p.log.WithFields(logrus.Fields{
-		"block_number": blockNum,
-		"tx_count":     len(block.Transactions()),
-		"queue":        queue,
+		"block_number":      blockNum,
+		"tx_count":          len(block.Transactions()),
+		"queue":             queue,
+		"deleted_from_main": deletedFromMain,
 	}).Info("Reprocessed orphaned block to high-priority queue")
 
 	return nil
