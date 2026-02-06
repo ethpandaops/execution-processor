@@ -356,12 +356,17 @@ func mapOpcodeToCallType(op string) string {
 // computeIntrinsicGas computes the intrinsic gas for a transaction.
 // This is the gas consumed before EVM execution begins (21000 base + calldata costs).
 //
-// Formula from int_transaction_call_frame.sql:
+// The receiptGas parameter MUST be the post-refund value (what the user pays).
+// This is the value from Receipt.GasUsed / ExecutionResult.ReceiptGasUsed.
 //
-//	IF gas_refund >= receipt_gas / 4 THEN
-//	  intrinsic = receipt_gas * 5 / 4 - gas_cumulative  (refund was capped)
-//	ELSE
-//	  intrinsic = receipt_gas - gas_cumulative + gas_refund  (uncapped)
+// EIP-7778 context: This formula remains correct after EIP-7778. The EIP splits
+// ExecutionResult into ReceiptGasUsed (post-refund) and BlockGasUsed (pre-refund),
+// but the receipt gas semantics that this formula depends on are unchanged.
+//
+// The computed intrinsic gas value does not encode whether the EVM refund cap
+// (EIP-3529: max refund = gasUsed/5) was applied. It is up to the consumer of
+// this data to determine whether the cap was hit, using the gas_refund and
+// gas_used columns.
 func computeIntrinsicGas(gasCumulative, gasRefund, receiptGas uint64) uint64 {
 	if receiptGas == 0 {
 		return 0
