@@ -131,6 +131,10 @@ type Receipt interface {
 	// TxHash returns the transaction hash.
 	TxHash() Hash
 
-	// GasUsed returns the gas used by the transaction.
+	// GasUsed returns the post-refund gas used by the transaction (what the user pays).
+	//
+	// EIP-7778 context: This remains post-refund. The EIP-7778 split between receipt gas
+	// and block gas only affects ExecutionResult at the EVM layer; the Receipt's GasUsed
+	// field and its derivation from CumulativeGasUsed are unchanged.
 	GasUsed() uint64
 }

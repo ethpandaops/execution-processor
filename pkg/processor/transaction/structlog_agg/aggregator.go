@@ -356,6 +356,13 @@ func mapOpcodeToCallType(op string) string {
 // computeIntrinsicGas computes the intrinsic gas for a transaction.
 // This is the gas consumed before EVM execution begins (21000 base + calldata costs).
 //
+// The receiptGas parameter MUST be the post-refund value (what the user pays).
+// This is the value from Receipt.GasUsed / ExecutionResult.ReceiptGasUsed.
+//
+// EIP-7778 context: This formula remains correct after EIP-7778. The EIP splits
+// ExecutionResult into ReceiptGasUsed (post-refund) and BlockGasUsed (pre-refund),
+// but the receipt gas semantics that this formula depends on are unchanged.
+//
 // Formula from int_transaction_call_frame.sql:
 //
 //	IF gas_refund >= receipt_gas / 4 THEN
