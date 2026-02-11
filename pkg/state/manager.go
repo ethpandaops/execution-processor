@@ -299,6 +299,16 @@ func (s *Manager) NextBlocks(
 		return []*big.Int{}, nil
 	}
 
+	// Get limiter max for forwards mode capping
+	var limiterMax *big.Int
+
+	if s.limiterEnabled && mode != tracker.BACKWARDS_MODE {
+		if maxAllowed, err := s.getLimiterMaxBlock(ctx, network); err == nil {
+			limiterMax = maxAllowed
+		}
+		// On error, proceed without limiter cap (same resilience pattern as NextBlock)
+	}
+
 	// Generate sequential block numbers
 	blocks := make([]*big.Int, 0, count)
 	blocks = append(blocks, firstBlock)
@@ -317,6 +327,10 @@ func (s *Manager) NextBlocks(
 			nextBlock = new(big.Int).Add(firstBlock, big.NewInt(int64(i)))
 			// Don't exceed chain head if provided
 			if chainHead != nil && nextBlock.Cmp(chainHead) > 0 {
+				break
+			}
+			// Don't exceed limiter max (beacon chain execution payload limit)
+			if limiterMax != nil && nextBlock.Cmp(limiterMax) > 0 {
 				break
 			}
 		}
