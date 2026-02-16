@@ -82,7 +82,7 @@ func TestFrameAggregator_SingleFrame(t *testing.T) {
 		}
 
 		// For simple opcodes, gasSelf == gasUsed
-		aggregator.ProcessStructlog(execSl, i, 0, framePath, sl.gasUsed, sl.gasUsed, nil, prevSl)
+		aggregator.ProcessStructlog(execSl, i, 0, framePath, sl.gasUsed, sl.gasUsed, nil, prevSl, 0, 0, 0)
 	}
 
 	trace := &execution.TraceTransaction{
@@ -127,14 +127,14 @@ func TestFrameAggregator_NestedCalls(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0)
 
 	// CALL opcode: gasUsed includes child gas, gasSelf is just the CALL overhead
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 5000, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 5000, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	// Frame 1 (child) - depth 2
 	callAddr := testAddress
@@ -143,20 +143,20 @@ func TestFrameAggregator_NestedCalls(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 2,
 		Gas:   5000,
-	}, 2, 1, []uint32{0, 1}, 3, 3, &callAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 2, 1, []uint32{0, 1}, 3, 3, &callAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "RETURN",
 		Depth: 2,
 		Gas:   4997,
-	}, 3, 1, []uint32{0, 1}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 2})
+	}, 3, 1, []uint32{0, 1}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 2}, 0, 0, 0)
 
 	// Back to root frame
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   4997,
-	}, 4, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "RETURN", Depth: 2})
+	}, 4, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "RETURN", Depth: 2}, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    10000,
@@ -200,14 +200,14 @@ func TestFrameAggregator_ErrorCounting(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   1000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "REVERT",
 		Depth: 1,
 		Gas:   997,
 		Error: &errMsg,
-	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    1000,
@@ -382,13 +382,13 @@ func TestFrameAggregator_EOAFrame(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 100, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 100, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	// Synthetic EOA frame (operation = "", depth = 2)
 	eoaAddr := "0xEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAE"
@@ -397,14 +397,14 @@ func TestFrameAggregator_EOAFrame(t *testing.T) {
 		Op:    "", // Empty = synthetic EOA row
 		Depth: 2,
 		Gas:   0,
-	}, 1, 1, []uint32{0, 1}, 0, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, 0, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0)
 
 	// Back to root frame
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   9897,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    10000,
@@ -441,7 +441,7 @@ func TestFrameAggregator_SetRootTargetAddress(t *testing.T) {
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   1000,
-	}, 0, 0, []uint32{0}, 0, 0, nil, nil)
+	}, 0, 0, []uint32{0}, 0, 0, nil, nil, 0, 0, 0)
 
 	// Set root target address (simulating tx.To())
 	rootAddr := testAddress
@@ -477,7 +477,7 @@ func TestFrameAggregator_FailedTransaction_NoRefundButHasIntrinsic(t *testing.T)
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   80000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0)
 
 	// SSTORE that generates a refund
 	aggregator.ProcessStructlog(&execution.StructLog{
@@ -485,7 +485,7 @@ func TestFrameAggregator_FailedTransaction_NoRefundButHasIntrinsic(t *testing.T)
 		Depth:  1,
 		Gas:    79997,
 		Refund: &refundValue, // Refund accumulated
-	}, 1, 0, []uint32{0}, 20000, 20000, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 20000, 20000, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	// Transaction fails with REVERT
 	aggregator.ProcessStructlog(&execution.StructLog{
@@ -494,7 +494,7 @@ func TestFrameAggregator_FailedTransaction_NoRefundButHasIntrinsic(t *testing.T)
 		Gas:    59997,
 		Error:  &errMsg,
 		Refund: &refundValue, // Refund still present but won't be applied
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "SSTORE", Depth: 1})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "SSTORE", Depth: 1}, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    80000,
@@ -533,7 +533,7 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   80000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0)
 
 	// SSTORE that generates a refund
 	aggregator.ProcessStructlog(&execution.StructLog{
@@ -541,7 +541,7 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 		Depth:  1,
 		Gas:    79997,
 		Refund: &refundValue,
-	}, 1, 0, []uint32{0}, 20000, 20000, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 20000, 20000, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	// Successful STOP
 	aggregator.ProcessStructlog(&execution.StructLog{
@@ -549,7 +549,7 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 		Depth:  1,
 		Gas:    59997,
 		Refund: &refundValue,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "SSTORE", Depth: 1})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "SSTORE", Depth: 1}, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    80000,
@@ -592,7 +592,7 @@ func TestFrameAggregator_RevertWithoutOpcodeError(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   50000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0)
 
 	// REVERT opcode with NO error field (realistic behavior)
 	aggregator.ProcessStructlog(&execution.StructLog{
@@ -600,7 +600,7 @@ func TestFrameAggregator_RevertWithoutOpcodeError(t *testing.T) {
 		Depth: 1,
 		Gas:   49997,
 		// Note: NO Error field set - REVERT executes successfully
-	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	// trace.Failed is true because the transaction reverted
 	trace := &execution.TraceTransaction{
@@ -661,7 +661,7 @@ func TestFrameAggregator_PrecompileFrame(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0)
 
 	// CALL to precompile: gasSelf=3100 (100 overhead + 3000 precompile execution).
 	// With precompile gas extraction:
@@ -671,20 +671,20 @@ func TestFrameAggregator_PrecompileFrame(t *testing.T) {
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 3100, 100, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 3100, 100, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	// Synthetic precompile frame (gas = precompileGas = 3000)
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 1, 1, []uint32{0, 1}, 3000, 3000, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, 3000, 3000, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0)
 
 	// Back to root frame
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   6897,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    10000,
@@ -735,26 +735,26 @@ func TestFrameAggregator_PrecompileGasSplitInvariant(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   20000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0)
 
 	// CALL with effectiveGasSelf = overhead
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   19997,
-	}, 1, 0, []uint32{0}, originalGasSelf, overhead, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, originalGasSelf, overhead, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	// Synthetic precompile frame
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 1, 1, []uint32{0, 1}, precompileGas, precompileGas, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, precompileGas, precompileGas, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   14897,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{Gas: 20000, Failed: false}
 	frames := aggregator.Finalize(trace, 10000)
@@ -781,26 +781,26 @@ func TestFrameAggregator_EOAFrameUnchanged(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0)
 
 	// CALL to EOA: gasSelf=100, no precompile gas extraction
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 100, 100, &eoaAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 100, 100, &eoaAddr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	// Synthetic EOA frame (gas = 0)
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 1, 1, []uint32{0, 1}, 0, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, 0, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   9897,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{Gas: 10000, Failed: false}
 	frames := aggregator.Finalize(trace, 5000)
@@ -830,46 +830,46 @@ func TestFrameAggregator_MultiplePrecompileCalls(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   50000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0)
 
 	// First precompile call: ecrecover (gas = 3100 = 100 + 3000)
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   49997,
-	}, 1, 0, []uint32{0}, 3100, 100, &ecrecoverAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 3100, 100, &ecrecoverAddr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	// Synthetic frame for ecrecover
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 1, 1, []uint32{0, 1}, 3000, 3000, &ecrecoverAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, 3000, 3000, &ecrecoverAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0)
 
 	// Some opcodes between the two precompile calls
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   46897,
-	}, 2, 0, []uint32{0}, 3, 3, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 3, 3, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0)
 
 	// Second precompile call: sha256 (gas = 1100 = 100 + 1000)
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STATICCALL",
 		Depth: 1,
 		Gas:   46894,
-	}, 3, 0, []uint32{0}, 1100, 100, &sha256Addr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 3, 0, []uint32{0}, 1100, 100, &sha256Addr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	// Synthetic frame for sha256
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 3, 2, []uint32{0, 2}, 1000, 1000, &sha256Addr, &execution.StructLog{Op: "STATICCALL", Depth: 1})
+	}, 3, 2, []uint32{0, 2}, 1000, 1000, &sha256Addr, &execution.StructLog{Op: "STATICCALL", Depth: 1}, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   45794,
-	}, 4, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 4, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{Gas: 50000, Failed: false}
 	frames := aggregator.Finalize(trace, 30000)
@@ -903,7 +903,7 @@ func TestFrameAggregator_PrecompileGasSelfLessThanOverhead(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0)
 
 	// CALL to precompile with gasSelf=50 (less than overhead=100)
 	// This shouldn't split — effectiveGasSelf stays 50
@@ -911,19 +911,19 @@ func TestFrameAggregator_PrecompileGasSelfLessThanOverhead(t *testing.T) {
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 50, 50, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 50, 50, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0)
 
 	// Synthetic frame with gas=0 (no precompile gas extracted)
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 1, 1, []uint32{0, 1}, 0, 0, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, 0, 0, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   9947,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{Gas: 10000, Failed: false}
 	frames := aggregator.Finalize(trace, 5000)

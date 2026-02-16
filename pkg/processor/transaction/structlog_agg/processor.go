@@ -315,6 +315,11 @@ func (p *Processor) flushRows(ctx context.Context, rows []insertRow) error {
 			row.Frame.MaxDepth,
 			row.Frame.GasRefund,
 			row.Frame.IntrinsicGas,
+			row.Frame.MemWordsSumBefore,
+			row.Frame.MemWordsSumAfter,
+			row.Frame.MemWordsSqSumBefore,
+			row.Frame.MemWordsSqSumAfter,
+			row.Frame.ColdAccessCount,
 			row.Network,
 		)
 	}
