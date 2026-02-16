@@ -8,6 +8,8 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
+const testNonPrecompileAddr = "0x1234567890123456789012345678901234567890"
+
 func TestClassifyColdAccess_Empty(t *testing.T) {
 	result := ClassifyColdAccess(nil, nil, nil)
 	assert.Nil(t, result)
@@ -105,7 +107,7 @@ func TestClassifyColdAccess_CALL_EIP7702(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			addr := "0x1234567890123456789012345678901234567890"
+			addr := testNonPrecompileAddr
 			structlogs := []execution.StructLog{
 				{Op: "STATICCALL", GasCost: tc.gasSelf, Depth: 1, CallToAddress: &addr},
 			}
@@ -118,7 +120,7 @@ func TestClassifyColdAccess_CALL_EIP7702(t *testing.T) {
 
 func TestClassifyColdAccess_CALL_WithValueTransfer(t *testing.T) {
 	// CALL with value transfer: remaining = gasSelf - memExp - 9000.
-	addr := "0x1234567890123456789012345678901234567890"
+	addr := testNonPrecompileAddr
 
 	tests := []struct {
 		name     string
@@ -232,7 +234,7 @@ func TestClassifyColdAccess_NonAccessOpcodes(t *testing.T) {
 func TestClassifyColdAccess_CALL_RPCValueFallback(t *testing.T) {
 	// RPC mode: CallTransfersValue=false but stack[len-3] is non-zero.
 	// Should detect value transfer via stack fallback.
-	addr := "0x1234567890123456789012345678901234567890"
+	addr := testNonPrecompileAddr
 
 	tests := []struct {
 		name     string
@@ -317,7 +319,7 @@ func TestIsPrecompile_ColdAccess(t *testing.T) {
 		{"0x0000000000000000000000000000000000000011", true},
 		{"0x0000000000000000000000000000000000000100", true},
 		{"0x0000000000000000000000000000000000000012", false},
-		{"0x1234567890123456789012345678901234567890", false},
+		{testNonPrecompileAddr, false},
 		{"0x0000000000000000000000000000000000000000", false},
 	}
 

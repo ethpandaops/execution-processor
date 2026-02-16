@@ -107,7 +107,6 @@ func resolveLastInFrame(sl *execution.StructLog) uint32 {
 	}
 
 	// RETURN/REVERT stack layout: [offset, size, ...] (top-of-stack first).
-	// Try embedded ReturnSize field first, then fall back to stack.
 	endBytes := returnEndBytes(sl)
 	if endBytes == 0 {
 		return wb

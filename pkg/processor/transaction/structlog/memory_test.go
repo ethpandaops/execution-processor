@@ -160,6 +160,79 @@ func TestComputeMemoryWords_ReturnNoStack(t *testing.T) {
 	assert.Equal(t, uint32(4), wa[1])
 }
 
+func TestResolveLastInFrame(t *testing.T) {
+	tests := []struct {
+		name     string
+		op       string
+		memSize  uint32
+		stack    *[]string
+		expected uint32
+	}{
+		{
+			name:     "RETURN expands memory",
+			op:       "RETURN",
+			memSize:  64,                   // 2 words before
+			stack:    &[]string{"0", "80"}, // offset=0, size=0x80=128 → ceil(128/32)=4
+			expected: 4,
+		},
+		{
+			name:     "REVERT expands memory",
+			op:       "REVERT",
+			memSize:  32,                    // 1 word before
+			stack:    &[]string{"20", "40"}, // offset=0x20=32, size=0x40=64 → ceil(96/32)=3
+			expected: 3,
+		},
+		{
+			name:     "RETURN no expansion (within existing)",
+			op:       "RETURN",
+			memSize:  128,                  // 4 words before
+			stack:    &[]string{"0", "20"}, // offset=0, size=0x20=32 → ceil(32/32)=1, max(4,1)=4
+			expected: 4,
+		},
+		{
+			name:     "RETURN zero size",
+			op:       "RETURN",
+			memSize:  64,                  // 2 words before
+			stack:    &[]string{"0", "0"}, // offset=0, size=0 → 0, fallback to 2
+			expected: 2,
+		},
+		{
+			name:     "RETURN no stack (embedded mode)",
+			op:       "RETURN",
+			memSize:  96, // 3 words before
+			stack:    nil,
+			expected: 3,
+		},
+		{
+			name:     "STOP (non-RETURN opcode)",
+			op:       "STOP",
+			memSize:  64,                   // 2 words before
+			stack:    &[]string{"0", "80"}, // stack ignored for non-RETURN
+			expected: 2,
+		},
+		{
+			name:     "RETURN offset+size causes expansion",
+			op:       "RETURN",
+			memSize:  0,                       // 0 words before
+			stack:    &[]string{"100", "100"}, // offset=0x100=256, size=0x100=256 → ceil(512/32)=16
+			expected: 16,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sl := &execution.StructLog{
+				Op:         tc.op,
+				MemorySize: tc.memSize,
+				Stack:      tc.stack,
+			}
+
+			result := resolveLastInFrame(sl)
+			assert.Equal(t, tc.expected, result)
+		})
+	}
+}
+
 func TestMemoryExpansionGas_NoExpansion(t *testing.T) {
 	assert.Equal(t, uint64(0), MemoryExpansionGas(5, 5))
 	assert.Equal(t, uint64(0), MemoryExpansionGas(5, 3))
