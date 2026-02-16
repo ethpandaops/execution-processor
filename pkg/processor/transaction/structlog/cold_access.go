@@ -108,32 +108,53 @@ func classifyAccountAccess(gasCost uint64) uint64 {
 }
 
 // classifyCall determines cold access count for CALL-family opcodes.
-// Normalizes gas by subtracting memory expansion and value transfer costs,
-// then uses range-based detection:
-//   - remaining <= 200: 0 cold (warm access, possibly with warm delegation)
-//   - remaining 2600-2700: 1 cold (single cold account access)
-//   - remaining >= 5200: 2 cold (cold account + cold EIP-7702 delegation target)
+//
+// CALL gas (from Erigon's gas_table.go) is composed of several components:
+//
+//	gasSelf = accessCost          (100 warm / 2600 cold)
+//	        + delegationCost      (0 / 100 warm / 2600 cold, EIP-7702 only)
+//	        + memExpansion
+//	        + valueTransfer       (9000 if value > 0, CALL/CALLCODE only)
+//	        + newAccount          (25000 if value > 0 AND target is empty)
+//
+// To isolate the pure access cost (accessCost + delegationCost), we peel off the
+// other components in order. What remains maps to cold count via range-based buckets:
+//
+//	remaining ≤ 200:    0 cold  (100 warm, or 100+100 warm+warm delegation)
+//	2600–2700:          1 cold  (2600 cold, or 100+2600 / 2600+100 mixed)
+//	≥ 5200:             2 cold  (2600+2600 both cold)
+//
+// The buckets are safe because there are >2000 gas gaps between them — no valid
+// combination of EVM gas values can land in the gaps.
+//
+// Note: STATICCALL/DELEGATECALL never transfer value, so value normalization
+// is skipped for them.
 func classifyCall(sl *execution.StructLog, gasSelf, memExp uint64) uint64 {
 	remaining := gasSelf
 
-	// Subtract memory expansion cost.
+	// Step 1: Subtract memory expansion cost.
 	if remaining > memExp {
 		remaining -= memExp
 	} else {
 		remaining = 0
 	}
 
-	// Subtract value transfer cost for CALL/CALLCODE with non-zero value.
-	// Use tracer field if set; otherwise fall back to stack in RPC mode.
+	// Step 2: Subtract value transfer costs (CALL/CALLCODE only).
+	// callHasValue checks the embedded tracer field first, then falls back to
+	// reading the value operand from the RPC stack (stack[len-3]).
 	if (sl.Op == OpcodeCALL || sl.Op == OpcodeCALLCODE) && callHasValue(sl) {
+		// Subtract CallValueTransferGas (9000): always charged when value > 0.
 		if remaining > callValueTransferGas {
 			remaining -= callValueTransferGas
 		} else {
 			remaining = 0
 		}
 
-		// Subtract CallNewAccountGas (25000) if remaining is too large.
-		// This is charged when value > 0 AND the target account is empty.
+		// Subtract CallNewAccountGas (25000): charged when value > 0 AND the
+		// target account is empty (post-Spurious Dragon). We detect this by
+		// checking if remaining is still too large after subtracting value
+		// transfer — if remaining > 5200, there must be a 25000 component
+		// because no combination of access costs alone can exceed 5200.
 		if remaining > 5200 {
 			const callNewAccountGas = 25000
 			if remaining > callNewAccountGas {
@@ -144,12 +165,13 @@ func classifyCall(sl *execution.StructLog, gasSelf, memExp uint64) uint64 {
 		}
 	}
 
-	// Precompile targets are always warm (EIP-2929 pre-warms them).
+	// Precompile targets are always warm (EIP-2929 pre-warms them in the
+	// access list before execution begins).
 	if sl.CallToAddress != nil && IsPrecompile(*sl.CallToAddress) {
 		return 0
 	}
 
-	// Range-based classification.
+	// Step 3: Range-based classification on the remaining pure access cost.
 	if remaining <= 200 {
 		return 0
 	}
@@ -198,18 +220,30 @@ func extCodeCopySize(sl *execution.StructLog) uint32 {
 }
 
 // classifyExtCodeCopy determines cold access count for EXTCODECOPY.
-// Normalizes gas by subtracting memory expansion and copy costs.
+//
+// EXTCODECOPY gas is composed of:
+//
+//	gasSelf = accessCost (100 warm / 2600 cold) + memExpansion + copyCost
+//
+// where copyCost = 3 * ceil(size / 32) — 3 gas per 32-byte word of the requested
+// copy size. The EVM charges based on the requested size, not the actual code
+// length (zero-pads if requested > actual).
+//
+// After subtracting memExpansion and copyCost, remaining >= 2600 indicates cold.
+// Unlike CALL family, EXTCODECOPY has no EIP-7702 delegation interaction, so cold
+// count is always 0 or 1.
 func classifyExtCodeCopy(sl *execution.StructLog, gasSelf, memExp uint64) uint64 {
 	remaining := gasSelf
 
-	// Subtract memory expansion cost.
+	// Step 1: Subtract memory expansion cost.
 	if remaining > memExp {
 		remaining -= memExp
 	} else {
 		remaining = 0
 	}
 
-	// Subtract copy cost: 3 gas per 32-byte word (rounded up).
+	// Step 2: Subtract copy cost. The size operand comes from the embedded tracer
+	// field (ExtCodeCopySize) or the RPC stack (stack[len-4]) as fallback.
 	size := extCodeCopySize(sl)
 	copyWords := (uint64(size) + 31) / 32
 	copyCost := copyWords * wordCopyCost
@@ -220,6 +254,7 @@ func classifyExtCodeCopy(sl *execution.StructLog, gasSelf, memExp uint64) uint64
 		remaining = 0
 	}
 
+	// Step 3: What remains is the pure access cost.
 	if remaining >= coldAccountCost {
 		return 1
 	}
