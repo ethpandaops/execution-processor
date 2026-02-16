@@ -1,6 +1,7 @@
 package structlog
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -9,6 +10,222 @@ import (
 )
 
 const testNonPrecompileAddr = "0x1234567890123456789012345678901234567890"
+
+// ---------------------------------------------------------------------------
+// Helper unit tests
+// ---------------------------------------------------------------------------
+
+func TestIsHexZero(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected bool
+	}{
+		{"empty string", "", true},
+		{"single zero", "0", true},
+		{"multiple zeros", "0000", true},
+		{"with 0x prefix zero", "0x0", true},
+		{"with 0x prefix zeros", "0x0000", true},
+		{"just 0x prefix", "0x", true},
+		{"non-zero single", "1", false},
+		{"non-zero with prefix", "0x1", false},
+		{"non-zero mixed", "0x00ff00", false},
+		{"large non-zero", "de0b6b3a7640000", false},
+		{"trailing non-zero", "00000001", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, isHexZero(tc.input))
+		})
+	}
+}
+
+func TestParseHexUint32(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected uint32
+	}{
+		{"zero", "0", 0},
+		{"zero with prefix", "0x0", 0},
+		{"small value", "0x20", 32},
+		{"max uint32", "0xffffffff", math.MaxUint32},
+		{"overflow clamps", "0x100000000", math.MaxUint32},
+		{"large overflow", "0xdeadbeefdeadbeef", math.MaxUint32},
+		{"empty string", "", 0},
+		{"just prefix", "0x", 0},
+		{"no prefix", "ff", 255},
+		{"malformed", "0xZZZZ", math.MaxUint32},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, parseHexUint32(tc.input))
+		})
+	}
+}
+
+func TestCallHasValue(t *testing.T) {
+	tests := []struct {
+		name               string
+		callTransfersValue bool
+		stack              *[]string
+		expected           bool
+	}{
+		{"embedded true", true, nil, true},
+		{"embedded false no stack", false, nil, false},
+		{"stack non-zero value", false, &[]string{"0", "0", "0", "0", "1", "addr", "gas"}, true},
+		{"stack zero value", false, &[]string{"0", "0", "0", "0", "0", "addr", "gas"}, false},
+		{"stack too short", false, &[]string{"gas", "addr"}, false},
+		{"stack exactly 3", false, &[]string{"1", "addr", "gas"}, true},
+		{"embedded true overrides stack", true, &[]string{"0", "0", "0", "0", "0", "addr", "gas"}, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sl := &execution.StructLog{
+				Op:                 "CALL",
+				CallTransfersValue: tc.callTransfersValue,
+				Stack:              tc.stack,
+			}
+
+			assert.Equal(t, tc.expected, callHasValue(sl))
+		})
+	}
+}
+
+func TestExtCodeCopySize(t *testing.T) {
+	tests := []struct {
+		name     string
+		embedded uint32
+		stack    *[]string
+		expected uint32
+	}{
+		{"embedded non-zero", 128, nil, 128},
+		{"embedded zero with stack", 0, &[]string{"80", "0", "0", "addr"}, 128},
+		{"embedded zero no stack", 0, nil, 0},
+		{"stack too short", 0, &[]string{"80", "0", "addr"}, 0},
+		{"embedded takes priority", 64, &[]string{"80", "0", "0", "addr"}, 64},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sl := &execution.StructLog{
+				Op:              "EXTCODECOPY",
+				ExtCodeCopySize: tc.embedded,
+				Stack:           tc.stack,
+			}
+
+			assert.Equal(t, tc.expected, extCodeCopySize(sl))
+		})
+	}
+}
+
+func TestGetMemExp(t *testing.T) {
+	tests := []struct {
+		name     string
+		slice    []uint64
+		index    int
+		expected uint64
+	}{
+		{"nil slice", nil, 0, 0},
+		{"index in range", []uint64{10, 20, 30}, 1, 20},
+		{"index out of range", []uint64{10, 20}, 5, 0},
+		{"index at boundary", []uint64{10, 20}, 2, 0},
+		{"first element", []uint64{42}, 0, 42},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, getMemExp(tc.slice, tc.index))
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Boundary precision tests
+// ---------------------------------------------------------------------------
+
+func TestClassifySload_Boundaries(t *testing.T) {
+	assert.Equal(t, uint64(0), classifySload(2099), "just below cold threshold")
+	assert.Equal(t, uint64(1), classifySload(2100), "exact cold threshold")
+	assert.Equal(t, uint64(1), classifySload(2101), "just above cold threshold")
+}
+
+func TestClassifySstore_Boundaries(t *testing.T) {
+	// Cold variants are exact matches: 2200, 5000, 22100.
+	assert.Equal(t, uint64(0), classifySstore(2199))
+	assert.Equal(t, uint64(1), classifySstore(2200))
+	assert.Equal(t, uint64(0), classifySstore(2201))
+	assert.Equal(t, uint64(0), classifySstore(4999))
+	assert.Equal(t, uint64(1), classifySstore(5000))
+	assert.Equal(t, uint64(0), classifySstore(5001))
+	assert.Equal(t, uint64(0), classifySstore(22099))
+	assert.Equal(t, uint64(1), classifySstore(22100))
+	assert.Equal(t, uint64(0), classifySstore(22101))
+}
+
+func TestClassifyAccountAccess_Boundaries(t *testing.T) {
+	assert.Equal(t, uint64(0), classifyAccountAccess(2599), "just below cold threshold")
+	assert.Equal(t, uint64(1), classifyAccountAccess(2600), "exact cold threshold")
+	assert.Equal(t, uint64(1), classifyAccountAccess(2601), "just above cold threshold")
+}
+
+func TestClassifyCall_Boundaries(t *testing.T) {
+	addr := testNonPrecompileAddr
+
+	tests := []struct {
+		name     string
+		gasSelf  uint64
+		expected uint64
+	}{
+		{"at 200 boundary (warm)", 200, 0},
+		{"at 201 (gap)", 201, 0},
+		{"at 2599 (gap)", 2599, 0},
+		{"at 2600 (cold single)", 2600, 1},
+		{"at 5199 (cold single)", 5199, 1},
+		{"at 5200 (cold double)", 5200, 2},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sl := &execution.StructLog{Op: "STATICCALL", CallToAddress: &addr}
+			assert.Equal(t, tc.expected, classifyCall(sl, tc.gasSelf, 0))
+		})
+	}
+}
+
+func TestClassifyCall_MemExpAndValueCombined(t *testing.T) {
+	// gasSelf=11900, memExp=200, value transfer=9000 → remaining = 11900-200-9000 = 2700 → cold.
+	addr := testNonPrecompileAddr
+	sl := &execution.StructLog{Op: "CALL", CallToAddress: &addr, CallTransfersValue: true}
+
+	assert.Equal(t, uint64(1), classifyCall(sl, 11900, 200))
+}
+
+func TestClassifyExtCodeCopy_Boundaries(t *testing.T) {
+	// Boundary: remaining must be >= 2600 after subtracting memExp and copyCost.
+	// gasSelf=2603, copyCost=3 (1 word) → remaining = 2603-3 = 2600 → cold.
+	sl32 := &execution.StructLog{Op: "EXTCODECOPY", ExtCodeCopySize: 32}
+	assert.Equal(t, uint64(1), classifyExtCodeCopy(sl32, 2603, 0))
+
+	// gasSelf=2602, copyCost=3 → remaining = 2599 → warm.
+	assert.Equal(t, uint64(0), classifyExtCodeCopy(sl32, 2602, 0))
+
+	// memExp exceeds gasSelf → remaining saturates to 0 → warm.
+	assert.Equal(t, uint64(0), classifyExtCodeCopy(sl32, 100, 500))
+}
+
+func TestClassifySelfdestruct_Boundaries(t *testing.T) {
+	// Exact matches only.
+	assert.Equal(t, uint64(0), classifySelfdestruct(7599))
+	assert.Equal(t, uint64(1), classifySelfdestruct(7600))
+	assert.Equal(t, uint64(0), classifySelfdestruct(7601))
+	assert.Equal(t, uint64(0), classifySelfdestruct(32599))
+	assert.Equal(t, uint64(1), classifySelfdestruct(32600))
+	assert.Equal(t, uint64(0), classifySelfdestruct(32601))
+}
 
 func TestClassifyColdAccess_Empty(t *testing.T) {
 	result := ClassifyColdAccess(nil, nil, nil)

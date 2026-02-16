@@ -1,6 +1,7 @@
 package structlog
 
 import (
+	"math"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -8,6 +9,100 @@ import (
 
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
+
+// ---------------------------------------------------------------------------
+// Helper unit tests
+// ---------------------------------------------------------------------------
+
+func TestParseHexUint64(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected uint64
+	}{
+		{"zero", "0", 0},
+		{"zero with prefix", "0x0", 0},
+		{"small value", "0x20", 32},
+		{"large value", "0xde0b6b3a7640000", 1000000000000000000},
+		{"max uint64", "0xffffffffffffffff", math.MaxUint64},
+		{"overflow returns 0", "0x10000000000000000", 0},
+		{"empty string", "", 0},
+		{"just prefix", "0x", 0},
+		{"no prefix", "ff", 255},
+		{"malformed", "0xZZZZ", 0},
+		{"single char", "a", 10},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.expected, parseHexUint64(tc.input))
+		})
+	}
+}
+
+func TestReturnEndBytes(t *testing.T) {
+	tests := []struct {
+		name     string
+		stack    *[]string
+		expected uint32
+	}{
+		{"nil stack", nil, 0},
+		{"stack too short", &[]string{"100"}, 0},
+		{"zero offset+size", &[]string{"0", "0"}, 0},
+		{"simple case", &[]string{"0", "80"}, 128},
+		{"offset+size", &[]string{"20", "40"}, 96},
+		{"large offset+size", &[]string{"100", "100"}, 512},
+		{"offset overflow clamps", &[]string{"ffffffffffffffff", "1"}, math.MaxUint32},
+		{"size overflow clamps", &[]string{"1", "ffffffffffffffff"}, math.MaxUint32},
+		{"both max clamps", &[]string{"ffffffffffffffff", "ffffffffffffffff"}, math.MaxUint32},
+		{"exactly max uint32", &[]string{"0", "ffffffff"}, math.MaxUint32},
+		{"stack with extra elements", &[]string{"0", "0", "0", "20", "40"}, 96},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sl := &execution.StructLog{
+				Op:    "RETURN",
+				Stack: tc.stack,
+			}
+
+			assert.Equal(t, tc.expected, returnEndBytes(sl))
+		})
+	}
+}
+
+func TestComputeMemoryWords_SingleOpcode(t *testing.T) {
+	// Single opcode trace: wordsBefore from MemorySize, wordsAfter = wordsBefore.
+	structlogs := []execution.StructLog{
+		{Op: "STOP", Depth: 1, MemorySize: 64},
+	}
+
+	wb, wa := ComputeMemoryWords(structlogs)
+	require.NotNil(t, wb)
+	assert.Equal(t, uint32(2), wb[0])
+	assert.Equal(t, uint32(2), wa[0])
+}
+
+func TestComputeMemoryWords_NestedDepthReturn(t *testing.T) {
+	// depth 1 -> 2 -> 3 -> 2 -> 1, RETURN at depth 3 expands memory.
+	stack3 := []string{"0", "100"} // offset=0, size=0x100=256
+
+	structlogs := []execution.StructLog{
+		{Op: "CALL", Depth: 1, MemorySize: 32},                   // 1 word
+		{Op: "CALL", Depth: 2, MemorySize: 0},                    // 0 words
+		{Op: "MSTORE", Depth: 3, MemorySize: 0},                  // 0 words
+		{Op: "RETURN", Depth: 3, MemorySize: 64, Stack: &stack3}, // 2 words, return needs 8
+		{Op: "STOP", Depth: 2, MemorySize: 0},                    // back to depth 2
+		{Op: "STOP", Depth: 1, MemorySize: 32},                   // back to depth 1
+	}
+
+	wb, wa := ComputeMemoryWords(structlogs)
+	require.NotNil(t, wb)
+
+	// Op 3 (RETURN, last at depth 3): wordsBefore=2, wordsAfter=ceil(256/32)=8.
+	assert.Equal(t, uint32(2), wb[3])
+	assert.Equal(t, uint32(8), wa[3])
+}
 
 func TestComputeMemoryWords_Empty(t *testing.T) {
 	wb, wa := ComputeMemoryWords(nil)
