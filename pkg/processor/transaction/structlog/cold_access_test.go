@@ -365,6 +365,41 @@ func TestClassifyColdAccess_CALL_WithValueTransfer(t *testing.T) {
 	}
 }
 
+func TestClassifyColdAccess_CALL_NewAccountSubtraction(t *testing.T) {
+	// CALL with value > 0 to empty account: gasSelf includes 25000 CallNewAccountGas.
+	// After subtracting memExp and 9000, if remaining > 5200, subtract 25000.
+	addr := testNonPrecompileAddr
+
+	tests := []struct {
+		name     string
+		gasSelf  uint64
+		expected uint64
+	}{
+		// 34100 - 9000 = 25100 (> 5200 → subtract 25000) = 100 → warm
+		{"warm new account", 34100, 0},
+		// 36600 - 9000 = 27600 (> 5200 → subtract 25000) = 2600 → 1 cold
+		{"cold new account", 36600, 1},
+		// 59200 - 9000 = 50200 (> 5200 → subtract 25000) = 25200 → still > 5200 but this
+		// shouldn't happen in practice. The remaining 25200 exceeds all classification
+		// ranges, so it falls into >= 5200 → 2.
+		{"double cold new account (theoretical)", 59200, 2},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			structlogs := []execution.StructLog{
+				{
+					Op: "CALL", GasCost: tc.gasSelf, Depth: 1,
+					CallToAddress: &addr, CallTransfersValue: true,
+				},
+			}
+
+			result := ClassifyColdAccess(structlogs, []uint64{tc.gasSelf}, nil)
+			assert.Equal(t, tc.expected, result[0])
+		})
+	}
+}
+
 func TestClassifyColdAccess_CALL_Precompile(t *testing.T) {
 	// Precompile targets are always warm.
 	precompileAddr := "0x0000000000000000000000000000000000000001"

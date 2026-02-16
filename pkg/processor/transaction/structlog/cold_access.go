@@ -14,7 +14,8 @@ const (
 	coldSloadCost   = 2100
 	coldAccountCost = 2600
 
-	// CALL value transfer adds 9000 gas (6700 stipend + 2300 callValueTransferGas).
+	// CALL value transfer: charged when CALL/CALLCODE transfers non-zero ETH.
+	// The 2300 CallStipend is added to the callee's gas, NOT subtracted from the caller's cost.
 	callValueTransferGas = 9000
 
 	// Minimum word copy cost for EXTCODECOPY (3 gas per word).
@@ -109,9 +110,9 @@ func classifyAccountAccess(gasCost uint64) uint64 {
 // classifyCall determines cold access count for CALL-family opcodes.
 // Normalizes gas by subtracting memory expansion and value transfer costs,
 // then uses range-based detection:
-//   - remaining <= 200: 0 cold (warm, possibly with stipend adjustments)
+//   - remaining <= 200: 0 cold (warm access, possibly with warm delegation)
 //   - remaining 2600-2700: 1 cold (single cold account access)
-//   - remaining >= 5200: 2 cold (cold account + cold value transfer to new account)
+//   - remaining >= 5200: 2 cold (cold account + cold EIP-7702 delegation target)
 func classifyCall(sl *execution.StructLog, gasSelf, memExp uint64) uint64 {
 	remaining := gasSelf
 
@@ -129,6 +130,17 @@ func classifyCall(sl *execution.StructLog, gasSelf, memExp uint64) uint64 {
 			remaining -= callValueTransferGas
 		} else {
 			remaining = 0
+		}
+
+		// Subtract CallNewAccountGas (25000) if remaining is too large.
+		// This is charged when value > 0 AND the target account is empty.
+		if remaining > 5200 {
+			const callNewAccountGas = 25000
+			if remaining > callNewAccountGas {
+				remaining -= callNewAccountGas
+			} else {
+				remaining = 0
+			}
 		}
 	}
 
