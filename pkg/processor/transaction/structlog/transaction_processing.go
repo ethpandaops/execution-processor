@@ -100,9 +100,9 @@ var precompileAddresses = map[string]bool{
 	"0x0000000000000000000000000000000000000100": true, // p256Verify (EIP-7212, Osaka)
 }
 
-// isPrecompile returns true if the address is a known EVM precompile.
+// IsPrecompile returns true if the address is a known EVM precompile.
 // Precompile calls don't appear in trace_transaction results (unlike EOA calls which do).
-func isPrecompile(addr string) bool {
+func IsPrecompile(addr string) bool {
 	// Normalize to lowercase with 0x prefix and full 40 hex chars
 	hex := strings.TrimPrefix(strings.ToLower(addr), "0x")
 
@@ -237,7 +237,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 			if i+1 < totalCount {
 				// Next opcode exists - check if depth stayed the same
 				nextDepth := trace.Structlogs[i+1].Depth
-				if nextDepth == sl.Depth && !isPrecompile(*callToAddr) {
+				if nextDepth == sl.Depth && !IsPrecompile(*callToAddr) {
 					isEOACall = true
 				}
 			}
@@ -566,7 +566,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 					// Depth decrease = call returned/failed (not EOA)
 					// Depth same = called EOA or precompile (immediate return)
 					nextDepth := trace.Structlogs[i+1].Depth
-					if nextDepth == structLog.Depth && !isPrecompile(*callToAddr) {
+					if nextDepth == structLog.Depth && !IsPrecompile(*callToAddr) {
 						isEOACall = true
 					}
 				}

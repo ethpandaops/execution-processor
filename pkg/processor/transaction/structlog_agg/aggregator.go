@@ -25,6 +25,13 @@ type CallFrameRow struct {
 	MaxDepth          uint32  // Per-opcode: MAX(depth); summary: same as Depth
 	GasRefund         *uint64 // Root frame only (max refund from trace)
 	IntrinsicGas      *uint64 // Root frame only (computed)
+
+	// Resource gas building blocks.
+	MemWordsSumBefore   uint64
+	MemWordsSumAfter    uint64
+	MemWordsSqSumBefore uint64
+	MemWordsSqSumAfter  uint64
+	ColdAccessCount     uint64
 }
 
 // OpcodeStats tracks gas and count for a specific opcode within a frame.
@@ -35,6 +42,13 @@ type OpcodeStats struct {
 	ErrorCount    uint64
 	MinDepth      uint32
 	MaxDepth      uint32
+
+	// Resource gas building blocks for decomposing gas into categories.
+	MemWordsSumBefore   uint64 // SUM(memory_words_before)
+	MemWordsSumAfter    uint64 // SUM(memory_words_after)
+	MemWordsSqSumBefore uint64 // SUM(memory_words_before²)
+	MemWordsSqSumAfter  uint64 // SUM(memory_words_after²)
+	ColdCount           uint64 // Number of cold accesses
 }
 
 // FrameAccumulator tracks data for a single frame during processing.
@@ -80,6 +94,9 @@ func NewFrameAggregator() *FrameAggregator {
 //   - gasSelf: Pre-computed gas used excluding child frame gas
 //   - callToAddr: Target address for CALL/CREATE opcodes (nil otherwise)
 //   - prevStructlog: Previous structlog (for detecting frame entry via CALL/CREATE)
+//   - memWordsBefore: Memory words before this opcode (0 if unavailable)
+//   - memWordsAfter: Memory words after this opcode (0 if unavailable)
+//   - coldAccessCount: Number of cold accesses for this opcode (0, 1, or 2)
 func (fa *FrameAggregator) ProcessStructlog(
 	sl *execution.StructLog,
 	index int,
@@ -89,6 +106,9 @@ func (fa *FrameAggregator) ProcessStructlog(
 	gasSelf uint64,
 	callToAddr *string,
 	prevStructlog *execution.StructLog,
+	memWordsBefore uint32,
+	memWordsAfter uint32,
+	coldAccessCount uint64,
 ) {
 	acc, exists := fa.frames[frameID]
 	if !exists {
@@ -141,6 +161,15 @@ func (fa *FrameAggregator) ProcessStructlog(
 		stats.Count++
 		stats.Gas += gasSelf           // SUM(gas_self) - excludes child frame gas
 		stats.GasCumulative += gasUsed // SUM(gas_used) - includes child frame gas
+
+		// Accumulate resource gas building blocks.
+		wb := uint64(memWordsBefore)
+		wa := uint64(memWordsAfter)
+		stats.MemWordsSumBefore += wb
+		stats.MemWordsSumAfter += wa
+		stats.MemWordsSqSumBefore += wb * wb
+		stats.MemWordsSqSumAfter += wa * wa
+		stats.ColdCount += coldAccessCount
 
 		// Track min/max depth
 		if depth < stats.MinDepth {
@@ -290,26 +319,40 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 			}
 		}
 
+		// Compute summary-level resource gas totals (SUM across all opcodes).
+		for _, stats := range acc.OpcodeStats {
+			summaryRow.MemWordsSumBefore += stats.MemWordsSumBefore
+			summaryRow.MemWordsSumAfter += stats.MemWordsSumAfter
+			summaryRow.MemWordsSqSumBefore += stats.MemWordsSqSumBefore
+			summaryRow.MemWordsSqSumAfter += stats.MemWordsSqSumAfter
+			summaryRow.ColdAccessCount += stats.ColdCount
+		}
+
 		rows = append(rows, summaryRow)
 
 		// Emit per-opcode rows
 		for opcode, stats := range acc.OpcodeStats {
 			opcodeRow := CallFrameRow{
-				CallFrameID:       frameID,
-				ParentCallFrameID: parentFrameID,
-				CallFramePath:     acc.CallFramePath,
-				Depth:             depth,
-				TargetAddress:     acc.TargetAddress,
-				CallType:          acc.CallType,
-				Operation:         opcode,
-				OpcodeCount:       stats.Count,
-				ErrorCount:        stats.ErrorCount,
-				Gas:               stats.Gas,
-				GasCumulative:     stats.GasCumulative, // SUM(gas_used) for per-opcode rows
-				MinDepth:          stats.MinDepth,
-				MaxDepth:          stats.MaxDepth,
-				GasRefund:         nil,
-				IntrinsicGas:      nil,
+				CallFrameID:         frameID,
+				ParentCallFrameID:   parentFrameID,
+				CallFramePath:       acc.CallFramePath,
+				Depth:               depth,
+				TargetAddress:       acc.TargetAddress,
+				CallType:            acc.CallType,
+				Operation:           opcode,
+				OpcodeCount:         stats.Count,
+				ErrorCount:          stats.ErrorCount,
+				Gas:                 stats.Gas,
+				GasCumulative:       stats.GasCumulative, // SUM(gas_used) for per-opcode rows
+				MinDepth:            stats.MinDepth,
+				MaxDepth:            stats.MaxDepth,
+				GasRefund:           nil,
+				IntrinsicGas:        nil,
+				MemWordsSumBefore:   stats.MemWordsSumBefore,
+				MemWordsSumAfter:    stats.MemWordsSumAfter,
+				MemWordsSqSumBefore: stats.MemWordsSqSumBefore,
+				MemWordsSqSumAfter:  stats.MemWordsSqSumAfter,
+				ColdAccessCount:     stats.ColdCount,
 			}
 			rows = append(rows, opcodeRow)
 		}
