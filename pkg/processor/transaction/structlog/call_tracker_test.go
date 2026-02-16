@@ -313,8 +313,8 @@ func TestIsPrecompile(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result := isPrecompile(tc.addr)
-			assert.Equal(t, tc.expected, result, "isPrecompile(%q) = %v, want %v", tc.addr, result, tc.expected)
+			result := IsPrecompile(tc.addr)
+			assert.Equal(t, tc.expected, result, "IsPrecompile(%q) = %v, want %v", tc.addr, result, tc.expected)
 		})
 	}
 }
@@ -347,7 +347,7 @@ func TestIsPrecompile_HardcodedList(t *testing.T) {
 
 	// Verify all expected precompiles are detected
 	for _, addr := range expectedPrecompiles {
-		assert.True(t, isPrecompile(addr),
+		assert.True(t, IsPrecompile(addr),
 			"precompile %s should be detected", addr)
 	}
 
@@ -411,7 +411,7 @@ func TestEOADetectionLogic(t *testing.T) {
 		// Depth increase = entered contract code (not EOA)
 		// Depth decrease = call returned/failed (not EOA)
 		// Depth same = called EOA or precompile (immediate return)
-		if nextDepth == currentDepth && !isPrecompile(callToAddr) {
+		if nextDepth == currentDepth && !IsPrecompile(callToAddr) {
 			return true
 		}
 
@@ -589,11 +589,11 @@ func TestEOADetectionBugScenario_DepthDecrease(t *testing.T) {
 	callToAddr := "0xde9c774cde34f85ee69c22e9a1077a0c9091f09b"
 
 	// Old buggy logic: nextDepth <= currentDepth → 2 <= 3 → TRUE (wrong!)
-	buggyLogic := nextDepth <= currentDepth && !isPrecompile(callToAddr)
+	buggyLogic := nextDepth <= currentDepth && !IsPrecompile(callToAddr)
 	assert.True(t, buggyLogic, "Old buggy logic would have created synthetic frame")
 
 	// Fixed logic: nextDepth == currentDepth → 2 == 3 → FALSE (correct!)
-	fixedLogic := nextDepth == currentDepth && !isPrecompile(callToAddr)
+	fixedLogic := nextDepth == currentDepth && !IsPrecompile(callToAddr)
 	assert.False(t, fixedLogic, "Fixed logic should NOT create synthetic frame")
 }
 
@@ -609,11 +609,11 @@ func TestEOADetectionBugScenario_OutOfGas(t *testing.T) {
 	hasNextOpcode := false
 
 	// Old buggy logic: "Last opcode is a CALL - if not precompile, must be EOA"
-	buggyLogic := !hasNextOpcode && !isPrecompile(callToAddr)
+	buggyLogic := !hasNextOpcode && !IsPrecompile(callToAddr)
 	assert.True(t, buggyLogic, "Old buggy logic would have created synthetic frame")
 
 	// Fixed logic: Don't assume last CALL is EOA - we can't determine without next opcode
-	fixedLogic := hasNextOpcode && !isPrecompile(callToAddr) // Always false when !hasNextOpcode
+	fixedLogic := hasNextOpcode && !IsPrecompile(callToAddr) // Always false when !hasNextOpcode
 	assert.False(t, fixedLogic, "Fixed logic should NOT create synthetic frame for last opcode")
 }
 
