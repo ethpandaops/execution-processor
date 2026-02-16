@@ -65,6 +65,7 @@ dockers:
       - "ethpandaops/{{ .ProjectName }}:{{ if .Env.RELEASE_SUFFIX }}{{ .Env.RELEASE_SUFFIX }}-{{ end }}latest-amd64"
     build_flag_templates:
       - "--platform=linux/amd64"
+      - "--provenance=false"
       - "--build-arg=VERSION={{.Tag}}"
       - "--build-arg=GIT_COMMIT={{.ShortCommit}}"
       - "--label=org.opencontainers.image.created={{.Date}}"
@@ -89,6 +90,7 @@ dockers:
       - "ethpandaops/{{ .ProjectName }}:{{ if .Env.RELEASE_SUFFIX }}{{ .Env.RELEASE_SUFFIX }}-{{ end }}latest-arm64v8"
     build_flag_templates:
       - "--platform=linux/arm64/v8"
+      - "--provenance=false"
       - "--build-arg=VERSION={{.Tag}}"
       - "--build-arg=GIT_COMMIT={{.ShortCommit}}"
       - "--label=org.opencontainers.image.created={{.Date}}"
