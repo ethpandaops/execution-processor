@@ -9,6 +9,8 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
 )
 
+const testAddress = "0x1234567890123456789012345678901234567890"
+
 // getSummaryRow returns the summary row (Operation == "") for a given frame ID.
 func getSummaryRow(rows []CallFrameRow, frameID uint32) *CallFrameRow {
 	for i := range rows {
@@ -135,7 +137,7 @@ func TestFrameAggregator_NestedCalls(t *testing.T) {
 	}, 1, 0, []uint32{0}, 5000, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
 
 	// Frame 1 (child) - depth 2
-	callAddr := "0x1234567890123456789012345678901234567890"
+	callAddr := testAddress
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "PUSH1",
@@ -442,7 +444,7 @@ func TestFrameAggregator_SetRootTargetAddress(t *testing.T) {
 	}, 0, 0, []uint32{0}, 0, 0, nil, nil)
 
 	// Set root target address (simulating tx.To())
-	rootAddr := "0x1234567890123456789012345678901234567890"
+	rootAddr := testAddress
 	aggregator.SetRootTargetAddress(&rootAddr)
 
 	trace := &execution.TraceTransaction{
@@ -773,7 +775,7 @@ func TestFrameAggregator_EOAFrameUnchanged(t *testing.T) {
 	// (unchanged behavior after precompile frame changes).
 	aggregator := NewFrameAggregator()
 
-	eoaAddr := "0x1234567890123456789012345678901234567890"
+	eoaAddr := testAddress
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "PUSH1",
