@@ -130,21 +130,41 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		// Get call target address
 		callToAddr := p.extractCallAddressWithCreate(sl, i, createAddresses)
 
-		// Process this structlog into the aggregator
-		aggregator.ProcessStructlog(sl, i, frameID, framePath, gasUsed[i], gasSelf[i], callToAddr, prevStructlog)
+		// Before processing parent CALL: detect precompile and compute gas split.
+		// Precompile gas = gasSelf minus CALL overhead (warm access cost = 100).
+		// Precompiles are always warm (EIP-2929 pre-warms them).
+		// Note: using overhead=100 (warm access only). When Plan B adds memory
+		// expansion data, this should be refined to overhead=100+memExp.
+		effectiveGasSelf := gasSelf[i]
 
-		// Check for EOA call: CALL-type opcode where depth stays the same (immediate return)
-		// and target is not a precompile
+		var precompileGas uint64
+
+		if isCallOpcode(sl.Op) && callToAddr != nil && i+1 < len(trace.Structlogs) {
+			nextDepth := trace.Structlogs[i+1].Depth
+			if nextDepth == sl.Depth && isPrecompile(*callToAddr) {
+				overhead := uint64(100)
+				if gasSelf[i] > overhead {
+					precompileGas = gasSelf[i] - overhead
+					effectiveGasSelf = overhead
+				}
+			}
+		}
+
+		// Process this structlog into the aggregator with (possibly reduced) gasSelf
+		aggregator.ProcessStructlog(sl, i, frameID, framePath, gasUsed[i], effectiveGasSelf, callToAddr, prevStructlog)
+
+		// Emit synthetic frame for ALL immediate-return CALLs (EOA + precompile).
+		// For EOA calls: precompileGas = 0, so frame has gas=0 (unchanged behavior).
+		// For precompile calls: frame has gas=precompileGas.
 		if isCallOpcode(sl.Op) && callToAddr != nil {
 			if i+1 < len(trace.Structlogs) {
 				nextDepth := trace.Structlogs[i+1].Depth
-				if nextDepth == sl.Depth && !isPrecompile(*callToAddr) {
-					// Emit synthetic EOA frame
-					eoaFrameID, eoaFramePath := callTracker.issueFrameID()
+				if nextDepth == sl.Depth {
+					synthFrameID, synthFramePath := callTracker.issueFrameID()
 					aggregator.ProcessStructlog(&execution.StructLog{
 						Op:    "",
 						Depth: sl.Depth + 1,
-					}, i, eoaFrameID, eoaFramePath, 0, 0, callToAddr, sl)
+					}, i, synthFrameID, synthFramePath, precompileGas, precompileGas, callToAddr, sl)
 				}
 			}
 		}

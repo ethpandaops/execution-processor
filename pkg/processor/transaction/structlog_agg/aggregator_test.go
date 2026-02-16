@@ -645,3 +645,292 @@ func TestMapOpcodeToCallType(t *testing.T) {
 		})
 	}
 }
+
+func TestFrameAggregator_PrecompileFrame(t *testing.T) {
+	// Test that precompile calls (CALL to 0x01-0x11, 0x100) emit synthetic frames
+	// with the correct gas split: parent CALL retains overhead (100), precompile
+	// frame gets the remaining execution gas.
+	aggregator := NewFrameAggregator()
+
+	precompileAddr := "0x0000000000000000000000000000000000000001" // ecrecover
+
+	// Root frame opcodes
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "PUSH1",
+		Depth: 1,
+		Gas:   10000,
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+
+	// CALL to precompile: gasSelf=3100 (100 overhead + 3000 precompile execution).
+	// With precompile gas extraction:
+	//   effectiveGasSelf = 100 (overhead only)
+	//   precompileGas = 3000 (execution gas)
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "CALL",
+		Depth: 1,
+		Gas:   9997,
+	}, 1, 0, []uint32{0}, 3100, 100, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+
+	// Synthetic precompile frame (gas = precompileGas = 3000)
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "",
+		Depth: 2,
+	}, 1, 1, []uint32{0, 1}, 3000, 3000, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+
+	// Back to root frame
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "STOP",
+		Depth: 1,
+		Gas:   6897,
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+
+	trace := &execution.TraceTransaction{
+		Gas:    10000,
+		Failed: false,
+	}
+
+	frames := aggregator.Finalize(trace, 5000)
+
+	// Should have 2 summary rows: root + precompile synthetic frame
+	assert.Equal(t, 2, countSummaryRows(frames))
+
+	rootFrame := getSummaryRow(frames, 0)
+	precompileFrame := getSummaryRow(frames, 1)
+
+	require.NotNil(t, rootFrame, "root frame should exist")
+	require.NotNil(t, precompileFrame, "precompile frame should exist")
+
+	// Root frame: 3 real opcodes (PUSH1, CALL, STOP)
+	assert.Equal(t, uint64(3), rootFrame.OpcodeCount)
+
+	// Precompile frame: 0 opcodes (synthetic), gas > 0
+	assert.Equal(t, uint64(0), precompileFrame.OpcodeCount)
+	assert.Equal(t, "CALL", precompileFrame.CallType)
+	require.NotNil(t, precompileFrame.TargetAddress)
+	assert.Equal(t, precompileAddr, *precompileFrame.TargetAddress)
+
+	// Precompile frame gas_cumulative should reflect precompile execution gas
+	assert.Equal(t, uint64(3000), precompileFrame.GasCumulative)
+
+	// Verify parent CALL opcode row has only overhead gas (100)
+	callRow := getOpcodeRow(frames, 0, "CALL")
+	require.NotNil(t, callRow)
+	assert.Equal(t, uint64(100), callRow.Gas, "parent CALL gas should only include overhead")
+}
+
+func TestFrameAggregator_PrecompileGasSplitInvariant(t *testing.T) {
+	// Verify the gas split invariant:
+	// SUM(parent CALL overhead) + SUM(precompile frame gas) == SUM(original CALL gasSelf)
+	aggregator := NewFrameAggregator()
+
+	precompileAddr := "0x0000000000000000000000000000000000000002" // sha256
+
+	originalGasSelf := uint64(5100) // 100 overhead + 5000 precompile
+	overhead := uint64(100)
+	precompileGas := originalGasSelf - overhead
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "PUSH1",
+		Depth: 1,
+		Gas:   20000,
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+
+	// CALL with effectiveGasSelf = overhead
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "CALL",
+		Depth: 1,
+		Gas:   19997,
+	}, 1, 0, []uint32{0}, originalGasSelf, overhead, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+
+	// Synthetic precompile frame
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "",
+		Depth: 2,
+	}, 1, 1, []uint32{0, 1}, precompileGas, precompileGas, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "STOP",
+		Depth: 1,
+		Gas:   14897,
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+
+	trace := &execution.TraceTransaction{Gas: 20000, Failed: false}
+	frames := aggregator.Finalize(trace, 10000)
+
+	// Verify invariant: CALL opcode gas + precompile frame gas == original gasSelf
+	callRow := getOpcodeRow(frames, 0, "CALL")
+	precompileFrame := getSummaryRow(frames, 1)
+
+	require.NotNil(t, callRow)
+	require.NotNil(t, precompileFrame)
+
+	assert.Equal(t, originalGasSelf, callRow.Gas+precompileFrame.GasCumulative,
+		"gas split invariant: CALL overhead + precompile gas == original gasSelf")
+}
+
+func TestFrameAggregator_EOAFrameUnchanged(t *testing.T) {
+	// Verify that EOA calls still produce synthetic frames with gas=0
+	// (unchanged behavior after precompile frame changes).
+	aggregator := NewFrameAggregator()
+
+	eoaAddr := "0x1234567890123456789012345678901234567890"
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "PUSH1",
+		Depth: 1,
+		Gas:   10000,
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+
+	// CALL to EOA: gasSelf=100, no precompile gas extraction
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "CALL",
+		Depth: 1,
+		Gas:   9997,
+	}, 1, 0, []uint32{0}, 100, 100, &eoaAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+
+	// Synthetic EOA frame (gas = 0)
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "",
+		Depth: 2,
+	}, 1, 1, []uint32{0, 1}, 0, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "STOP",
+		Depth: 1,
+		Gas:   9897,
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+
+	trace := &execution.TraceTransaction{Gas: 10000, Failed: false}
+	frames := aggregator.Finalize(trace, 5000)
+
+	assert.Equal(t, 2, countSummaryRows(frames))
+
+	eoaFrame := getSummaryRow(frames, 1)
+	require.NotNil(t, eoaFrame)
+
+	// EOA frame: gas = 0, gas_cumulative = 0
+	assert.Equal(t, uint64(0), eoaFrame.Gas)
+	assert.Equal(t, uint64(0), eoaFrame.GasCumulative)
+	assert.Equal(t, uint64(0), eoaFrame.OpcodeCount)
+	require.NotNil(t, eoaFrame.TargetAddress)
+	assert.Equal(t, eoaAddr, *eoaFrame.TargetAddress)
+}
+
+func TestFrameAggregator_MultiplePrecompileCalls(t *testing.T) {
+	// Test transaction with multiple precompile calls producing correct
+	// number of synthetic frames, each with correct gas.
+	aggregator := NewFrameAggregator()
+
+	ecrecoverAddr := "0x0000000000000000000000000000000000000001"
+	sha256Addr := "0x0000000000000000000000000000000000000002"
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "PUSH1",
+		Depth: 1,
+		Gas:   50000,
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+
+	// First precompile call: ecrecover (gas = 3100 = 100 + 3000)
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "CALL",
+		Depth: 1,
+		Gas:   49997,
+	}, 1, 0, []uint32{0}, 3100, 100, &ecrecoverAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+
+	// Synthetic frame for ecrecover
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "",
+		Depth: 2,
+	}, 1, 1, []uint32{0, 1}, 3000, 3000, &ecrecoverAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+
+	// Some opcodes between the two precompile calls
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "PUSH1",
+		Depth: 1,
+		Gas:   46897,
+	}, 2, 0, []uint32{0}, 3, 3, nil, &execution.StructLog{Op: "", Depth: 2})
+
+	// Second precompile call: sha256 (gas = 1100 = 100 + 1000)
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "STATICCALL",
+		Depth: 1,
+		Gas:   46894,
+	}, 3, 0, []uint32{0}, 1100, 100, &sha256Addr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+
+	// Synthetic frame for sha256
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "",
+		Depth: 2,
+	}, 3, 2, []uint32{0, 2}, 1000, 1000, &sha256Addr, &execution.StructLog{Op: "STATICCALL", Depth: 1})
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "STOP",
+		Depth: 1,
+		Gas:   45794,
+	}, 4, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+
+	trace := &execution.TraceTransaction{Gas: 50000, Failed: false}
+	frames := aggregator.Finalize(trace, 30000)
+
+	// Should have 3 summary rows: root + ecrecover + sha256
+	assert.Equal(t, 3, countSummaryRows(frames))
+
+	ecrecoverFrame := getSummaryRow(frames, 1)
+	sha256Frame := getSummaryRow(frames, 2)
+
+	require.NotNil(t, ecrecoverFrame)
+	require.NotNil(t, sha256Frame)
+
+	assert.Equal(t, uint64(3000), ecrecoverFrame.GasCumulative)
+	require.NotNil(t, ecrecoverFrame.TargetAddress)
+	assert.Equal(t, ecrecoverAddr, *ecrecoverFrame.TargetAddress)
+
+	assert.Equal(t, uint64(1000), sha256Frame.GasCumulative)
+	require.NotNil(t, sha256Frame.TargetAddress)
+	assert.Equal(t, sha256Addr, *sha256Frame.TargetAddress)
+}
+
+func TestFrameAggregator_PrecompileGasSelfLessThanOverhead(t *testing.T) {
+	// Edge case: gasSelf <= overhead (100). No gas split occurs —
+	// precompileGas stays 0, effectiveGasSelf stays at gasSelf.
+	aggregator := NewFrameAggregator()
+
+	precompileAddr := "0x0000000000000000000000000000000000000004" // identity
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "PUSH1",
+		Depth: 1,
+		Gas:   10000,
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+
+	// CALL to precompile with gasSelf=50 (less than overhead=100)
+	// This shouldn't split — effectiveGasSelf stays 50
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "CALL",
+		Depth: 1,
+		Gas:   9997,
+	}, 1, 0, []uint32{0}, 50, 50, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+
+	// Synthetic frame with gas=0 (no precompile gas extracted)
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "",
+		Depth: 2,
+	}, 1, 1, []uint32{0, 1}, 0, 0, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op:    "STOP",
+		Depth: 1,
+		Gas:   9947,
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+
+	trace := &execution.TraceTransaction{Gas: 10000, Failed: false}
+	frames := aggregator.Finalize(trace, 5000)
+
+	callRow := getOpcodeRow(frames, 0, "CALL")
+	require.NotNil(t, callRow)
+	assert.Equal(t, uint64(50), callRow.Gas, "CALL gas should remain 50 when gasSelf <= overhead")
+
+	precompileFrame := getSummaryRow(frames, 1)
+	require.NotNil(t, precompileFrame)
+	assert.Equal(t, uint64(0), precompileFrame.GasCumulative, "precompile frame gas should be 0")
+}
