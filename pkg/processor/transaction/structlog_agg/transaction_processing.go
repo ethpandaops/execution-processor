@@ -133,8 +133,6 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		// Before processing parent CALL: detect precompile and compute gas split.
 		// Precompile gas = gasSelf minus CALL overhead (warm access cost = 100).
 		// Precompiles are always warm (EIP-2929 pre-warms them).
-		// Note: using overhead=100 (warm access only). When Plan B adds memory
-		// expansion data, this should be refined to overhead=100+memExp.
 		effectiveGasSelf := gasSelf[i]
 
 		var precompileGas uint64
