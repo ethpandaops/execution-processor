@@ -74,7 +74,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		intrinsicGas := trace.Gas
 		rootFrame.IntrinsicGas = &intrinsicGas
 
-		// gas_refund is NULL for simple transfers (no SSTORE operations)
+		// gas_refund is 0 for simple transfers (no SSTORE operations)
 
 		if err := p.insertCallFrames(ctx, []CallFrameRow{rootFrame}, block.Number().Uint64(), tx.Hash().String(), uint32(index), time.Now()); err != nil { //nolint:gosec // index is bounded by block.Transactions() length
 			pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "failed").Inc()

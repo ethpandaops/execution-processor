@@ -23,7 +23,7 @@ type CallFrameRow struct {
 	GasCumulative     uint64  // For summary: frame gas_cumulative; for per-opcode: SUM(gas_used)
 	MinDepth          uint32  // Per-opcode: MIN(depth); summary: same as Depth
 	MaxDepth          uint32  // Per-opcode: MAX(depth); summary: same as Depth
-	GasRefund         *uint64 // Root frame only (max refund from trace)
+	GasRefund         uint64  // Max refund from trace (0 for failed txs, per-opcode rows, and non-root frames)
 	IntrinsicGas      *uint64 // Root frame only (computed)
 
 	// Resource gas building blocks.
@@ -305,9 +305,9 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 
 			// For successful transactions, refunds are applied to the final gas calculation.
 			// For failed transactions, refunds are accumulated during execution but NOT applied
-			// (all gas up to failure is consumed), so we set refund to nil.
+			// (all gas up to failure is consumed), so refund stays 0.
 			if summaryRow.ErrorCount == 0 {
-				summaryRow.GasRefund = &acc.MaxRefund
+				summaryRow.GasRefund = acc.MaxRefund
 			}
 
 			// Intrinsic gas is ALWAYS charged (before EVM execution begins), regardless of
@@ -352,7 +352,7 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 				GasCumulative:       stats.GasCumulative, // SUM(gas_used) for per-opcode rows
 				MinDepth:            stats.MinDepth,
 				MaxDepth:            stats.MaxDepth,
-				GasRefund:           nil,
+				GasRefund:           0,
 				IntrinsicGas:        nil,
 				MemWordsSumBefore:   stats.MemWordsSumBefore,
 				MemWordsSumAfter:    stats.MemWordsSumAfter,

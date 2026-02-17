@@ -79,7 +79,7 @@ func (c *Columns) Append(
 	gasCumulative uint64,
 	minDepth uint32,
 	maxDepth uint32,
-	gasRefund *uint64,
+	gasRefund uint64,
 	intrinsicGas *uint64,
 	memWordsSumBefore uint64,
 	memWordsSumAfter uint64,
@@ -106,7 +106,7 @@ func (c *Columns) Append(
 	c.GasCumulative.Append(gasCumulative)
 	c.MinDepth.Append(minDepth)
 	c.MaxDepth.Append(maxDepth)
-	c.GasRefund.Append(nullableUint64(gasRefund))
+	c.GasRefund.Append(proto.NewNullable(gasRefund))
 	c.IntrinsicGas.Append(nullableUint64(intrinsicGas))
 	c.MemWordsSumBefore.Append(memWordsSumBefore)
 	c.MemWordsSumAfter.Append(memWordsSumAfter)

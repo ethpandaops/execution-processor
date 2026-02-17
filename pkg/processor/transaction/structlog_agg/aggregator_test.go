@@ -514,9 +514,9 @@ func TestFrameAggregator_FailedTransaction_NoRefundButHasIntrinsic(t *testing.T)
 	// Error count should be 1
 	assert.Equal(t, uint64(1), summaryRow.ErrorCount)
 
-	// GasRefund should be nil for failed transactions
+	// GasRefund should be 0 for failed transactions
 	// Even though refund was accumulated (4800), it's not applied when tx fails
-	assert.Nil(t, summaryRow.GasRefund, "GasRefund should be nil for failed transactions")
+	assert.Equal(t, uint64(0), summaryRow.GasRefund, "GasRefund should be 0 for failed transactions")
 
 	// IntrinsicGas SHOULD be computed for failed transactions
 	// Intrinsic gas is always charged before EVM execution begins
@@ -570,8 +570,7 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 	assert.Equal(t, uint64(0), summaryRow.ErrorCount)
 
 	// GasRefund should be set for successful transactions
-	require.NotNil(t, summaryRow.GasRefund, "GasRefund should be set for successful transactions")
-	assert.Equal(t, refundValue, *summaryRow.GasRefund)
+	assert.Equal(t, refundValue, summaryRow.GasRefund)
 
 	// IntrinsicGas should be computed for successful transactions
 	// (exact value depends on the computation, just verify it's not nil)
@@ -621,9 +620,9 @@ func TestFrameAggregator_RevertWithoutOpcodeError(t *testing.T) {
 	assert.Equal(t, uint64(1), summaryRow.ErrorCount,
 		"ErrorCount should be 1 for REVERT transactions even without opcode errors")
 
-	// GasRefund should be nil for failed transactions
-	assert.Nil(t, summaryRow.GasRefund,
-		"GasRefund should be nil for reverted transactions")
+	// GasRefund should be 0 for failed transactions
+	assert.Equal(t, uint64(0), summaryRow.GasRefund,
+		"GasRefund should be 0 for reverted transactions")
 }
 
 func TestMapOpcodeToCallType(t *testing.T) {
@@ -1116,7 +1115,7 @@ func TestColumns_ResourceGasFields(t *testing.T) {
 	cols.Append(
 		now, 100, "0xabc", 0,
 		0, nil, []uint32{0}, 0, nil, "", "SLOAD",
-		1, 0, 2100, 2100, 0, 0, nil, nil,
+		1, 0, 2100, 2100, 0, 0, 0, nil,
 		10, 20, 100, 400, 0, 3, // resource gas fields
 		"mainnet",
 	)
@@ -1132,7 +1131,7 @@ func TestColumns_ResourceGasFields(t *testing.T) {
 	cols.Append(
 		now, 101, "0xdef", 1,
 		1, nil, []uint32{0, 1}, 1, nil, "CALL", "MSTORE",
-		2, 0, 6, 6, 1, 1, nil, nil,
+		2, 0, 6, 6, 1, 1, 0, nil,
 		5, 8, 25, 64, 0, 0,
 		"mainnet",
 	)
