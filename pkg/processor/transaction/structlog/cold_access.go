@@ -77,9 +77,12 @@ func classifyOpcode(sl *execution.StructLog, gasSelf, memExp uint64) uint64 {
 	}
 }
 
-// classifySload: cold if GasCost >= 2100 (cold SLOAD cost).
+// classifySload: cold if GasCost > 100 (warm access cost).
+// SLOAD costs exactly 100 (warm) or 2100 (cold). Any value above 100 but
+// below 2100 indicates a cold SLOAD whose GasCost was capped at remaining
+// gas by the tracer due to out-of-gas.
 func classifySload(gasCost uint64) uint64 {
-	if gasCost >= coldSloadCost {
+	if gasCost > warmAccessCost {
 		return 1
 	}
 
@@ -98,9 +101,12 @@ func classifySstore(gasCost uint64) uint64 {
 	}
 }
 
-// classifyAccountAccess: cold if GasCost >= 2600 (cold account access cost).
+// classifyAccountAccess: cold if GasCost > 100 (warm access cost).
+// BALANCE/EXTCODESIZE/EXTCODEHASH cost exactly 100 (warm) or 2600 (cold).
+// Any value above 100 but below 2600 indicates a cold access whose GasCost
+// was capped at remaining gas by the tracer due to out-of-gas.
 func classifyAccountAccess(gasCost uint64) uint64 {
-	if gasCost >= coldAccountCost {
+	if gasCost > warmAccessCost {
 		return 1
 	}
 

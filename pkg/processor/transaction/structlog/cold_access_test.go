@@ -148,9 +148,13 @@ func TestGetMemExp(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestClassifySload_Boundaries(t *testing.T) {
-	assert.Equal(t, uint64(0), classifySload(2099), "just below cold threshold")
-	assert.Equal(t, uint64(1), classifySload(2100), "exact cold threshold")
-	assert.Equal(t, uint64(1), classifySload(2101), "just above cold threshold")
+	assert.Equal(t, uint64(0), classifySload(99), "below warm cost")
+	assert.Equal(t, uint64(0), classifySload(100), "exact warm cost")
+	assert.Equal(t, uint64(1), classifySload(101), "just above warm cost")
+	assert.Equal(t, uint64(1), classifySload(1756), "OOG-capped cold SLOAD")
+	assert.Equal(t, uint64(1), classifySload(2099), "just below cold cost")
+	assert.Equal(t, uint64(1), classifySload(2100), "exact cold cost")
+	assert.Equal(t, uint64(1), classifySload(2101), "just above cold cost")
 }
 
 func TestClassifySstore_Boundaries(t *testing.T) {
@@ -167,9 +171,13 @@ func TestClassifySstore_Boundaries(t *testing.T) {
 }
 
 func TestClassifyAccountAccess_Boundaries(t *testing.T) {
-	assert.Equal(t, uint64(0), classifyAccountAccess(2599), "just below cold threshold")
-	assert.Equal(t, uint64(1), classifyAccountAccess(2600), "exact cold threshold")
-	assert.Equal(t, uint64(1), classifyAccountAccess(2601), "just above cold threshold")
+	assert.Equal(t, uint64(0), classifyAccountAccess(99), "below warm cost")
+	assert.Equal(t, uint64(0), classifyAccountAccess(100), "exact warm cost")
+	assert.Equal(t, uint64(1), classifyAccountAccess(101), "just above warm cost")
+	assert.Equal(t, uint64(1), classifyAccountAccess(1500), "OOG-capped cold access")
+	assert.Equal(t, uint64(1), classifyAccountAccess(2599), "just below cold cost")
+	assert.Equal(t, uint64(1), classifyAccountAccess(2600), "exact cold cost")
+	assert.Equal(t, uint64(1), classifyAccountAccess(2601), "just above cold cost")
 }
 
 func TestClassifyCall_Boundaries(t *testing.T) {
@@ -239,6 +247,7 @@ func TestClassifyColdAccess_SLOAD(t *testing.T) {
 		expected uint64
 	}{
 		{"warm SLOAD (100)", 100, 0},
+		{"OOG-capped cold SLOAD (1756)", 1756, 1},
 		{"cold SLOAD (2100)", 2100, 1},
 		{"cold SLOAD (2200 - with extra)", 2200, 1},
 	}

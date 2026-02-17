@@ -178,12 +178,17 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 			wa = wordsAfter[i]
 		}
 
+		var memExp uint64
+		if memExpGas != nil {
+			memExp = memExpGas[i]
+		}
+
 		if coldCounts != nil {
 			cold = coldCounts[i]
 		}
 
 		// Process this structlog into the aggregator with (possibly reduced) gasSelf
-		aggregator.ProcessStructlog(sl, i, frameID, framePath, gasUsed[i], effectiveGasSelf, callToAddr, prevStructlog, wb, wa, cold)
+		aggregator.ProcessStructlog(sl, i, frameID, framePath, gasUsed[i], effectiveGasSelf, callToAddr, prevStructlog, wb, wa, memExp, cold)
 
 		// Emit synthetic frame for ALL immediate-return CALLs (EOA + precompile).
 		// For EOA calls: precompileGas = 0, so frame has gas=0 (unchanged behavior).
@@ -196,7 +201,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 					aggregator.ProcessStructlog(&execution.StructLog{
 						Op:    "",
 						Depth: sl.Depth + 1,
-					}, i, synthFrameID, synthFramePath, precompileGas, precompileGas, callToAddr, sl, 0, 0, 0)
+					}, i, synthFrameID, synthFramePath, precompileGas, precompileGas, callToAddr, sl, 0, 0, 0, 0)
 				}
 			}
 		}

@@ -31,6 +31,7 @@ type CallFrameRow struct {
 	MemWordsSumAfter    uint64
 	MemWordsSqSumBefore uint64
 	MemWordsSqSumAfter  uint64
+	MemExpansionGas     uint64 // SUM(memory_expansion_gas) — exact per-opcode memory expansion cost
 	ColdAccessCount     uint64
 }
 
@@ -48,6 +49,7 @@ type OpcodeStats struct {
 	MemWordsSumAfter    uint64 // SUM(memory_words_after)
 	MemWordsSqSumBefore uint64 // SUM(memory_words_before²)
 	MemWordsSqSumAfter  uint64 // SUM(memory_words_after²)
+	MemExpansionGas     uint64 // SUM(memory_expansion_gas) per opcode
 	ColdCount           uint64 // Number of cold accesses
 }
 
@@ -96,6 +98,7 @@ func NewFrameAggregator() *FrameAggregator {
 //   - prevStructlog: Previous structlog (for detecting frame entry via CALL/CREATE)
 //   - memWordsBefore: Memory words before this opcode (0 if unavailable)
 //   - memWordsAfter: Memory words after this opcode (0 if unavailable)
+//   - memExpansionGas: Memory expansion gas for this opcode (exact per-opcode cost)
 //   - coldAccessCount: Number of cold accesses for this opcode (0, 1, or 2)
 func (fa *FrameAggregator) ProcessStructlog(
 	sl *execution.StructLog,
@@ -108,6 +111,7 @@ func (fa *FrameAggregator) ProcessStructlog(
 	prevStructlog *execution.StructLog,
 	memWordsBefore uint32,
 	memWordsAfter uint32,
+	memExpansionGas uint64,
 	coldAccessCount uint64,
 ) {
 	acc, exists := fa.frames[frameID]
@@ -169,6 +173,7 @@ func (fa *FrameAggregator) ProcessStructlog(
 		stats.MemWordsSumAfter += wa
 		stats.MemWordsSqSumBefore += wb * wb
 		stats.MemWordsSqSumAfter += wa * wa
+		stats.MemExpansionGas += memExpansionGas
 		stats.ColdCount += coldAccessCount
 
 		// Track min/max depth
@@ -325,6 +330,7 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 			summaryRow.MemWordsSumAfter += stats.MemWordsSumAfter
 			summaryRow.MemWordsSqSumBefore += stats.MemWordsSqSumBefore
 			summaryRow.MemWordsSqSumAfter += stats.MemWordsSqSumAfter
+			summaryRow.MemExpansionGas += stats.MemExpansionGas
 			summaryRow.ColdAccessCount += stats.ColdCount
 		}
 
@@ -352,6 +358,7 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 				MemWordsSumAfter:    stats.MemWordsSumAfter,
 				MemWordsSqSumBefore: stats.MemWordsSqSumBefore,
 				MemWordsSqSumAfter:  stats.MemWordsSqSumAfter,
+				MemExpansionGas:     stats.MemExpansionGas,
 				ColdAccessCount:     stats.ColdCount,
 			}
 			rows = append(rows, opcodeRow)

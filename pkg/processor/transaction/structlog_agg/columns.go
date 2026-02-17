@@ -44,6 +44,7 @@ type Columns struct {
 	MemWordsSumAfter    proto.ColUInt64
 	MemWordsSqSumBefore proto.ColUInt64
 	MemWordsSqSumAfter  proto.ColUInt64
+	MemExpansionGas     proto.ColUInt64
 	ColdAccessCount     proto.ColUInt64
 	MetaNetworkName     proto.ColStr
 }
@@ -84,6 +85,7 @@ func (c *Columns) Append(
 	memWordsSumAfter uint64,
 	memWordsSqSumBefore uint64,
 	memWordsSqSumAfter uint64,
+	memExpansionGas uint64,
 	coldAccessCount uint64,
 	network string,
 ) {
@@ -110,6 +112,7 @@ func (c *Columns) Append(
 	c.MemWordsSumAfter.Append(memWordsSumAfter)
 	c.MemWordsSqSumBefore.Append(memWordsSqSumBefore)
 	c.MemWordsSqSumAfter.Append(memWordsSqSumAfter)
+	c.MemExpansionGas.Append(memExpansionGas)
 	c.ColdAccessCount.Append(coldAccessCount)
 	c.MetaNetworkName.Append(network)
 }
@@ -139,6 +142,7 @@ func (c *Columns) Reset() {
 	c.MemWordsSumAfter.Reset()
 	c.MemWordsSqSumBefore.Reset()
 	c.MemWordsSqSumAfter.Reset()
+	c.MemExpansionGas.Reset()
 	c.ColdAccessCount.Reset()
 	c.MetaNetworkName.Reset()
 }
@@ -169,6 +173,7 @@ func (c *Columns) Input() proto.Input {
 		{Name: "memory_words_sum_after", Data: &c.MemWordsSumAfter},
 		{Name: "memory_words_sq_sum_before", Data: &c.MemWordsSqSumBefore},
 		{Name: "memory_words_sq_sum_after", Data: &c.MemWordsSqSumAfter},
+		{Name: "memory_expansion_gas", Data: &c.MemExpansionGas},
 		{Name: "cold_access_count", Data: &c.ColdAccessCount},
 		{Name: "meta_network_name", Data: &c.MetaNetworkName},
 	}
