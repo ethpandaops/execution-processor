@@ -112,6 +112,20 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		createAddresses = computeCreateAddresses(trace.Structlogs)
 	}
 
+	// Compute memory words and expansion gas for resource gas decomposition.
+	wordsBefore, wordsAfter := structlog.ComputeMemoryWords(trace.Structlogs)
+
+	var memExpGas []uint64
+	if wordsBefore != nil {
+		memExpGas = make([]uint64, len(trace.Structlogs))
+		for i := range trace.Structlogs {
+			memExpGas[i] = structlog.MemoryExpansionGas(wordsBefore[i], wordsAfter[i])
+		}
+	}
+
+	// Classify cold vs warm access for each opcode.
+	coldCounts := structlog.ClassifyColdAccess(trace.Structlogs, gasSelf, memExpGas)
+
 	// Initialize frame aggregator
 	aggregator := NewFrameAggregator()
 
@@ -131,7 +145,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		callToAddr := p.extractCallAddressWithCreate(sl, i, createAddresses)
 
 		// Before processing parent CALL: detect precompile and compute gas split.
-		// Precompile gas = gasSelf minus CALL overhead (warm access cost = 100).
+		// Precompile gas = gasSelf minus CALL overhead, adjusted for memory expansion.
 		// Precompiles are always warm (EIP-2929 pre-warms them).
 		effectiveGasSelf := gasSelf[i]
 
@@ -140,7 +154,13 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		if isCallOpcode(sl.Op) && callToAddr != nil && i+1 < len(trace.Structlogs) {
 			nextDepth := trace.Structlogs[i+1].Depth
 			if nextDepth == sl.Depth && isPrecompile(*callToAddr) {
-				overhead := uint64(100)
+				memExp := uint64(0)
+				if memExpGas != nil {
+					memExp = memExpGas[i]
+				}
+
+				overhead := uint64(100) + memExp
+
 				if gasSelf[i] > overhead {
 					precompileGas = gasSelf[i] - overhead
 					effectiveGasSelf = overhead
@@ -148,8 +168,27 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 			}
 		}
 
+		// Get per-opcode resource gas values (0 if data unavailable).
+		var wb, wa uint32
+
+		var cold uint64
+
+		if wordsBefore != nil {
+			wb = wordsBefore[i]
+			wa = wordsAfter[i]
+		}
+
+		var memExp uint64
+		if memExpGas != nil {
+			memExp = memExpGas[i]
+		}
+
+		if coldCounts != nil {
+			cold = coldCounts[i]
+		}
+
 		// Process this structlog into the aggregator with (possibly reduced) gasSelf
-		aggregator.ProcessStructlog(sl, i, frameID, framePath, gasUsed[i], effectiveGasSelf, callToAddr, prevStructlog)
+		aggregator.ProcessStructlog(sl, i, frameID, framePath, gasUsed[i], effectiveGasSelf, callToAddr, prevStructlog, wb, wa, memExp, cold)
 
 		// Emit synthetic frame for ALL immediate-return CALLs (EOA + precompile).
 		// For EOA calls: precompileGas = 0, so frame has gas=0 (unchanged behavior).
@@ -162,7 +201,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 					aggregator.ProcessStructlog(&execution.StructLog{
 						Op:    "",
 						Depth: sl.Depth + 1,
-					}, i, synthFrameID, synthFramePath, precompileGas, precompileGas, callToAddr, sl)
+					}, i, synthFrameID, synthFramePath, precompileGas, precompileGas, callToAddr, sl, 0, 0, 0, 0)
 				}
 			}
 		}
@@ -295,37 +334,9 @@ func isCallOpcode(op string) bool {
 	}
 }
 
-// precompileAddresses contains all known EVM precompile addresses.
-var precompileAddresses = map[string]bool{
-	"0x0000000000000000000000000000000000000001": true, // ecrecover
-	"0x0000000000000000000000000000000000000002": true, // sha256
-	"0x0000000000000000000000000000000000000003": true, // ripemd160
-	"0x0000000000000000000000000000000000000004": true, // identity (dataCopy)
-	"0x0000000000000000000000000000000000000005": true, // modexp (bigModExp)
-	"0x0000000000000000000000000000000000000006": true, // bn256Add (ecAdd)
-	"0x0000000000000000000000000000000000000007": true, // bn256ScalarMul (ecMul)
-	"0x0000000000000000000000000000000000000008": true, // bn256Pairing (ecPairing)
-	"0x0000000000000000000000000000000000000009": true, // blake2f
-	"0x000000000000000000000000000000000000000a": true, // kzgPointEvaluation (EIP-4844, Cancun)
-	"0x000000000000000000000000000000000000000b": true, // bls12381G1Add (EIP-2537, Osaka)
-	"0x000000000000000000000000000000000000000c": true, // bls12381G1MultiExp (EIP-2537, Osaka)
-	"0x000000000000000000000000000000000000000d": true, // bls12381G2Add (EIP-2537, Osaka)
-	"0x000000000000000000000000000000000000000e": true, // bls12381G2MultiExp (EIP-2537, Osaka)
-	"0x000000000000000000000000000000000000000f": true, // bls12381Pairing (EIP-2537, Osaka)
-	"0x0000000000000000000000000000000000000010": true, // bls12381MapG1 (EIP-2537, Osaka)
-	"0x0000000000000000000000000000000000000011": true, // bls12381MapG2 (EIP-2537, Osaka)
-	"0x0000000000000000000000000000000000000100": true, // p256Verify (EIP-7212, Osaka)
-}
-
-// isPrecompile returns true if the address is a known EVM precompile.
+// isPrecompile delegates to the structlog package's exported IsPrecompile.
 func isPrecompile(addr string) bool {
-	hex := strings.TrimPrefix(strings.ToLower(addr), "0x")
-
-	for len(hex) < 40 {
-		hex = "0" + hex
-	}
-
-	return precompileAddresses["0x"+hex]
+	return structlog.IsPrecompile(addr)
 }
 
 // hasPrecomputedGasUsed detects whether GasUsed values are pre-computed by the tracer.

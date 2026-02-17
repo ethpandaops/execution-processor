@@ -64,4 +64,19 @@ type StructLog struct {
 	// In embedded mode: pre-extracted by tracer from stack[len-2].
 	// In RPC mode: nil, extracted post-hoc from Stack by extractCallAddress().
 	CallToAddress *string `json:"callToAddress,omitempty"`
+
+	// MemorySize is the EVM memory size in bytes at the time this opcode executes.
+	// Used to compute memory expansion gas between consecutive opcodes.
+	// In embedded mode: captured by tracer from scope.MemoryData().
+	// In RPC mode: 0 (not available).
+	MemorySize uint32 `json:"memSize,omitempty"`
+
+	// CallTransfersValue indicates whether a CALL/CALLCODE transfers non-zero ETH value.
+	// True only for CALL/CALLCODE with value > 0 on the stack.
+	// Used to normalize CALL gas for cold access detection.
+	CallTransfersValue bool `json:"callTransfersValue,omitempty"`
+
+	// ExtCodeCopySize is the size parameter for EXTCODECOPY opcodes.
+	// Used to compute the copy cost component for cold access detection.
+	ExtCodeCopySize uint32 `json:"extCodeCopySize,omitempty"`
 }

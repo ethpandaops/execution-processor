@@ -21,26 +21,32 @@ func (t ClickHouseTime) Time() time.Time {
 
 // Columns holds all columns for structlog_agg batch insert using ch-go columnar protocol.
 type Columns struct {
-	UpdatedDateTime   proto.ColDateTime
-	BlockNumber       proto.ColUInt64
-	TransactionHash   proto.ColStr
-	TransactionIndex  proto.ColUInt32
-	CallFrameID       proto.ColUInt32
-	ParentCallFrameID *proto.ColNullable[uint32]
-	CallFramePath     *proto.ColArr[uint32] // Path from root to this frame
-	Depth             proto.ColUInt32
-	TargetAddress     *proto.ColNullable[string]
-	CallType          proto.ColStr
-	Operation         proto.ColStr // Empty string for summary row, opcode name for per-opcode rows
-	OpcodeCount       proto.ColUInt64
-	ErrorCount        proto.ColUInt64
-	Gas               proto.ColUInt64 // SUM(gas_self) - excludes child frame gas
-	GasCumulative     proto.ColUInt64 // For summary: frame gas_cumulative; for per-opcode: SUM(gas_used)
-	MinDepth          proto.ColUInt32 // Per-opcode: MIN(depth); summary: same as Depth
-	MaxDepth          proto.ColUInt32 // Per-opcode: MAX(depth); summary: same as Depth
-	GasRefund         *proto.ColNullable[uint64]
-	IntrinsicGas      *proto.ColNullable[uint64]
-	MetaNetworkName   proto.ColStr
+	UpdatedDateTime     proto.ColDateTime
+	BlockNumber         proto.ColUInt64
+	TransactionHash     proto.ColStr
+	TransactionIndex    proto.ColUInt32
+	CallFrameID         proto.ColUInt32
+	ParentCallFrameID   *proto.ColNullable[uint32]
+	CallFramePath       *proto.ColArr[uint32] // Path from root to this frame
+	Depth               proto.ColUInt32
+	TargetAddress       *proto.ColNullable[string]
+	CallType            proto.ColStr
+	Operation           proto.ColStr // Empty string for summary row, opcode name for per-opcode rows
+	OpcodeCount         proto.ColUInt64
+	ErrorCount          proto.ColUInt64
+	Gas                 proto.ColUInt64 // SUM(gas_self) - excludes child frame gas
+	GasCumulative       proto.ColUInt64 // For summary: frame gas_cumulative; for per-opcode: SUM(gas_used)
+	MinDepth            proto.ColUInt32 // Per-opcode: MIN(depth); summary: same as Depth
+	MaxDepth            proto.ColUInt32 // Per-opcode: MAX(depth); summary: same as Depth
+	GasRefund           *proto.ColNullable[uint64]
+	IntrinsicGas        *proto.ColNullable[uint64]
+	MemWordsSumBefore   proto.ColUInt64
+	MemWordsSumAfter    proto.ColUInt64
+	MemWordsSqSumBefore proto.ColUInt64
+	MemWordsSqSumAfter  proto.ColUInt64
+	MemExpansionGas     proto.ColUInt64
+	ColdAccessCount     proto.ColUInt64
+	MetaNetworkName     proto.ColStr
 }
 
 // NewColumns creates a new Columns instance with all columns initialized.
@@ -75,6 +81,12 @@ func (c *Columns) Append(
 	maxDepth uint32,
 	gasRefund *uint64,
 	intrinsicGas *uint64,
+	memWordsSumBefore uint64,
+	memWordsSumAfter uint64,
+	memWordsSqSumBefore uint64,
+	memWordsSqSumAfter uint64,
+	memExpansionGas uint64,
+	coldAccessCount uint64,
 	network string,
 ) {
 	c.UpdatedDateTime.Append(updatedDateTime)
@@ -96,6 +108,12 @@ func (c *Columns) Append(
 	c.MaxDepth.Append(maxDepth)
 	c.GasRefund.Append(nullableUint64(gasRefund))
 	c.IntrinsicGas.Append(nullableUint64(intrinsicGas))
+	c.MemWordsSumBefore.Append(memWordsSumBefore)
+	c.MemWordsSumAfter.Append(memWordsSumAfter)
+	c.MemWordsSqSumBefore.Append(memWordsSqSumBefore)
+	c.MemWordsSqSumAfter.Append(memWordsSqSumAfter)
+	c.MemExpansionGas.Append(memExpansionGas)
+	c.ColdAccessCount.Append(coldAccessCount)
 	c.MetaNetworkName.Append(network)
 }
 
@@ -120,6 +138,12 @@ func (c *Columns) Reset() {
 	c.MaxDepth.Reset()
 	c.GasRefund.Reset()
 	c.IntrinsicGas.Reset()
+	c.MemWordsSumBefore.Reset()
+	c.MemWordsSumAfter.Reset()
+	c.MemWordsSqSumBefore.Reset()
+	c.MemWordsSqSumAfter.Reset()
+	c.MemExpansionGas.Reset()
+	c.ColdAccessCount.Reset()
 	c.MetaNetworkName.Reset()
 }
 
@@ -145,6 +169,12 @@ func (c *Columns) Input() proto.Input {
 		{Name: "max_depth", Data: &c.MaxDepth},
 		{Name: "gas_refund", Data: c.GasRefund},
 		{Name: "intrinsic_gas", Data: c.IntrinsicGas},
+		{Name: "memory_words_sum_before", Data: &c.MemWordsSumBefore},
+		{Name: "memory_words_sum_after", Data: &c.MemWordsSumAfter},
+		{Name: "memory_words_sq_sum_before", Data: &c.MemWordsSqSumBefore},
+		{Name: "memory_words_sq_sum_after", Data: &c.MemWordsSqSumAfter},
+		{Name: "memory_expansion_gas", Data: &c.MemExpansionGas},
+		{Name: "cold_access_count", Data: &c.ColdAccessCount},
 		{Name: "meta_network_name", Data: &c.MetaNetworkName},
 	}
 }

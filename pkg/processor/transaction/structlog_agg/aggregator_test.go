@@ -2,6 +2,7 @@ package structlog_agg
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -82,7 +83,7 @@ func TestFrameAggregator_SingleFrame(t *testing.T) {
 		}
 
 		// For simple opcodes, gasSelf == gasUsed
-		aggregator.ProcessStructlog(execSl, i, 0, framePath, sl.gasUsed, sl.gasUsed, nil, prevSl)
+		aggregator.ProcessStructlog(execSl, i, 0, framePath, sl.gasUsed, sl.gasUsed, nil, prevSl, 0, 0, 0, 0)
 	}
 
 	trace := &execution.TraceTransaction{
@@ -127,14 +128,14 @@ func TestFrameAggregator_NestedCalls(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
 
 	// CALL opcode: gasUsed includes child gas, gasSelf is just the CALL overhead
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 5000, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 5000, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	// Frame 1 (child) - depth 2
 	callAddr := testAddress
@@ -143,20 +144,20 @@ func TestFrameAggregator_NestedCalls(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 2,
 		Gas:   5000,
-	}, 2, 1, []uint32{0, 1}, 3, 3, &callAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 2, 1, []uint32{0, 1}, 3, 3, &callAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "RETURN",
 		Depth: 2,
 		Gas:   4997,
-	}, 3, 1, []uint32{0, 1}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 2})
+	}, 3, 1, []uint32{0, 1}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 2}, 0, 0, 0, 0)
 
 	// Back to root frame
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   4997,
-	}, 4, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "RETURN", Depth: 2})
+	}, 4, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "RETURN", Depth: 2}, 0, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    10000,
@@ -200,14 +201,14 @@ func TestFrameAggregator_ErrorCounting(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   1000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "REVERT",
 		Depth: 1,
 		Gas:   997,
 		Error: &errMsg,
-	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    1000,
@@ -382,13 +383,13 @@ func TestFrameAggregator_EOAFrame(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 100, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 100, 100, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	// Synthetic EOA frame (operation = "", depth = 2)
 	eoaAddr := "0xEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAEOAE"
@@ -397,14 +398,14 @@ func TestFrameAggregator_EOAFrame(t *testing.T) {
 		Op:    "", // Empty = synthetic EOA row
 		Depth: 2,
 		Gas:   0,
-	}, 1, 1, []uint32{0, 1}, 0, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, 0, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0, 0)
 
 	// Back to root frame
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   9897,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    10000,
@@ -441,7 +442,7 @@ func TestFrameAggregator_SetRootTargetAddress(t *testing.T) {
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   1000,
-	}, 0, 0, []uint32{0}, 0, 0, nil, nil)
+	}, 0, 0, []uint32{0}, 0, 0, nil, nil, 0, 0, 0, 0)
 
 	// Set root target address (simulating tx.To())
 	rootAddr := testAddress
@@ -477,7 +478,7 @@ func TestFrameAggregator_FailedTransaction_NoRefundButHasIntrinsic(t *testing.T)
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   80000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
 
 	// SSTORE that generates a refund
 	aggregator.ProcessStructlog(&execution.StructLog{
@@ -485,7 +486,7 @@ func TestFrameAggregator_FailedTransaction_NoRefundButHasIntrinsic(t *testing.T)
 		Depth:  1,
 		Gas:    79997,
 		Refund: &refundValue, // Refund accumulated
-	}, 1, 0, []uint32{0}, 20000, 20000, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 20000, 20000, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	// Transaction fails with REVERT
 	aggregator.ProcessStructlog(&execution.StructLog{
@@ -494,7 +495,7 @@ func TestFrameAggregator_FailedTransaction_NoRefundButHasIntrinsic(t *testing.T)
 		Gas:    59997,
 		Error:  &errMsg,
 		Refund: &refundValue, // Refund still present but won't be applied
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "SSTORE", Depth: 1})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "SSTORE", Depth: 1}, 0, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    80000,
@@ -533,7 +534,7 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   80000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
 
 	// SSTORE that generates a refund
 	aggregator.ProcessStructlog(&execution.StructLog{
@@ -541,7 +542,7 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 		Depth:  1,
 		Gas:    79997,
 		Refund: &refundValue,
-	}, 1, 0, []uint32{0}, 20000, 20000, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 20000, 20000, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	// Successful STOP
 	aggregator.ProcessStructlog(&execution.StructLog{
@@ -549,7 +550,7 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 		Depth:  1,
 		Gas:    59997,
 		Refund: &refundValue,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "SSTORE", Depth: 1})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "SSTORE", Depth: 1}, 0, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    80000,
@@ -592,7 +593,7 @@ func TestFrameAggregator_RevertWithoutOpcodeError(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   50000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
 
 	// REVERT opcode with NO error field (realistic behavior)
 	aggregator.ProcessStructlog(&execution.StructLog{
@@ -600,7 +601,7 @@ func TestFrameAggregator_RevertWithoutOpcodeError(t *testing.T) {
 		Depth: 1,
 		Gas:   49997,
 		// Note: NO Error field set - REVERT executes successfully
-	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	// trace.Failed is true because the transaction reverted
 	trace := &execution.TraceTransaction{
@@ -661,7 +662,7 @@ func TestFrameAggregator_PrecompileFrame(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
 
 	// CALL to precompile: gasSelf=3100 (100 overhead + 3000 precompile execution).
 	// With precompile gas extraction:
@@ -671,20 +672,20 @@ func TestFrameAggregator_PrecompileFrame(t *testing.T) {
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 3100, 100, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 3100, 100, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	// Synthetic precompile frame (gas = precompileGas = 3000)
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 1, 1, []uint32{0, 1}, 3000, 3000, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, 3000, 3000, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0, 0)
 
 	// Back to root frame
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   6897,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{
 		Gas:    10000,
@@ -735,26 +736,26 @@ func TestFrameAggregator_PrecompileGasSplitInvariant(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   20000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
 
 	// CALL with effectiveGasSelf = overhead
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   19997,
-	}, 1, 0, []uint32{0}, originalGasSelf, overhead, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, originalGasSelf, overhead, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	// Synthetic precompile frame
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 1, 1, []uint32{0, 1}, precompileGas, precompileGas, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, precompileGas, precompileGas, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   14897,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{Gas: 20000, Failed: false}
 	frames := aggregator.Finalize(trace, 10000)
@@ -781,26 +782,26 @@ func TestFrameAggregator_EOAFrameUnchanged(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
 
 	// CALL to EOA: gasSelf=100, no precompile gas extraction
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 100, 100, &eoaAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 100, 100, &eoaAddr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	// Synthetic EOA frame (gas = 0)
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 1, 1, []uint32{0, 1}, 0, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, 0, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   9897,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{Gas: 10000, Failed: false}
 	frames := aggregator.Finalize(trace, 5000)
@@ -830,46 +831,46 @@ func TestFrameAggregator_MultiplePrecompileCalls(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   50000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
 
 	// First precompile call: ecrecover (gas = 3100 = 100 + 3000)
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   49997,
-	}, 1, 0, []uint32{0}, 3100, 100, &ecrecoverAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 3100, 100, &ecrecoverAddr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	// Synthetic frame for ecrecover
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 1, 1, []uint32{0, 1}, 3000, 3000, &ecrecoverAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, 3000, 3000, &ecrecoverAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0, 0)
 
 	// Some opcodes between the two precompile calls
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   46897,
-	}, 2, 0, []uint32{0}, 3, 3, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 3, 3, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0, 0)
 
 	// Second precompile call: sha256 (gas = 1100 = 100 + 1000)
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STATICCALL",
 		Depth: 1,
 		Gas:   46894,
-	}, 3, 0, []uint32{0}, 1100, 100, &sha256Addr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 3, 0, []uint32{0}, 1100, 100, &sha256Addr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	// Synthetic frame for sha256
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 3, 2, []uint32{0, 2}, 1000, 1000, &sha256Addr, &execution.StructLog{Op: "STATICCALL", Depth: 1})
+	}, 3, 2, []uint32{0, 2}, 1000, 1000, &sha256Addr, &execution.StructLog{Op: "STATICCALL", Depth: 1}, 0, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   45794,
-	}, 4, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 4, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{Gas: 50000, Failed: false}
 	frames := aggregator.Finalize(trace, 30000)
@@ -892,6 +893,176 @@ func TestFrameAggregator_MultiplePrecompileCalls(t *testing.T) {
 	assert.Equal(t, sha256Addr, *sha256Frame.TargetAddress)
 }
 
+func TestFrameAggregator_ResourceGasAccumulation(t *testing.T) {
+	// Verify that the 5 resource gas fields accumulate correctly in per-opcode
+	// rows and that summary rows SUM across all per-opcode rows.
+	aggregator := NewFrameAggregator()
+
+	// Three opcodes with varying memory words and cold access counts.
+	// Op 0: MSTORE, wb=0, wa=1, cold=0
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "MSTORE", Depth: 1, Gas: 10000,
+	}, 0, 0, []uint32{0}, 6, 6, nil, nil, 0, 1, 0, 0)
+
+	// Op 1: SLOAD, wb=1, wa=3, cold=1
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "SLOAD", Depth: 1, Gas: 9994, GasCost: 2100,
+	}, 1, 0, []uint32{0}, 2100, 2100, nil, &execution.StructLog{Op: "MSTORE", Depth: 1}, 1, 3, 0, 1)
+
+	// Op 2: SLOAD, wb=3, wa=5, cold=0
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "SLOAD", Depth: 1, Gas: 7894, GasCost: 100,
+	}, 2, 0, []uint32{0}, 100, 100, nil, &execution.StructLog{Op: "SLOAD", Depth: 1}, 3, 5, 0, 0)
+
+	// Op 3: STOP, wb=5, wa=5, cold=0
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "STOP", Depth: 1, Gas: 7794,
+	}, 3, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "SLOAD", Depth: 1}, 5, 5, 0, 0)
+
+	trace := &execution.TraceTransaction{Gas: 10000, Failed: false}
+	frames := aggregator.Finalize(trace, 5000)
+
+	// --- Per-opcode row: MSTORE ---
+	mstoreRow := getOpcodeRow(frames, 0, "MSTORE")
+	require.NotNil(t, mstoreRow)
+	assert.Equal(t, uint64(0), mstoreRow.MemWordsSumBefore)   // SUM(wb) = 0
+	assert.Equal(t, uint64(1), mstoreRow.MemWordsSumAfter)    // SUM(wa) = 1
+	assert.Equal(t, uint64(0), mstoreRow.MemWordsSqSumBefore) // SUM(wb²) = 0
+	assert.Equal(t, uint64(1), mstoreRow.MemWordsSqSumAfter)  // SUM(wa²) = 1
+	assert.Equal(t, uint64(0), mstoreRow.ColdAccessCount)
+
+	// --- Per-opcode row: SLOAD (2 invocations) ---
+	sloadRow := getOpcodeRow(frames, 0, "SLOAD")
+	require.NotNil(t, sloadRow)
+	assert.Equal(t, uint64(2), sloadRow.OpcodeCount)
+	assert.Equal(t, uint64(1+3), sloadRow.MemWordsSumBefore)       // SUM(wb) = 1+3
+	assert.Equal(t, uint64(3+5), sloadRow.MemWordsSumAfter)        // SUM(wa) = 3+5
+	assert.Equal(t, uint64(1*1+3*3), sloadRow.MemWordsSqSumBefore) // SUM(wb²) = 1+9
+	assert.Equal(t, uint64(3*3+5*5), sloadRow.MemWordsSqSumAfter)  // SUM(wa²) = 9+25
+	assert.Equal(t, uint64(1), sloadRow.ColdAccessCount)           // 1 cold + 0 cold
+
+	// --- Summary row: SUM of all per-opcode rows ---
+	summaryRow := getSummaryRow(frames, 0)
+	require.NotNil(t, summaryRow)
+
+	// Sum across MSTORE + SLOAD + STOP
+	// STOP: wb=5, wa=5, cold=0
+	stopRow := getOpcodeRow(frames, 0, "STOP")
+	require.NotNil(t, stopRow)
+
+	expectedSumBefore := mstoreRow.MemWordsSumBefore + sloadRow.MemWordsSumBefore + stopRow.MemWordsSumBefore
+	expectedSumAfter := mstoreRow.MemWordsSumAfter + sloadRow.MemWordsSumAfter + stopRow.MemWordsSumAfter
+	expectedSqSumBefore := mstoreRow.MemWordsSqSumBefore + sloadRow.MemWordsSqSumBefore + stopRow.MemWordsSqSumBefore
+	expectedSqSumAfter := mstoreRow.MemWordsSqSumAfter + sloadRow.MemWordsSqSumAfter + stopRow.MemWordsSqSumAfter
+	expectedCold := mstoreRow.ColdAccessCount + sloadRow.ColdAccessCount + stopRow.ColdAccessCount
+	expectedMemExp := mstoreRow.MemExpansionGas + sloadRow.MemExpansionGas + stopRow.MemExpansionGas
+
+	assert.Equal(t, expectedSumBefore, summaryRow.MemWordsSumBefore)
+	assert.Equal(t, expectedSumAfter, summaryRow.MemWordsSumAfter)
+	assert.Equal(t, expectedSqSumBefore, summaryRow.MemWordsSqSumBefore)
+	assert.Equal(t, expectedSqSumAfter, summaryRow.MemWordsSqSumAfter)
+	assert.Equal(t, expectedCold, summaryRow.ColdAccessCount)
+	assert.Equal(t, expectedMemExp, summaryRow.MemExpansionGas)
+}
+
+func TestFrameAggregator_ResourceGasNestedFrames(t *testing.T) {
+	// Verify resource gas fields accumulate independently per frame.
+	aggregator := NewFrameAggregator()
+
+	// Root frame: CALL
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "CALL", Depth: 1, Gas: 10000,
+	}, 0, 0, []uint32{0}, 5000, 100, nil, nil, 2, 4, 0, 1)
+
+	// Child frame: SLOAD (cold)
+	callAddr := testAddress
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "SLOAD", Depth: 2, Gas: 5000, GasCost: 2100,
+	}, 1, 1, []uint32{0, 1}, 2100, 2100, &callAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 1, 0, 1)
+
+	// Child frame: RETURN
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "RETURN", Depth: 2, Gas: 2900,
+	}, 2, 1, []uint32{0, 1}, 0, 0, nil, &execution.StructLog{Op: "SLOAD", Depth: 2}, 1, 1, 0, 0)
+
+	// Root frame: STOP
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "STOP", Depth: 1, Gas: 5000,
+	}, 3, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "RETURN", Depth: 2}, 4, 4, 0, 0)
+
+	trace := &execution.TraceTransaction{Gas: 10000, Failed: false}
+	frames := aggregator.Finalize(trace, 5000)
+
+	// Root summary: CALL(wb=2,wa=4,cold=1) + STOP(wb=4,wa=4,cold=0)
+	rootSummary := getSummaryRow(frames, 0)
+	require.NotNil(t, rootSummary)
+	assert.Equal(t, uint64(2+4), rootSummary.MemWordsSumBefore)
+	assert.Equal(t, uint64(4+4), rootSummary.MemWordsSumAfter)
+	assert.Equal(t, uint64(1), rootSummary.ColdAccessCount)
+
+	// Child summary: SLOAD(wb=0,wa=1,cold=1) + RETURN(wb=1,wa=1,cold=0)
+	childSummary := getSummaryRow(frames, 1)
+	require.NotNil(t, childSummary)
+	assert.Equal(t, uint64(0+1), childSummary.MemWordsSumBefore)
+	assert.Equal(t, uint64(1+1), childSummary.MemWordsSumAfter)
+	assert.Equal(t, uint64(1), childSummary.ColdAccessCount)
+}
+
+func TestFrameAggregator_ResourceGasZeroValues(t *testing.T) {
+	// When all resource gas values are 0, fields should remain 0.
+	aggregator := NewFrameAggregator()
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "PUSH1", Depth: 1, Gas: 1000,
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "STOP", Depth: 1, Gas: 997,
+	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
+
+	trace := &execution.TraceTransaction{Gas: 1000, Failed: false}
+	frames := aggregator.Finalize(trace, 100)
+
+	summaryRow := getSummaryRow(frames, 0)
+	require.NotNil(t, summaryRow)
+	assert.Equal(t, uint64(0), summaryRow.MemWordsSumBefore)
+	assert.Equal(t, uint64(0), summaryRow.MemWordsSumAfter)
+	assert.Equal(t, uint64(0), summaryRow.MemWordsSqSumBefore)
+	assert.Equal(t, uint64(0), summaryRow.MemWordsSqSumAfter)
+	assert.Equal(t, uint64(0), summaryRow.MemExpansionGas)
+	assert.Equal(t, uint64(0), summaryRow.ColdAccessCount)
+}
+
+func TestFrameAggregator_ResourceGasSyntheticFrameIgnored(t *testing.T) {
+	// Synthetic frames (op="") should NOT accumulate resource gas into per-opcode stats.
+	aggregator := NewFrameAggregator()
+
+	eoaAddr := testAddress
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "CALL", Depth: 1, Gas: 10000,
+	}, 0, 0, []uint32{0}, 100, 100, nil, nil, 2, 3, 0, 1)
+
+	// Synthetic EOA frame with non-zero resource gas values (passed as 0 in practice,
+	// but verify the contract: op="" means don't accumulate).
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "", Depth: 2,
+	}, 0, 1, []uint32{0, 1}, 0, 0, &eoaAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0, 0)
+
+	aggregator.ProcessStructlog(&execution.StructLog{
+		Op: "STOP", Depth: 1, Gas: 9900,
+	}, 1, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 3, 3, 0, 0)
+
+	trace := &execution.TraceTransaction{Gas: 10000, Failed: false}
+	frames := aggregator.Finalize(trace, 5000)
+
+	// EOA frame should have zero resource gas (no real opcodes).
+	eoaFrame := getSummaryRow(frames, 1)
+	require.NotNil(t, eoaFrame)
+	assert.Equal(t, uint64(0), eoaFrame.MemWordsSumBefore)
+	assert.Equal(t, uint64(0), eoaFrame.ColdAccessCount)
+}
+
 func TestFrameAggregator_PrecompileGasSelfLessThanOverhead(t *testing.T) {
 	// Edge case: gasSelf <= overhead (100). No gas split occurs —
 	// precompileGas stays 0, effectiveGasSelf stays at gasSelf.
@@ -903,7 +1074,7 @@ func TestFrameAggregator_PrecompileGasSelfLessThanOverhead(t *testing.T) {
 		Op:    "PUSH1",
 		Depth: 1,
 		Gas:   10000,
-	}, 0, 0, []uint32{0}, 3, 3, nil, nil)
+	}, 0, 0, []uint32{0}, 3, 3, nil, nil, 0, 0, 0, 0)
 
 	// CALL to precompile with gasSelf=50 (less than overhead=100)
 	// This shouldn't split — effectiveGasSelf stays 50
@@ -911,19 +1082,19 @@ func TestFrameAggregator_PrecompileGasSelfLessThanOverhead(t *testing.T) {
 		Op:    "CALL",
 		Depth: 1,
 		Gas:   9997,
-	}, 1, 0, []uint32{0}, 50, 50, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1})
+	}, 1, 0, []uint32{0}, 50, 50, &precompileAddr, &execution.StructLog{Op: "PUSH1", Depth: 1}, 0, 0, 0, 0)
 
 	// Synthetic frame with gas=0 (no precompile gas extracted)
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "",
 		Depth: 2,
-	}, 1, 1, []uint32{0, 1}, 0, 0, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1})
+	}, 1, 1, []uint32{0, 1}, 0, 0, &precompileAddr, &execution.StructLog{Op: "CALL", Depth: 1}, 0, 0, 0, 0)
 
 	aggregator.ProcessStructlog(&execution.StructLog{
 		Op:    "STOP",
 		Depth: 1,
 		Gas:   9947,
-	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2})
+	}, 2, 0, []uint32{0}, 0, 0, nil, &execution.StructLog{Op: "", Depth: 2}, 0, 0, 0, 0)
 
 	trace := &execution.TraceTransaction{Gas: 10000, Failed: false}
 	frames := aggregator.Finalize(trace, 5000)
@@ -935,4 +1106,69 @@ func TestFrameAggregator_PrecompileGasSelfLessThanOverhead(t *testing.T) {
 	precompileFrame := getSummaryRow(frames, 1)
 	require.NotNil(t, precompileFrame)
 	assert.Equal(t, uint64(0), precompileFrame.GasCumulative, "precompile frame gas should be 0")
+}
+
+func TestColumns_ResourceGasFields(t *testing.T) {
+	// Verify that Append stores the 5 resource gas fields and Reset clears them.
+	cols := NewColumns()
+
+	now := time.Now()
+	cols.Append(
+		now, 100, "0xabc", 0,
+		0, nil, []uint32{0}, 0, nil, "", "SLOAD",
+		1, 0, 2100, 2100, 0, 0, nil, nil,
+		10, 20, 100, 400, 0, 3, // resource gas fields
+		"mainnet",
+	)
+
+	assert.Equal(t, 1, cols.Rows())
+	assert.Equal(t, uint64(10), cols.MemWordsSumBefore.Row(0))
+	assert.Equal(t, uint64(20), cols.MemWordsSumAfter.Row(0))
+	assert.Equal(t, uint64(100), cols.MemWordsSqSumBefore.Row(0))
+	assert.Equal(t, uint64(400), cols.MemWordsSqSumAfter.Row(0))
+	assert.Equal(t, uint64(3), cols.ColdAccessCount.Row(0))
+
+	// Add a second row and verify independence.
+	cols.Append(
+		now, 101, "0xdef", 1,
+		1, nil, []uint32{0, 1}, 1, nil, "CALL", "MSTORE",
+		2, 0, 6, 6, 1, 1, nil, nil,
+		5, 8, 25, 64, 0, 0,
+		"mainnet",
+	)
+
+	assert.Equal(t, 2, cols.Rows())
+	assert.Equal(t, uint64(5), cols.MemWordsSumBefore.Row(1))
+	assert.Equal(t, uint64(8), cols.MemWordsSumAfter.Row(1))
+	assert.Equal(t, uint64(25), cols.MemWordsSqSumBefore.Row(1))
+	assert.Equal(t, uint64(64), cols.MemWordsSqSumAfter.Row(1))
+	assert.Equal(t, uint64(0), cols.ColdAccessCount.Row(1))
+
+	// Reset and verify empty.
+	cols.Reset()
+	assert.Equal(t, 0, cols.Rows())
+}
+
+func TestColumns_InputContainsResourceGasFields(t *testing.T) {
+	// Verify that Input() includes the 5 resource gas column names.
+	cols := NewColumns()
+	input := cols.Input()
+
+	expectedNames := []string{
+		"memory_words_sum_before",
+		"memory_words_sum_after",
+		"memory_words_sq_sum_before",
+		"memory_words_sq_sum_after",
+		"memory_expansion_gas",
+		"cold_access_count",
+	}
+
+	inputNames := make(map[string]bool, len(input))
+	for _, col := range input {
+		inputNames[col.Name] = true
+	}
+
+	for _, name := range expectedNames {
+		assert.True(t, inputNames[name], "Input() should contain column %q", name)
+	}
 }
