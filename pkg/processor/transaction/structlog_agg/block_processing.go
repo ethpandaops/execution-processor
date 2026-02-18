@@ -287,7 +287,7 @@ func (p *Processor) EnqueueTransactionTasks(ctx context.Context, block execution
 		payload := &ProcessPayload{
 			BlockNumber:      *block.Number(),
 			TransactionHash:  tx.Hash().String(),
-			TransactionIndex: uint32(index), //nolint:gosec // index is bounded by block.Transactions() length
+			TransactionIndex: uint32(index), //nolint:gosec // G115: index bounded by block transactions
 			NetworkName:      p.network.Name,
 			Network:          p.network.Name,
 		}
@@ -459,7 +459,7 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 		payload := &ProcessPayload{
 			BlockNumber:      *block.Number(),
 			TransactionHash:  tx.Hash().String(),
-			TransactionIndex: uint32(index), //nolint:gosec // index is bounded by block.Transactions() length
+			TransactionIndex: uint32(index), //nolint:gosec // G115: index bounded by block transactions
 			NetworkName:      p.network.Name,
 			Network:          p.network.Name,
 		}

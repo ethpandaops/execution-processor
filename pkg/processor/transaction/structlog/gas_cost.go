@@ -116,7 +116,7 @@ func ComputeGasUsed(structlogs []execution.StructLog) []uint64 {
 			depthU64 = math.MaxInt
 		}
 
-		depth := int(depthU64) //nolint:gosec // overflow checked above
+		depth := int(depthU64) //nolint:gosec // G115: overflow guarded above
 
 		// Ensure slice has enough space for this depth
 		for len(pendingIdx) <= depth {
@@ -132,7 +132,7 @@ func ComputeGasUsed(structlogs []execution.StructLog) []uint64 {
 		}
 
 		// Update gasUsed for pending log at current depth
-		if prevIdx := pendingIdx[depth]; prevIdx >= 0 && prevIdx < len(structlogs) {
+		if prevIdx := pendingIdx[depth]; prevIdx >= 0 && prevIdx < len(structlogs) && i < len(structlogs) {
 			// Guard against underflow: if gas values are corrupted or out of order,
 			// fall back to the pre-calculated GasCost instead of underflowing
 			if structlogs[prevIdx].Gas >= structlogs[i].Gas {

@@ -213,7 +213,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 			TransactionGas:         trace.Gas,
 			TransactionFailed:      trace.Failed,
 			TransactionReturnValue: trace.ReturnValue,
-			Index:                  uint32(i), //nolint:gosec // index is bounded by structlogs length
+			Index:                  uint32(i), //nolint:gosec // G115: index bounded by structlogs length
 			Operation:              sl.Op,
 			Gas:                    sl.Gas,
 			GasCost:                sl.GasCost,
@@ -254,7 +254,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 					TransactionGas:         trace.Gas,
 					TransactionFailed:      trace.Failed,
 					TransactionReturnValue: trace.ReturnValue,
-					Index:                  uint32(i), //nolint:gosec // Same index as parent CALL
+					Index:                  uint32(i), //nolint:gosec // G115: same index as parent CALL
 					Operation:              "",        // Empty = synthetic EOA frame
 					Gas:                    0,
 					GasCost:                0,
@@ -537,7 +537,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 				TransactionGas:         trace.Gas,
 				TransactionFailed:      trace.Failed,
 				TransactionReturnValue: trace.ReturnValue,
-				Index:                  uint32(i), //nolint:gosec // index is bounded by structlogs length
+				Index:                  uint32(i), //nolint:gosec // G115: index bounded by structlogs length
 				Operation:              structLog.Op,
 				Gas:                    structLog.Gas,
 				GasCost:                structLog.GasCost,
@@ -586,7 +586,7 @@ func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block
 						TransactionGas:         trace.Gas,
 						TransactionFailed:      trace.Failed,
 						TransactionReturnValue: trace.ReturnValue,
-						Index:                  uint32(i), //nolint:gosec // Same index as parent CALL
+						Index:                  uint32(i), //nolint:gosec // G115: same index as parent CALL
 						Operation:              "",        // Empty = synthetic EOA frame
 						Gas:                    0,
 						GasCost:                0,

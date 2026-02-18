@@ -135,7 +135,7 @@ func (p *Processor) handleProcessTask(ctx context.Context, task *asynq.Task) err
 		}
 
 		// Build transaction row
-		txRow, buildErr := p.buildTransactionRow(block, tx, receipt, uint64(index)) //nolint:gosec // index is bounded
+		txRow, buildErr := p.buildTransactionRow(block, tx, receipt, uint64(index)) //nolint:gosec // G115: index bounded by slice length
 		if buildErr != nil {
 			return fmt.Errorf("failed to build transaction row: %w", buildErr)
 		}
