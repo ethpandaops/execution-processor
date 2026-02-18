@@ -5,6 +5,7 @@ A distributed system for processing Ethereum execution layer data with support f
 ## Features
 
 - **Transaction Structlog Processing**: Extract and store detailed execution traces for every transaction
+- **Structlog Aggregation**: Aggregate per-opcode gas data into call frame rows with resource gas decomposition
 - **Distributed Processing**: Redis-backed task queues with priority-based processing
 - **Leader Election**: Built-in leader election for coordinated block processing
 - **Dual Processing Modes**: Forwards (real-time) and backwards (backfill) processing
@@ -213,6 +214,42 @@ curl -X POST http://localhost:8080/api/v1/queue/blocks/transaction_structlog \
 - Maximum 1000 blocks per bulk request
 - Allows reprocessing of already processed blocks
 - Each API call creates new tasks (calling multiple times will create duplicates)
+
+## Structlog Aggregation
+
+The `structlog_agg` processor aggregates per-opcode structlog data into call frame rows suitable for ClickHouse storage. It produces two types of rows per call frame:
+
+- **Summary row** (`operation=""`): Frame-level metadata including gas totals, call type, target address, intrinsic gas, and gas refund
+- **Per-opcode rows** (`operation="SLOAD"` etc.): Gas and count aggregated by opcode within each frame
+
+### Resource Gas Decomposition
+
+The aggregator computes building-block columns that enable downstream SQL to decompose EVM gas into resource categories (compute, memory, storage access):
+
+| Column | Description |
+|--------|-------------|
+| `memory_words_sum_before` | SUM(ceil(memory_bytes/32)) before each opcode |
+| `memory_words_sum_after` | SUM(ceil(memory_bytes/32)) after each opcode |
+| `memory_words_sq_sum_before` | SUM(words_before^2) for quadratic cost extraction |
+| `memory_words_sq_sum_after` | SUM(words_after^2) for quadratic cost extraction |
+| `cold_access_count` | Number of cold storage/account accesses (EIP-2929) |
+
+These columns are computed by two functions in the `structlog` package:
+
+- **`ComputeMemoryWords`**: Derives per-opcode memory size in 32-byte words using the pending-index technique. Handles depth transitions and RETURN/REVERT last-in-frame expansion via stack operands.
+- **`ClassifyColdAccess`**: Classifies each opcode's cold vs warm access using gas values, memory expansion costs, and range-based detection. Supports both embedded mode (pre-computed tracer fields) and RPC mode (stack-based fallbacks).
+
+### Gas Computation Pipeline
+
+```
+StructLogs -> ComputeGasUsed -> ComputeGasSelf -> ComputeMemoryWords -> ClassifyColdAccess
+                                                                              |
+                                                                              v
+                                                                     ProcessStructlog (per opcode)
+                                                                              |
+                                                                              v
+                                                                     Finalize -> CallFrameRows
+```
 
 ## Architecture
 
