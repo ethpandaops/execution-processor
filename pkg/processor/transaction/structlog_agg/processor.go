@@ -173,6 +173,11 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 
 // Start starts the processor.
 func (p *Processor) Start(ctx context.Context) error {
+	if !p.pool.HasEmbeddedNodes() {
+		panic("structlog_agg processor requires embedded mode (e.g. embedded in erigon); " +
+			"it cannot run against a standard JSON-RPC execution node")
+	}
+
 	// Start the ClickHouse client
 	if err := p.clickhouse.Start(); err != nil {
 		return fmt.Errorf("failed to start ClickHouse client: %w", err)
