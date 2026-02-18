@@ -116,7 +116,7 @@ func ComputeGasUsed(structlogs []execution.StructLog) []uint64 {
 			depthU64 = math.MaxInt
 		}
 
-		depth := int(depthU64) //nolint:gosec // G115: overflow guarded above
+		depth := int(depthU64)
 
 		// Ensure slice has enough space for this depth
 		for len(pendingIdx) <= depth {
