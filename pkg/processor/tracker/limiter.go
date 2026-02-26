@@ -79,7 +79,7 @@ func (l *Limiter) IsBlockedByIncompleteBlocks(
 		return false, nil, nil
 	}
 
-	maxPendingBlockRange := uint64(l.config.MaxPendingBlockRange) //nolint:gosec // validated above
+	maxPendingBlockRange := uint64(l.config.MaxPendingBlockRange)
 
 	if mode == BACKWARDS_MODE {
 		// Backwards mode: check distance from newest incomplete block
@@ -145,7 +145,7 @@ func (l *Limiter) GetAvailableCapacity(ctx context.Context, nextBlock uint64, mo
 		return l.config.MaxPendingBlockRange, nil
 	}
 
-	maxPendingBlockRange := uint64(l.config.MaxPendingBlockRange) //nolint:gosec // validated above
+	maxPendingBlockRange := uint64(l.config.MaxPendingBlockRange)
 
 	if mode == BACKWARDS_MODE {
 		// Backwards mode: check distance from newest incomplete block
@@ -279,7 +279,7 @@ func (l *Limiter) GetGaps(ctx context.Context, currentBlock uint64, lookbackRang
 	maxBlock := referenceBlock
 
 	if l.config.MaxPendingBlockRange > 0 {
-		exclusionWindow := uint64(l.config.MaxPendingBlockRange) //nolint:gosec // validated in config
+		exclusionWindow := uint64(l.config.MaxPendingBlockRange)
 
 		if referenceBlock > exclusionWindow {
 			maxBlock = referenceBlock - exclusionWindow - 1
