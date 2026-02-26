@@ -242,7 +242,6 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 
 	// Record success metrics
 	pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "success").Inc()
-	pcommon.ClickHouseInsertsRows.WithLabelValues(p.network.Name, ProcessorName, p.config.Table, "success", "").Add(float64(len(frames)))
 
 	// Log progress for transactions with many frames
 	if len(frames) > 100 {
