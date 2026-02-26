@@ -271,6 +271,14 @@ func (b *Buffer[R]) doFlush(ctx context.Context, rows []R, waiters []waiter, tri
 		b.config.Network, b.config.Processor, b.config.Table, trigger, status,
 	).Inc()
 
+	common.ClickHouseOperationDuration.WithLabelValues(
+		b.config.Network, b.config.Processor, "insert", b.config.Table, status, "",
+	).Observe(duration.Seconds())
+
+	common.ClickHouseOperationTotal.WithLabelValues(
+		b.config.Network, b.config.Processor, "insert", b.config.Table, status, "",
+	).Inc()
+
 	common.RowBufferFlushDuration.WithLabelValues(
 		b.config.Network, b.config.Processor, b.config.Table,
 	).Observe(duration.Seconds())

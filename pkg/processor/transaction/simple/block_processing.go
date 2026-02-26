@@ -257,6 +257,8 @@ func (p *Processor) ProcessBlock(ctx context.Context, block execution.Block) err
 		common.TasksEnqueued.WithLabelValues(p.network.Name, ProcessorName, queue, task.Type()).Inc()
 	}
 
+	common.BlocksProcessed.WithLabelValues(p.network.Name, ProcessorName).Inc()
+
 	p.log.WithFields(logrus.Fields{
 		"block_number": blockNumber.Uint64(),
 		"tx_count":     len(block.Transactions()),

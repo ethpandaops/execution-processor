@@ -583,7 +583,6 @@ func (m *Manager) processBlocks(ctx context.Context) bool {
 			duration := time.Since(startTime)
 
 			common.BlockProcessingDuration.WithLabelValues(m.network.Name, name).Observe(duration.Seconds())
-			common.BlocksProcessed.WithLabelValues(m.network.Name, name).Inc()
 
 			m.log.WithFields(logrus.Fields{
 				"processor": name,
