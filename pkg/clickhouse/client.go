@@ -647,6 +647,7 @@ func (c *Client) collectPoolMetrics() {
 			stat := c.pool.Stat()
 
 			// Set gauge values (current state)
+			common.ClickHouseConnectionsActive.WithLabelValues(network, c.processor).Set(float64(stat.AcquiredResources()))
 			common.ClickHousePoolAcquiredResources.WithLabelValues(network, c.processor).Set(float64(stat.AcquiredResources()))
 			common.ClickHousePoolIdleResources.WithLabelValues(network, c.processor).Set(float64(stat.IdleResources()))
 			common.ClickHousePoolConstructingResources.WithLabelValues(network, c.processor).Set(float64(stat.ConstructingResources()))

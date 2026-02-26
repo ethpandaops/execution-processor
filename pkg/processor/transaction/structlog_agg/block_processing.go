@@ -263,6 +263,8 @@ func (p *Processor) ProcessBlock(ctx context.Context, block execution.Block) err
 		}).Warn("task count mismatch - some tasks may have failed to enqueue")
 	}
 
+	common.BlocksProcessed.WithLabelValues(p.network.Name, ProcessorName).Inc()
+
 	p.log.WithFields(logrus.Fields{
 		"network":      p.network.Name,
 		"block_number": blockNumber,
