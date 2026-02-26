@@ -57,7 +57,7 @@ func ComputeMemoryWords(structlogs []execution.StructLog) (wordsBefore, wordsAft
 			depthU64 = math.MaxInt
 		}
 
-		depth := int(depthU64) //nolint:gosec // overflow checked above
+		depth := int(depthU64)
 
 		// Ensure slice has enough space for this depth.
 		for len(pendingIdx) <= depth {
