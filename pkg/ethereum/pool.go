@@ -70,6 +70,17 @@ func (p *Pool) HasExecutionNodes() bool {
 	return len(p.executionNodes) > 0
 }
 
+// HasEmbeddedNodes returns true if any execution node is an EmbeddedNode.
+func (p *Pool) HasEmbeddedNodes() bool {
+	for _, node := range p.executionNodes {
+		if _, ok := node.(*execution.EmbeddedNode); ok {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (p *Pool) HasHealthyExecutionNodes() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
