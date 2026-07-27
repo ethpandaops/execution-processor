@@ -18,6 +18,10 @@ import (
 
 // fakeCryo writes an executable stub in place of cryo. The body receives cryo's
 // arguments and is responsible for producing whatever output the test needs.
+//
+// Callers must not run in parallel: exec'ing a freshly written file races with
+// any concurrent fork, which inherits the write descriptor and makes exec fail
+// with ETXTBSY.
 func fakeCryo(t *testing.T, body string) string {
 	t.Helper()
 
@@ -57,8 +61,6 @@ func testGroup(t *testing.T, datatypes ...string) *Group {
 // endpoint carries basic-auth credentials, and anything in argv is readable
 // from /proc by every process sharing the PID namespace.
 func TestFetchPassesEndpointThroughEnvironment(t *testing.T) {
-	t.Parallel()
-
 	binary := fakeCryo(t, `
 for arg in "$@"; do
   case "$arg" in
@@ -78,8 +80,6 @@ exit 9
 }
 
 func TestFetchBuildsArguments(t *testing.T) {
-	t.Parallel()
-
 	argsFile := filepath.Join(t.TempDir(), "args")
 	binary := fakeCryo(t, `printf '%s\n' "$@" > `+argsFile+`; exit 1`)
 
@@ -110,8 +110,6 @@ func TestFetchBuildsArguments(t *testing.T) {
 }
 
 func TestFetchDecodesEveryDatasetInTheGroup(t *testing.T) {
-	t.Parallel()
-
 	// state_diffs is one argument yielding three datasets, so a group naming it
 	// must come back with all three decoded.
 	src, err := filepath.Abs(filepath.Join("testdata", "b23000000"))
@@ -142,8 +140,6 @@ done
 // TestFetchFailsWhenDatasetMissing covers cryo exiting successfully having
 // written nothing, which must not be mistaken for a block with no rows.
 func TestFetchFailsWhenDatasetMissing(t *testing.T) {
-	t.Parallel()
-
 	binary := fakeCryo(t, "exit 0")
 
 	_, err := testFetcher(t, binary).Fetch(t.Context(), testGroup(t, "blocks"), 100, 100)
@@ -153,8 +149,6 @@ func TestFetchFailsWhenDatasetMissing(t *testing.T) {
 }
 
 func TestFetchRemovesTempDirOnEveryPath(t *testing.T) {
-	t.Parallel()
-
 	parent := t.TempDir()
 
 	log := logrus.New()
@@ -179,8 +173,6 @@ func TestFetchRemovesTempDirOnEveryPath(t *testing.T) {
 }
 
 func TestFetchKillsHungSubprocess(t *testing.T) {
-	t.Parallel()
-
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
 
@@ -202,8 +194,6 @@ func TestFetchKillsHungSubprocess(t *testing.T) {
 // TestFetchStopsOnContextCancel covers pod drain: an in-flight fetch must
 // unblock rather than run to its own timeout.
 func TestFetchStopsOnContextCancel(t *testing.T) {
-	t.Parallel()
-
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
 
@@ -226,8 +216,6 @@ func TestFetchStopsOnContextCancel(t *testing.T) {
 }
 
 func TestFetchStderrIsBounded(t *testing.T) {
-	t.Parallel()
-
 	binary := fakeCryo(t, `i=0; while [ $i -lt 4000 ]; do echo "noisy failure line $i"; i=$((i+1)); done >&2; exit 1`)
 
 	_, err := testFetcher(t, binary).Fetch(t.Context(), testGroup(t, "blocks"), 100, 100)
@@ -265,8 +253,6 @@ func TestSweepTempDirsSparesRecentDirectories(t *testing.T) {
 }
 
 func TestVersionReportsBinary(t *testing.T) {
-	t.Parallel()
-
 	version, err := testFetcher(t, fakeCryo(t, `echo "cryo 0.3.2-37-g559b654"`)).Version(t.Context())
 
 	require.NoError(t, err)
@@ -285,15 +271,11 @@ func TestVersionFailsWhenBinaryMissing(t *testing.T) {
 // credentials out of reach: they stay out of argv, but cryo echoes its target
 // back on stderr, and that text is embedded in the error the worker logs.
 func TestFetchRedactsEndpointFromStderr(t *testing.T) {
-	t.Parallel()
-
 	for name, body := range map[string]string{
 		"full url":    `echo "error sending request for url ($ETH_RPC_URL): connection refused" >&2; exit 1`,
 		"credentials": `echo "authentication failed for user:secret" >&2; exit 1`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
 			_, err := testFetcher(t, fakeCryo(t, body)).Fetch(t.Context(), testGroup(t, "blocks"), 100, 100)
 
 			require.Error(t, err)
@@ -304,8 +286,6 @@ func TestFetchRedactsEndpointFromStderr(t *testing.T) {
 }
 
 func TestFetchErrorsAreDistinguishable(t *testing.T) {
-	t.Parallel()
-
 	parquet := filepath.Join(t.TempDir(), "blocks.parquet")
 	require.NoError(t, os.WriteFile(parquet, []byte("not parquet at all"), 0o600))
 
@@ -337,8 +317,6 @@ cp ` + parquet + ` "$out/ethereum__blocks__100_to_100.parquet"`,
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
 			_, err := testFetcher(t, fakeCryo(t, tt.body)).Fetch(t.Context(), testGroup(t, "blocks"), 100, 100)
 
 			require.Error(t, err)
@@ -348,8 +326,6 @@ cp ` + parquet + ` "$out/ethereum__blocks__100_to_100.parquet"`,
 }
 
 func TestFetchErrorIsTimeoutWhenSubprocessOverruns(t *testing.T) {
-	t.Parallel()
-
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
 
@@ -368,8 +344,6 @@ func TestFetchErrorIsTimeoutWhenSubprocessOverruns(t *testing.T) {
 }
 
 func TestFetchErrorIsNoEndpointWhenPoolIsUnhealthy(t *testing.T) {
-	t.Parallel()
-
 	log := logrus.New()
 	log.SetLevel(logrus.ErrorLevel)
 
@@ -392,8 +366,6 @@ func TestFetchErrorIsNoEndpointWhenPoolIsUnhealthy(t *testing.T) {
 // spawning a helper that outlives it would keep an RPC connection open against a
 // node the worker has already given up on.
 func TestFetchKillsGrandchildren(t *testing.T) {
-	t.Parallel()
-
 	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
 
 	log := logrus.New()
@@ -426,8 +398,6 @@ func TestFetchKillsGrandchildren(t *testing.T) {
 }
 
 func TestVersionErrorIncludesStderr(t *testing.T) {
-	t.Parallel()
-
 	// The documented failure is a binary that exists but cannot load a shared
 	// library, which says so only on stderr while the status says only 127.
 	binary := fakeCryo(t, `echo "cryo: error while loading shared libraries: libssl.so.3: cannot open shared object file" >&2; exit 127`)
@@ -529,4 +499,26 @@ func indexOf(t *testing.T, args []string, want string) int {
 	t.Fatalf("argument %q not passed to cryo: %v", want, args)
 
 	return -1
+}
+
+// TestFetchFindsZeroPaddedOutput covers cryo padding block numbers in the file
+// name. Mainnet heights are already eight digits so this is invisible there,
+// but it breaks every shorter height: the whole of mainnet below block
+// 10,000,000, and every testnet.
+func TestFetchFindsZeroPaddedOutput(t *testing.T) {
+	src, err := filepath.Abs(filepath.Join("testdata", "b23000000"))
+	require.NoError(t, err)
+
+	binary := fakeCryo(t, `
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in --output-dir) out="$2"; shift 2 ;; *) shift ;; esac
+done
+cp `+src+`/ethereum__blocks__*.parquet "$out/network_560048__blocks__01647952_to_01647952.parquet"
+`)
+
+	tables, err := testFetcher(t, binary).Fetch(t.Context(), testGroup(t, "blocks"), 1647952, 1647952)
+
+	require.NoError(t, err, "a zero-padded, non-ethereum-prefixed name must still be found")
+	require.Equal(t, 1, tables["blocks"].Rows())
 }

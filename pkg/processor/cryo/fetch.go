@@ -282,11 +282,17 @@ func (f *execFetcher) run(ctx context.Context, g *Group, from, to uint64, dir st
 	return nil
 }
 
-// findParquet locates the file cryo wrote for one dataset. cryo names output
-// <network>__<dataset>__<from>_to_<to>.parquet, and the network prefix is
-// whatever cryo resolved the chain id to, so it is matched by wildcard.
+// findParquet locates the file cryo wrote for one dataset.
+//
+// Only the dataset is matched. cryo decorates the rest of the name in ways that
+// are not worth predicting: the prefix is whatever it resolved the chain id to,
+// and the block numbers are zero-padded to a width it chooses, so a chain whose
+// heights are shorter than mainnet's produces 01647952 where the request said
+// 1647952. The invocation writes into a directory of its own, so the dataset
+// alone identifies the file, and two matches are treated as an error rather
+// than guessed between.
 func findParquet(dir, dataset string, from, to uint64) (string, error) {
-	pattern := filepath.Join(dir, fmt.Sprintf("*__%s__%d_to_%d.parquet", dataset, from, to))
+	pattern := filepath.Join(dir, fmt.Sprintf("*__%s__*.parquet", dataset))
 
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
