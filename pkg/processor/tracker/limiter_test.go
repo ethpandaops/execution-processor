@@ -381,7 +381,7 @@ func (m *mockStateProvider) GetNewestIncompleteBlock(
 }
 
 func (m *mockStateProvider) MarkBlockComplete(
-	_ context.Context, _ uint64, _, _ string,
+	_ context.Context, _ uint64, _, _ string, _ int,
 ) error {
 	return nil
 }

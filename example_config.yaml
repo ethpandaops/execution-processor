@@ -90,5 +90,59 @@ processors:
     # bufferMaxRows: 100000       # Max rows before flush (default: 100000)
     # bufferFlushInterval: "1s"   # Max time before flush (default: 1s)
 
+  # cryo processors. One config, one processor per enabled group: a group is a
+  # single cryo invocation, so it is also the unit of success, failure and
+  # progress tracking.
+  #
+  # Requires the `cryo` binary on PATH (bundled in the image).
+  cryo:
+    enabled: false
+    addr: "localhost:9000"
+    database: "default"
+    # binaryPath: "cryo"            # Resolved on PATH unless absolute
+    # tempDir: ""                   # Scratch space parent, empty = OS default
+    # fetchTimeout: "2m"            # Bounds one cryo invocation
+    # bufferMaxRows: 100000         # Per dataset, not per group (default: 100000)
+    # bufferFlushInterval: "3s"     # Per dataset (default: 3s)
+    # maxPendingBlockRange: 2       # Raise substantially for backfill
+    # globalArgs: ["--hex", "--u256-types", "string"]  # Replaces the defaults entirely
+
+    groups:
+      # The group name is the `processor` key in admin.execution_block and is
+      # therefore permanent: renaming it orphans its progress, and moving a
+      # datatype between groups requires a re-seed.
+      - name: all
+        enabled: true
+        # Datatypes are cryo arguments, not always dataset names: `state_diffs`
+        # is one argument that yields balance_diffs, nonce_diffs and
+        # storage_diffs. Collecting those three individually fails inside cryo.
+        datatypes:
+          - blocks
+          - transactions
+          - logs
+          - erc20_transfers
+          - erc721_transfers
+          - traces
+          - native_transfers
+          - contracts
+          - address_appearances
+          - balance_reads
+          - nonce_reads
+          - storage_reads
+          - four_byte_counts
+          - state_diffs
+        # minBlock: 1               # Trace-based datasets cannot trace block 0
+        # tablePrefix: ""           # Prepended to every target table name
+        # maxPendingBlockRange: 20  # Overrides the processor-wide setting
+
+      # Splitting by RPC family instead costs ~50% more per block and 5x the
+      # ledger rows, but lets datasets be cut over independently:
+      #
+      #   - name: block         datatypes: [blocks, transactions]
+      #   - name: logs          datatypes: [logs, erc20_transfers, erc721_transfers]
+      #   - name: trace_block   datatypes: [traces, native_transfers, contracts, address_appearances]
+      #   - name: debug_trace   datatypes: [balance_reads, nonce_reads, storage_reads, four_byte_counts]
+      #   - name: state_diffs   datatypes: [state_diffs]
+
 # Application settings
 shutdownTimeout: 6m

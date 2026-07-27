@@ -43,7 +43,6 @@ type SingleBlockResponse struct {
 	Processor        string `json:"processor"`
 	Queue            string `json:"queue"`
 	TransactionCount int    `json:"transaction_count"`
-	TasksCreated     int    `json:"tasks_created"`
 }
 
 //nolint:tagliatelle // Using snake_case for API backwards compatibility
@@ -51,7 +50,6 @@ type BlockResult struct {
 	BlockNumber      uint64 `json:"block_number"`
 	Status           string `json:"status"`
 	TransactionCount int    `json:"transaction_count,omitempty"`
-	TasksCreated     int    `json:"tasks_created,omitempty"`
 	Error            string `json:"error,omitempty"`
 }
 
@@ -119,7 +117,6 @@ func (h *Handler) queueSingleBlock(w http.ResponseWriter, r *http.Request) {
 		Processor:        processorName,
 		Queue:            queue,
 		TransactionCount: result.TransactionCount,
-		TasksCreated:     result.TasksCreated,
 	}
 
 	h.writeJSON(w, http.StatusOK, response)
@@ -177,7 +174,6 @@ func (h *Handler) queueMultipleBlocks(w http.ResponseWriter, r *http.Request) {
 				BlockNumber:      blockNumber,
 				Status:           "queued",
 				TransactionCount: result.TransactionCount,
-				TasksCreated:     result.TasksCreated,
 			})
 			response.Summary.Queued++
 		}

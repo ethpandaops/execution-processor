@@ -204,7 +204,7 @@ func (p *Processor) ProcessBlock(ctx context.Context, block execution.Block) err
 		}).Debug("skipping empty block")
 
 		// Mark the block as complete immediately (no tasks to track)
-		if markErr := p.stateManager.MarkBlockComplete(ctx, blockNumber.Uint64(), p.network.Name, p.Name()); markErr != nil {
+		if markErr := p.stateManager.MarkBlockComplete(ctx, blockNumber.Uint64(), p.network.Name, p.Name(), 0); markErr != nil {
 			p.log.WithError(markErr).WithFields(logrus.Fields{
 				"network":      p.network.Name,
 				"block_number": blockNumber,
@@ -430,7 +430,7 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 	if len(block.Transactions()) == 0 {
 		p.log.WithField("block", blockNum).Debug("Empty orphaned block, marking as complete")
 
-		return p.stateManager.MarkBlockComplete(ctx, blockNum, p.network.Name, p.Name())
+		return p.stateManager.MarkBlockComplete(ctx, blockNum, p.network.Name, p.Name(), 0)
 	}
 
 	expectedCount := len(block.Transactions())

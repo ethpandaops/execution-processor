@@ -1,3 +1,25 @@
+# cryo ships no release binaries at all, so it is built from a pinned commit.
+# The build must be static: cryo links glibc and OpenSSL 3 dynamically by
+# default, and neither exists on the alpine runtime.
+#
+# Pin the Rust version as well as the commit. cryo itself has been stable for
+# ~18 months, but rustc has not: 1.97 fails to compile the ethnum dependency
+# with "cannot transmute between types of different sizes", against both the
+# musl and gnu targets.
+FROM rust:1.83-alpine AS cryo-builder
+
+ARG CRYO_SHA=559b65455d7ef6b03e8e9e96a0e50fd4fe8a9c86
+
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig perl make git
+
+ENV OPENSSL_STATIC=1 OPENSSL_DIR=/usr
+
+RUN git clone https://github.com/paradigmxyz/cryo /src && \
+    cd /src && \
+    git checkout "${CRYO_SHA}" && \
+    cargo build --release -p cryo_cli && \
+    strip target/release/cryo
+
 FROM golang:1.25.4-alpine AS builder
 
 RUN apk add --no-cache make git ca-certificates
@@ -21,6 +43,7 @@ RUN apk --no-cache add ca-certificates && \
 
 WORKDIR /app
 
+COPY --from=cryo-builder /src/target/release/cryo /usr/local/bin/cryo
 COPY --from=builder /build/bin/execution-processor .
 
 RUN chown -R appuser:appuser /app

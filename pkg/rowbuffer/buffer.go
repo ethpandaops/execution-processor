@@ -189,6 +189,10 @@ func (b *Buffer[R]) Submit(ctx context.Context, rows []R) error {
 
 	// Perform flush outside of lock if triggered by size
 	if shouldFlush {
+		// Detached deliberately: the batch belongs to every waiter, not to the
+		// caller that happened to cross the threshold, so it must survive that
+		// caller's context being cancelled.
+		//nolint:gosec // G118: see above, the detachment is the point
 		go func() {
 			_ = b.doFlush(context.Background(), flushRows, flushWaiters, "size")
 		}()

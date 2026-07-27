@@ -200,6 +200,11 @@ func (p *Processor) GetCompletionTracker() *tracker.BlockCompletionTracker {
 	return p.completionTracker
 }
 
+// GetLimiter returns the block completion limiter.
+func (p *Processor) GetLimiter() *tracker.Limiter {
+	return p.Limiter
+}
+
 // EnqueueTask enqueues a task to the specified queue with infinite retries.
 func (p *Processor) EnqueueTask(ctx context.Context, task *asynq.Task, opts ...asynq.Option) error {
 	opts = append(opts, asynq.MaxRetry(math.MaxInt32))

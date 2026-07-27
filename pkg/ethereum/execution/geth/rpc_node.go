@@ -135,6 +135,9 @@ func (n *RPCNode) Start(ctx context.Context) error {
 
 	errs := make(chan error, 1)
 
+	// Detached from the Start context on purpose: service readiness is awaited
+	// after Start returns, under its own 30s bound.
+	//nolint:gosec // G118: see above
 	go func() {
 		wg := sync.WaitGroup{}
 
@@ -269,6 +272,11 @@ func (n *RPCNode) Metadata() *services.MetadataService {
 // Name returns the configured name for this node.
 func (n *RPCNode) Name() string {
 	return n.config.Name
+}
+
+// RPCEndpoint returns the configured JSON-RPC URL.
+func (n *RPCNode) RPCEndpoint() string {
+	return n.config.NodeAddress
 }
 
 // ChainID returns the chain ID from the metadata service.

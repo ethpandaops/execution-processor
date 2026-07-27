@@ -189,7 +189,7 @@ func (p *Processor) ProcessBlock(ctx context.Context, block execution.Block) err
 	if len(block.Transactions()) == 0 {
 		p.log.WithField("block", blockNumber.Uint64()).Debug("Empty block, marking as complete")
 
-		return p.stateManager.MarkBlockComplete(ctx, blockNumber.Uint64(), p.network.Name, p.Name())
+		return p.stateManager.MarkBlockComplete(ctx, blockNumber.Uint64(), p.network.Name, p.Name(), 0)
 	}
 
 	// 1. Mark block as enqueued in ClickHouse FIRST (complete=0)
@@ -331,7 +331,7 @@ func (p *Processor) ReprocessBlock(ctx context.Context, blockNum uint64) error {
 	if len(block.Transactions()) == 0 {
 		p.log.WithField("block", blockNum).Debug("Empty orphaned block, marking as complete")
 
-		return p.stateManager.MarkBlockComplete(ctx, blockNum, p.network.Name, p.Name())
+		return p.stateManager.MarkBlockComplete(ctx, blockNum, p.network.Name, p.Name(), 0)
 	}
 
 	// Use the high-priority reprocess queue for orphaned/stale blocks (mode-specific)

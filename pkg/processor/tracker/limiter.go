@@ -14,7 +14,7 @@ import (
 type StateProvider interface {
 	GetOldestIncompleteBlock(ctx context.Context, network, processor string, minBlockNumber uint64) (*uint64, error)
 	GetNewestIncompleteBlock(ctx context.Context, network, processor string, maxBlockNumber uint64) (*uint64, error)
-	MarkBlockComplete(ctx context.Context, blockNumber uint64, network, processor string) error
+	MarkBlockComplete(ctx context.Context, blockNumber uint64, network, processor string, taskCount int) error
 }
 
 // GapStateProvider extends StateProvider with gap detection capabilities.

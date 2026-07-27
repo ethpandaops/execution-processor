@@ -39,7 +39,7 @@ func (m *mockStateProviderForTracker) GetNewestIncompleteBlock(
 }
 
 func (m *mockStateProviderForTracker) MarkBlockComplete(
-	_ context.Context, _ uint64, _, _ string,
+	_ context.Context, _ uint64, _, _ string, _ int,
 ) error {
 	return m.markCompleteErr
 }
@@ -274,7 +274,7 @@ func (m *mockStateProviderForLimiter) GetNewestIncompleteBlock(
 }
 
 func (m *mockStateProviderForLimiter) MarkBlockComplete(
-	_ context.Context, _ uint64, _, _ string,
+	_ context.Context, _ uint64, _, _ string, _ int,
 ) error {
 	return nil
 }

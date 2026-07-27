@@ -74,6 +74,7 @@ func ComputeMemoryWords(structlogs []execution.StructLog) (wordsBefore, wordsAft
 		}
 
 		// Resolve pending opcode at current depth: its wordsAfter is our wordsBefore.
+		//nolint:gosec // G602: i ranges over structlogs, so the index is in bounds
 		wb := memoryWords(structlogs[i].MemorySize)
 		wordsBefore[i] = wb
 

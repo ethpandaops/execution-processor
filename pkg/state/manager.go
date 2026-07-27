@@ -561,14 +561,15 @@ func (s *Manager) MarkBlockEnqueued(ctx context.Context, blockNumber uint64, tas
 // MarkBlockComplete inserts a block with complete=true to indicate all tasks finished.
 // This is the second phase of two-phase completion tracking.
 // ReplacingMergeTree will keep the latest row per (processor, network, block_number).
-func (s *Manager) MarkBlockComplete(ctx context.Context, blockNumber uint64, network, processor string) error {
+func (s *Manager) MarkBlockComplete(ctx context.Context, blockNumber uint64, network, processor string, taskCount int) error {
 	query := fmt.Sprintf(
-		"INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name, complete, task_count) VALUES ('%s', %d, '%s', '%s', 1, 0)",
+		"INSERT INTO %s (updated_date_time, block_number, processor, meta_network_name, complete, task_count) VALUES ('%s', %d, '%s', '%s', 1, %d)",
 		s.storageTable,
 		time.Now().Format("2006-01-02 15:04:05.000"),
 		blockNumber,
 		processor,
 		network,
+		taskCount,
 	)
 
 	err := s.storageClient.Execute(ctx, query)
@@ -580,6 +581,7 @@ func (s *Manager) MarkBlockComplete(ctx context.Context, blockNumber uint64, net
 		"block_number": blockNumber,
 		"processor":    processor,
 		"network":      network,
+		"task_count":   taskCount,
 	}).Debug("Marked block as complete")
 
 	return nil
