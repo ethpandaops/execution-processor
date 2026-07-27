@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ClickHouse/ch-go"
@@ -70,6 +71,32 @@ type datasetSink[R any] struct {
 	buffer  *rowbuffer.Buffer[R]
 	decode  decodeFunc[R]
 	newCols func() columnar[R]
+
+	// cols recycles column blocks between flushes. A block holds one buffer
+	// per column sized for the batch, so at these row counts rebuilding it
+	// every flush is the single largest allocation in the insert path.
+	cols sync.Pool
+}
+
+// acquireCols returns a reset column block, reusing a retired one when there is
+// one to hand.
+func (s *datasetSink[R]) acquireCols() columnar[R] {
+	if v := s.cols.Get(); v != nil {
+		cols, ok := v.(columnar[R])
+		if ok {
+			cols.Reset()
+
+			return cols
+		}
+	}
+
+	return s.newCols()
+}
+
+// releaseCols retires a column block once ClickHouse has consumed it.
+func (s *datasetSink[R]) releaseCols(cols columnar[R]) {
+	cols.Reset()
+	s.cols.Put(cols)
 }
 
 func newDatasetSink[R any](deps sinkDeps, dec decodeFunc[R], newCols func() columnar[R]) sink {
@@ -135,7 +162,8 @@ func (s *datasetSink[R]) flush(ctx context.Context, rows []R) error {
 	insertCtx, cancel := context.WithTimeout(ctx, tracker.DefaultClickHouseTimeout)
 	defer cancel()
 
-	cols := s.newCols()
+	cols := s.acquireCols()
+	defer s.releaseCols(cols)
 
 	for i := range rows {
 		if err := cols.Append(rows[i]); err != nil {

@@ -139,3 +139,37 @@ func TestGroupRequiresGasLimitColumn(t *testing.T) {
 	// Reached through the canary too, so no group can lose it.
 	require.Equal(t, []string{"gas_limit"}, testGroup(t, "logs").RequiredColumns())
 }
+
+// TestColumnBlocksResetCompletely guards the column pool. Reset was dead code
+// until blocks started being recycled; a Reset that misses a column now leaves
+// the previous batch's rows in place, so the next flush builds a block whose
+// columns disagree on length.
+func TestColumnBlocksResetCompletely(t *testing.T) {
+	t.Parallel()
+
+	for _, ds := range datasets {
+		t.Run(ds.Name, func(t *testing.T) {
+			t.Parallel()
+
+			table := fixtureTable(t, "b23000026", ds.Name)
+			if table.Rows() == 0 {
+				t.Skipf("%s has no rows at this block", ds.Name)
+			}
+
+			checker, ok := ds.newSink(sinkDeps{
+				log: benchLogger(), dataset: ds, table: ds.Table, network: "mainnet",
+			}).(resetChecker)
+			require.True(t, ok)
+
+			names, fresh, reused, err := checker.checkReset(table, fixtureMeta)
+			require.NoError(t, err)
+			require.NotEmpty(t, fresh)
+
+			for i := range fresh {
+				require.Equal(t, fresh[i], reused[i],
+					"column %q holds %d rows after Reset+refill but %d in a fresh block: Reset is incomplete",
+					names[i], reused[i], fresh[i])
+			}
+		})
+	}
+}
