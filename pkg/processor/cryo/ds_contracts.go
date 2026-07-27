@@ -28,7 +28,7 @@ type contractRow struct {
 	Deployer        string
 	Factory         string
 	InitCode        string
-	Code            *string
+	Code            proto.Nullable[string]
 	InitCodeHash    string
 	NInitCodeBytes  uint32
 	NCodeBytes      uint32
@@ -129,7 +129,7 @@ func (c *contractColumns) Append(r contractRow) error {
 	c.Deployer.Append(r.Deployer)
 	c.Factory.Append(r.Factory)
 	c.InitCode.Append(r.InitCode)
-	c.Code.Append(nullable(r.Code))
+	c.Code.Append(r.Code)
 	c.InitCodeHash.Append(r.InitCodeHash)
 	c.NInitCodeBytes.Append(r.NInitCodeBytes)
 	c.NCodeBytes.Append(r.NCodeBytes)

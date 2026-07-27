@@ -21,17 +21,17 @@ func TestDecodeTransactions(t *testing.T) {
 	require.Equal(t, "0x5946ef0de28db53ffe00f0fcdb4cc19c9da234819430bf957cc4c15200d8bcac", r.TransactionHash)
 	require.Equal(t, uint64(12963272), r.Nonce)
 	require.Equal(t, "0x28c6c06298d514db089934071355e5743bf21d60", r.FromAddress)
-	require.Equal(t, "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", *r.ToAddress)
+	require.Equal(t, "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", r.ToAddress.Value)
 	require.Equal(t, "0", r.Value)
 	require.Equal(t,
 		"0xa9059cbb000000000000000000000000f2abf514dfbaf3323a5cb95bb2e4ab180a5ba3e80000000000000000000000000000000000000000000000000000000129d08a20",
-		*r.Input)
+		r.Input.Value)
 	require.Equal(t, uint64(207128), r.GasLimit)
 	require.Equal(t, uint64(62272), r.GasUsed)
 	require.Equal(t, uint64(2239712557), r.GasPrice)
 	require.Equal(t, uint8(2), r.TransactionType)
-	require.Equal(t, uint64(2000000000), *r.MaxPriorityFeePerGas)
-	require.Equal(t, uint64(102000000000), *r.MaxFeePerGas)
+	require.Equal(t, uint64(2000000000), r.MaxPriorityFeePerGas.Value)
+	require.Equal(t, uint64(102000000000), r.MaxFeePerGas.Value)
 	require.True(t, r.Success)
 	require.Equal(t, uint32(68), r.NInputBytes)
 	require.Equal(t, uint32(39), r.NInputZeroBytes)
@@ -39,23 +39,23 @@ func TestDecodeTransactions(t *testing.T) {
 	require.Equal(t, "mainnet", r.MetaNetworkName)
 
 	// A plain transfer carries no calldata, which cryo emits as "0x".
-	require.Nil(t, rows[1].Input)
+	require.False(t, rows[1].Input.Set)
 
 	// Legacy transactions have no 1559 fee fields at all, which is distinct
 	// from having them set to zero.
 	require.Equal(t, uint8(0), rows[2].TransactionType)
-	require.Nil(t, rows[2].MaxPriorityFeePerGas)
-	require.Nil(t, rows[2].MaxFeePerGas)
+	require.False(t, rows[2].MaxPriorityFeePerGas.Set)
+	require.False(t, rows[2].MaxFeePerGas.Set)
 	require.Equal(t, uint64(31022955380952), rows[2].GasPrice)
 
 	missing := 0
 
 	for _, row := range rows {
-		if row.MaxFeePerGas == nil {
+		if !row.MaxFeePerGas.Set {
 			missing++
 		}
 
-		require.Equal(t, row.MaxFeePerGas == nil, row.MaxPriorityFeePerGas == nil)
+		require.Equal(t, !row.MaxFeePerGas.Set, !row.MaxPriorityFeePerGas.Set)
 	}
 
 	require.Equal(t, 18, missing)

@@ -35,32 +35,32 @@ func TestDecodeTraces(t *testing.T) {
 	require.Equal(t, "0x763827e5a5197faf46175f7a83460028926cc6a2721acc9b50b5cceba824fe20", r.TransactionHash)
 	require.Equal(t, uint32(1), r.InternalIndex)
 	require.Equal(t, "0x2b4cdbcf60f009889e88b1982f1d1f9ce8fd2233", r.ActionFrom)
-	require.Equal(t, "0xbeefbabeea323f07c59926295205d3b7a17e8638", *r.ActionTo)
+	require.Equal(t, "0xbeefbabeea323f07c59926295205d3b7a17e8638", r.ActionTo.Value)
 	require.Zero(t, r.ActionValue)
-	require.Equal(t, uint64(476176), *r.ActionGas)
-	require.Equal(t, uint64(221260), *r.ResultGasUsed)
+	require.Equal(t, uint64(476176), r.ActionGas.Value)
+	require.Equal(t, uint64(221260), r.ResultGasUsed.Value)
 	require.Equal(t, "call", r.ActionCallType)
 	require.Equal(t, "call", r.ActionType)
 	require.Empty(t, r.ActionRewardType)
-	require.Nil(t, r.ActionInit)
-	require.Nil(t, r.ResultCode)
-	require.Nil(t, r.ResultAddress)
+	require.False(t, r.ActionInit.Set)
+	require.False(t, r.ResultCode.Set)
+	require.False(t, r.ResultAddress.Set)
 	require.Equal(t, uint32(3), r.Subtraces)
-	require.Nil(t, r.Error)
+	require.False(t, r.Error.Set)
 	require.Equal(t, "mainnet", r.MetaNetworkName)
 
 	// cryo emits an empty return as the literal "0x", which the target column
 	// stores as NULL.
-	require.Nil(t, r.ResultOutput)
+	require.False(t, r.ResultOutput.Set)
 
 	// trace_address is an underscore-joined path of child indices, never hex.
-	require.Nil(t, r.TraceAddress)
-	require.Equal(t, "0", *rows[3].TraceAddress)
-	require.Equal(t, "2_0_0", *rows[7].TraceAddress)
+	require.False(t, r.TraceAddress.Set)
+	require.Equal(t, "0", rows[3].TraceAddress.Value)
+	require.Equal(t, "2_0_0", rows[7].TraceAddress.Value)
 
 	require.Equal(t, uint32(2), rows[3].InternalIndex)
 	require.Equal(t, "static_call", rows[3].ActionCallType)
-	require.Equal(t, "0x0902f1ac", *rows[3].ActionInput)
+	require.Equal(t, "0x0902f1ac", rows[3].ActionInput.Value)
 }
 
 // TestDecodeTracesRewards pins the behaviour the mapping exists to protect: a
@@ -99,10 +99,10 @@ func TestDecodeTracesRewards(t *testing.T) {
 	for _, r := range rewards {
 		require.Equal(t, uint64(0), r.TransactionIndex)
 		require.Equal(t, "reward", r.ActionType)
-		require.Nil(t, r.ActionTo)
-		require.Nil(t, r.ActionGas)
-		require.Nil(t, r.ResultGasUsed)
-		require.Nil(t, r.TraceAddress)
+		require.False(t, r.ActionTo.Set)
+		require.False(t, r.ActionGas.Set)
+		require.False(t, r.ResultGasUsed.Set)
+		require.False(t, r.TraceAddress.Set)
 		require.Empty(t, r.ActionCallType)
 	}
 }
@@ -126,16 +126,16 @@ func TestDecodeTracesPostMerge(t *testing.T) {
 		case "suicide":
 			suicides++
 
-			require.Nil(t, r.ActionGas)
-			require.Nil(t, r.ResultGasUsed)
+			require.False(t, r.ActionGas.Set)
+			require.False(t, r.ResultGasUsed.Set)
 			require.Empty(t, r.ActionCallType)
 		case "create":
 			creates++
 
-			require.Nil(t, r.ActionTo)
-			require.NotNil(t, r.ActionInit)
-			require.NotNil(t, r.ResultAddress)
-			require.Nil(t, r.ResultCode)
+			require.False(t, r.ActionTo.Set)
+			require.True(t, r.ActionInit.Set)
+			require.True(t, r.ResultAddress.Set)
+			require.False(t, r.ResultCode.Set)
 		}
 	}
 

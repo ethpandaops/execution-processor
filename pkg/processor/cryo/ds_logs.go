@@ -26,11 +26,11 @@ type logRow struct {
 	InternalIndex    uint32
 	LogIndex         uint32
 	Address          string
-	Topic0           *string
-	Topic1           *string
-	Topic2           *string
-	Topic3           *string
-	Data             *string
+	Topic0           proto.Nullable[string]
+	Topic1           proto.Nullable[string]
+	Topic2           proto.Nullable[string]
+	Topic3           proto.Nullable[string]
+	Data             proto.Nullable[string]
 	MetaNetworkName  string
 }
 
@@ -121,11 +121,11 @@ func (c *logColumns) Append(r logRow) error {
 	c.InternalIndex.Append(r.InternalIndex)
 	c.LogIndex.Append(r.LogIndex)
 	c.Address.Append(r.Address)
-	c.Topic0.Append(nullable(r.Topic0))
-	c.Topic1.Append(nullable(r.Topic1))
-	c.Topic2.Append(nullable(r.Topic2))
-	c.Topic3.Append(nullable(r.Topic3))
-	c.Data.Append(nullable(r.Data))
+	c.Topic0.Append(r.Topic0)
+	c.Topic1.Append(r.Topic1)
+	c.Topic2.Append(r.Topic2)
+	c.Topic3.Append(r.Topic3)
+	c.Data.Append(r.Data)
 	c.MetaNetworkName.Append(r.MetaNetworkName)
 
 	return nil

@@ -26,21 +26,21 @@ type traceRow struct {
 	TransactionHash  string
 	InternalIndex    uint32
 	ActionFrom       string
-	ActionTo         *string
+	ActionTo         proto.Nullable[string]
 	ActionValue      proto.UInt256
-	ActionGas        *uint64
-	ActionInput      *string
+	ActionGas        proto.Nullable[uint64]
+	ActionInput      proto.Nullable[string]
 	ActionCallType   string
-	ActionInit       *string
+	ActionInit       proto.Nullable[string]
 	ActionRewardType string
 	ActionType       string
-	ResultGasUsed    *uint64
-	ResultOutput     *string
-	ResultCode       *string
-	ResultAddress    *string
-	TraceAddress     *string
+	ResultGasUsed    proto.Nullable[uint64]
+	ResultOutput     proto.Nullable[string]
+	ResultCode       proto.Nullable[string]
+	ResultAddress    proto.Nullable[string]
+	TraceAddress     proto.Nullable[string]
 	Subtraces        uint32
-	Error            *string
+	Error            proto.Nullable[string]
 	MetaNetworkName  string
 }
 
@@ -171,21 +171,21 @@ func (c *traceColumns) Append(r traceRow) error {
 	c.TransactionHash.Append(hash)
 	c.InternalIndex.Append(r.InternalIndex)
 	c.ActionFrom.Append(r.ActionFrom)
-	c.ActionTo.Append(nullable(r.ActionTo))
+	c.ActionTo.Append(r.ActionTo)
 	c.ActionValue.Append(r.ActionValue)
-	c.ActionGas.Append(nullable(r.ActionGas))
-	c.ActionInput.Append(nullable(r.ActionInput))
+	c.ActionGas.Append(r.ActionGas)
+	c.ActionInput.Append(r.ActionInput)
 	c.ActionCallType.Append(r.ActionCallType)
-	c.ActionInit.Append(nullable(r.ActionInit))
+	c.ActionInit.Append(r.ActionInit)
 	c.ActionRewardType.Append(r.ActionRewardType)
 	c.ActionType.Append(r.ActionType)
-	c.ResultGasUsed.Append(nullable(r.ResultGasUsed))
-	c.ResultOutput.Append(nullable(r.ResultOutput))
-	c.ResultCode.Append(nullable(r.ResultCode))
-	c.ResultAddress.Append(nullable(r.ResultAddress))
-	c.TraceAddress.Append(nullable(r.TraceAddress))
+	c.ResultGasUsed.Append(r.ResultGasUsed)
+	c.ResultOutput.Append(r.ResultOutput)
+	c.ResultCode.Append(r.ResultCode)
+	c.ResultAddress.Append(r.ResultAddress)
+	c.TraceAddress.Append(r.TraceAddress)
 	c.Subtraces.Append(r.Subtraces)
-	c.Error.Append(nullable(r.Error))
+	c.Error.Append(r.Error)
 	c.MetaNetworkName.Append(r.MetaNetworkName)
 
 	return nil

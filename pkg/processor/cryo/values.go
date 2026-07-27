@@ -42,15 +42,6 @@ func (p *picker) take(c *decode.Column, err error) *decode.Column {
 	return c
 }
 
-// nullable converts an optional value into ch-go's nullable representation.
-func nullable[T any](v *T) proto.Nullable[T] {
-	if v == nil {
-		return proto.Null[T]()
-	}
-
-	return proto.NewNullable(*v)
-}
-
 // hexOrEmpty returns a hex column's value, mapping NULL to "0x" so that a row
 // cryo could not attribute to a transaction still lands under a stable key.
 func hexOrEmpty(c *decode.Column, i int) string {
@@ -61,34 +52,40 @@ func hexOrEmpty(c *decode.Column, i int) string {
 	return c.Str(i)
 }
 
-// nullableHex returns nil for a hex column that is either NULL or encodes a
-// zero-length byte string, matching the empty-to-NULL guard the target schema
-// expects.
-func nullableHex(c *decode.Column, i int) *string {
+// nullableHex returns the null value for a hex column that is either NULL or
+// encodes a zero-length byte string, matching the empty-to-NULL guard the
+// target schema expects.
+//
+// These return ch-go's nullable representation rather than a pointer. A *string
+// costs a heap allocation per non-null value and adds an indirection the
+// collector has to follow, on rows the buffer holds until the next flush.
+// Carrying the value inline removes both.
+func nullableHex(c *decode.Column, i int) proto.Nullable[string] {
 	if c.IsNull(i) {
-		return nil
+		return proto.Null[string]()
 	}
 
 	v := c.Str(i)
 	if v == "" || v == emptyHex {
-		return nil
+		return proto.Null[string]()
 	}
 
-	return &v
+	return proto.NewNullable(v)
 }
 
-// nullableStr returns nil for a plain string column that is NULL or empty.
-func nullableStr(c *decode.Column, i int) *string {
+// nullableStr returns the null value for a plain string column that is NULL or
+// empty.
+func nullableStr(c *decode.Column, i int) proto.Nullable[string] {
 	if c.IsNull(i) {
-		return nil
+		return proto.Null[string]()
 	}
 
 	v := c.Str(i)
 	if v == "" {
-		return nil
+		return proto.Null[string]()
 	}
 
-	return &v
+	return proto.NewNullable(v)
 }
 
 // strOrEmpty returns a plain string column's value, mapping NULL to "".
@@ -109,15 +106,13 @@ func uintOrZero(c *decode.Column, i int) uint64 {
 	return c.Int(i)
 }
 
-// nullableUint returns nil for a NULL integer column.
-func nullableUint(c *decode.Column, i int) *uint64 {
+// nullableUint returns the null value for a NULL integer column.
+func nullableUint(c *decode.Column, i int) proto.Nullable[uint64] {
 	if c.IsNull(i) {
-		return nil
+		return proto.Null[uint64]()
 	}
 
-	v := c.Int(i)
-
-	return &v
+	return proto.NewNullable(c.Int(i))
 }
 
 // boolOrFalse returns a boolean column's value, mapping NULL to false.

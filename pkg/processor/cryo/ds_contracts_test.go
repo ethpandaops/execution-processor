@@ -39,7 +39,7 @@ func TestDecodeContracts(t *testing.T) {
 
 	// This contract self-destructs in its constructor, so cryo reports its code
 	// as the literal "0x" and the target column stores NULL.
-	require.Nil(t, r.Code)
+	require.False(t, r.Code.Set)
 
 	last := rows[3]
 	require.Equal(t, uint32(3), last.CreateIndex)
@@ -52,7 +52,7 @@ func TestDecodeContracts(t *testing.T) {
 		last.InitCode)
 	require.Equal(t,
 		"0x363d3d373d3d3d363d73fe02a32cbe0cb9ad9a945576a5bb53a3c123a3a35af43d82803e903d91602b57fd5bf3",
-		*last.Code)
+		last.Code.Value)
 	require.Equal(t, "0xf51217697e54d3e7c4d961223d0ec7a0f4962b08eb43d9e27c22df8e30b6b3e1", last.InitCodeHash)
 	require.Equal(t, "0x269179116bc54c44db2053d1b6076ac2eacd45b921cf397525f967ff87095344", last.CodeHash)
 	require.Equal(t, uint32(55), last.NInitCodeBytes)

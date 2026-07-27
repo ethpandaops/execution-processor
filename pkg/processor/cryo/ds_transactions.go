@@ -27,15 +27,15 @@ type transactionRow struct {
 	TransactionHash      string
 	Nonce                uint64
 	FromAddress          string
-	ToAddress            *string
+	ToAddress            proto.Nullable[string]
 	Value                string
-	Input                *string
+	Input                proto.Nullable[string]
 	GasLimit             uint64
 	GasUsed              uint64
 	GasPrice             uint64
 	TransactionType      uint8
-	MaxPriorityFeePerGas *uint64
-	MaxFeePerGas         *uint64
+	MaxPriorityFeePerGas proto.Nullable[uint64]
+	MaxFeePerGas         proto.Nullable[uint64]
 	Success              bool
 	NInputBytes          uint32
 	NInputZeroBytes      uint32
@@ -163,15 +163,15 @@ func (c *transactionColumns) Append(r transactionRow) error {
 	c.TransactionHash.Append(hash)
 	c.Nonce.Append(r.Nonce)
 	c.FromAddress.Append(r.FromAddress)
-	c.ToAddress.Append(nullable(r.ToAddress))
+	c.ToAddress.Append(r.ToAddress)
 	c.Value.Append(value)
-	c.InputData.Append(nullable(r.Input))
+	c.InputData.Append(r.Input)
 	c.GasLimit.Append(r.GasLimit)
 	c.GasUsed.Append(r.GasUsed)
 	c.GasPrice.Append(proto.UInt128{Low: r.GasPrice})
 	c.TransactionType.Append(r.TransactionType)
-	c.MaxPriorityFeePerGas.Append(nullable(r.MaxPriorityFeePerGas))
-	c.MaxFeePerGas.Append(nullable(r.MaxFeePerGas))
+	c.MaxPriorityFeePerGas.Append(r.MaxPriorityFeePerGas)
+	c.MaxFeePerGas.Append(r.MaxFeePerGas)
 	c.Success.Append(r.Success)
 	c.NInputBytes.Append(r.NInputBytes)
 	c.NInputZeroBytes.Append(r.NInputZeroBytes)

@@ -21,11 +21,11 @@ func TestDecodeLogs(t *testing.T) {
 	require.Equal(t, uint32(1), r.InternalIndex)
 	require.Equal(t, uint32(0), r.LogIndex)
 	require.Equal(t, "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", r.Address)
-	require.Equal(t, "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", *r.Topic0)
-	require.Equal(t, "0x00000000000000000000000028c6c06298d514db089934071355e5743bf21d60", *r.Topic1)
-	require.Equal(t, "0x000000000000000000000000f2abf514dfbaf3323a5cb95bb2e4ab180a5ba3e8", *r.Topic2)
-	require.Nil(t, r.Topic3)
-	require.Equal(t, "0x0000000000000000000000000000000000000000000000000000000129d08a20", *r.Data)
+	require.Equal(t, "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef", r.Topic0.Value)
+	require.Equal(t, "0x00000000000000000000000028c6c06298d514db089934071355e5743bf21d60", r.Topic1.Value)
+	require.Equal(t, "0x000000000000000000000000f2abf514dfbaf3323a5cb95bb2e4ab180a5ba3e8", r.Topic2.Value)
+	require.False(t, r.Topic3.Set)
+	require.Equal(t, "0x0000000000000000000000000000000000000000000000000000000129d08a20", r.Data.Value)
 	require.Equal(t, "mainnet", r.MetaNetworkName)
 
 	// internal_index restarts at 1 for each transaction and counts every log
@@ -39,8 +39,8 @@ func TestDecodeLogs(t *testing.T) {
 	require.Equal(t, uint32(1), rows[321].InternalIndex)
 
 	// A log with no data at all arrives as "0x" and is stored as NULL.
-	require.Nil(t, rows[26].Data)
-	require.Nil(t, rows[62].Data)
+	require.False(t, rows[26].Data.Set)
+	require.False(t, rows[62].Data.Set)
 }
 
 func TestDecodeLogsAnonymous(t *testing.T) {
@@ -53,12 +53,12 @@ func TestDecodeLogsAnonymous(t *testing.T) {
 	anonymous := 0
 
 	for _, r := range rows {
-		if r.Topic0 == nil {
+		if !r.Topic0.Set {
 			anonymous++
 
-			require.Nil(t, r.Topic1)
-			require.Nil(t, r.Topic2)
-			require.Nil(t, r.Topic3)
+			require.False(t, r.Topic1.Set)
+			require.False(t, r.Topic2.Set)
+			require.False(t, r.Topic3.Set)
 		}
 	}
 
@@ -67,13 +67,13 @@ func TestDecodeLogsAnonymous(t *testing.T) {
 	require.Equal(t, 10, anonymous)
 
 	r := rows[26]
-	require.Nil(t, r.Topic0)
+	require.False(t, r.Topic0.Set)
 	require.Equal(t, uint32(26), r.LogIndex)
 	require.Equal(t, uint64(1), r.TransactionIndex)
 	require.Equal(t, "0xffbf7de7b5c7740694ec15a8dfd2b6c0e42fde82fd70db8eb8122a4f10c68257", r.TransactionHash)
 	require.Equal(t, uint32(17), r.InternalIndex)
 	require.Equal(t, "0xe0e0e08a6a4b9dc7bd67bcb7aade5cf48157d444", r.Address)
-	require.NotNil(t, r.Data)
+	require.True(t, r.Data.Set)
 }
 
 func TestLogsColumnsAppend(t *testing.T) {

@@ -29,12 +29,12 @@ type blockRow struct {
 	BlockDateTime   time.Time
 	BlockNumber     uint64
 	BlockHash       string
-	Author          *string
-	GasUsed         *uint64
+	Author          proto.Nullable[string]
+	GasUsed         proto.Nullable[uint64]
 	GasLimit        uint64
-	ExtraData       *string
-	ExtraDataString *string
-	BaseFeePerGas   *uint64
+	ExtraData       proto.Nullable[string]
+	ExtraDataString proto.Nullable[string]
+	BaseFeePerGas   proto.Nullable[uint64]
 	MetaNetworkName string
 }
 
@@ -86,24 +86,24 @@ func decodeBlocks(t *decode.Table, meta rowMeta) ([]blockRow, error) {
 // extraDataPair derives both extra_data columns from cryo's single hex field:
 // the hex form is stored verbatim, and the string form is the raw bytes it
 // encodes, which are arbitrary and need not be valid UTF-8.
-func extraDataPair(c *decode.Column, i int) (hexForm, stringForm *string, err error) {
+func extraDataPair(c *decode.Column, i int) (hexForm, stringForm proto.Nullable[string], err error) {
+	null := proto.Null[string]()
+
 	if c.IsNull(i) {
-		return nil, nil, nil
+		return null, null, nil
 	}
 
 	v := c.Str(i)
 	if v == "" || v == emptyHex {
-		return nil, nil, nil
+		return null, null, nil
 	}
 
 	raw, err := hex.DecodeString(v[len(emptyHex):])
 	if err != nil {
-		return nil, nil, fmt.Errorf("extra_data %q is not hex: %w", v, err)
+		return null, null, fmt.Errorf("extra_data %q is not hex: %w", v, err)
 	}
 
-	decoded := string(raw)
-
-	return &v, &decoded, nil
+	return proto.NewNullable(v), proto.NewNullable(string(raw)), nil
 }
 
 type blockColumns struct {
@@ -143,12 +143,12 @@ func (c *blockColumns) Append(r blockRow) error {
 	c.BlockDateTime.Append(r.BlockDateTime)
 	c.BlockNumber.Append(r.BlockNumber)
 	c.BlockHash.Append(hash)
-	c.Author.Append(nullable(r.Author))
-	c.GasUsed.Append(nullable(r.GasUsed))
+	c.Author.Append(r.Author)
+	c.GasUsed.Append(r.GasUsed)
 	c.GasLimit.Append(r.GasLimit)
-	c.ExtraData.Append(nullable(r.ExtraData))
-	c.ExtraDataString.Append(nullable(r.ExtraDataString))
-	c.BaseFeePerGas.Append(nullable(r.BaseFeePerGas))
+	c.ExtraData.Append(r.ExtraData)
+	c.ExtraDataString.Append(r.ExtraDataString)
+	c.BaseFeePerGas.Append(r.BaseFeePerGas)
 	c.MetaNetworkName.Append(r.MetaNetworkName)
 
 	return nil
