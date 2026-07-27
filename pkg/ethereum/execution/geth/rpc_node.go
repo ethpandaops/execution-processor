@@ -135,6 +135,9 @@ func (n *RPCNode) Start(ctx context.Context) error {
 
 	errs := make(chan error, 1)
 
+	// Detached from the Start context on purpose: service readiness is awaited
+	// after Start returns, under its own 30s bound.
+	//nolint:gosec // G118: see above
 	go func() {
 		wg := sync.WaitGroup{}
 

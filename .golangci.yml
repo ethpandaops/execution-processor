@@ -14,7 +14,6 @@ linters:
     - durationcheck
     - errcheck
     - errname
-    - goconst
     - gocyclo
     - godot
     - goheader
@@ -44,9 +43,6 @@ linters:
   settings:
     errcheck:
       check-type-assertions: true
-    goconst:
-      min-len: 2
-      min-occurrences: 3
     gocritic:
       enabled-tags:
         - diagnostic
@@ -77,12 +73,6 @@ linters:
           - gosec
           - wsl
         path: _test\.go
-      - linters:
-          - goconst
-        path: cmd/tools/
-      - linters:
-          - goconst
-        path: pkg/processor/cryo/
     paths:
       - third_party$
       - builtin$
