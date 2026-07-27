@@ -262,6 +262,11 @@ func (p *Processor) GetCompletionTracker() *tracker.BlockCompletionTracker {
 	return p.completionTracker
 }
 
+// GetLimiter returns the block completion limiter.
+func (p *Processor) GetLimiter() *tracker.Limiter {
+	return p.Limiter
+}
+
 // getProcessForwardsQueue returns the prefixed process forwards queue name.
 func (p *Processor) getProcessForwardsQueue() string {
 	return tracker.PrefixedProcessForwardsQueue(ProcessorName, p.redisPrefix)

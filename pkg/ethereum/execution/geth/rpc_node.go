@@ -271,6 +271,11 @@ func (n *RPCNode) Name() string {
 	return n.config.Name
 }
 
+// RPCEndpoint returns the configured JSON-RPC URL.
+func (n *RPCNode) RPCEndpoint() string {
+	return n.config.NodeAddress
+}
+
 // ChainID returns the chain ID from the metadata service.
 func (n *RPCNode) ChainID() int64 {
 	if meta := n.Metadata(); meta != nil {

@@ -218,3 +218,9 @@ func (n *EmbeddedNode) IsSynced() bool {
 func (n *EmbeddedNode) Name() string {
 	return n.name
 }
+
+// RPCEndpoint returns an empty string: an embedded node is driven through its
+// DataSource and has no network endpoint a subprocess could dial.
+func (n *EmbeddedNode) RPCEndpoint() string {
+	return ""
+}

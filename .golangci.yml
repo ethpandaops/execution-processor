@@ -80,6 +80,9 @@ linters:
       - linters:
           - goconst
         path: cmd/tools/
+      - linters:
+          - goconst
+        path: pkg/processor/cryo/
     paths:
       - third_party$
       - builtin$

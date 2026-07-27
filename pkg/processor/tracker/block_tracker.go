@@ -243,17 +243,40 @@ func (t *BlockCompletionTracker) MarkBlockComplete(
 	blockNum uint64,
 	network, processor, mode string,
 ) error {
-	// Write to ClickHouse
-	if err := t.stateProvider.MarkBlockComplete(ctx, blockNum, network, processor); err != nil {
-		return fmt.Errorf("failed to mark block complete in ClickHouse: %w", err)
-	}
-
-	// Cleanup Redis keys
 	completedKey := t.completedKey(network, processor, mode, blockNum)
 	expectedKey := t.expectedKey(network, processor, mode, blockNum)
 	metaKey := t.metaKey(network, processor, mode, blockNum)
 	pendingKey := t.pendingBlocksKey(network, processor, mode)
 
+	// Read the expected task count before the cleanup pipeline deletes it
+	taskCount := 0
+
+	expectedStr, err := t.redis.Get(ctx, expectedKey).Result()
+	if err != nil {
+		t.log.WithError(err).WithFields(logrus.Fields{
+			"block_number": blockNum,
+			"network":      network,
+			"processor":    processor,
+			"mode":         mode,
+		}).Debug("Failed to read expected task count, recording 0")
+	} else if parsed, parseErr := strconv.Atoi(expectedStr); parseErr != nil {
+		t.log.WithError(parseErr).WithFields(logrus.Fields{
+			"block_number": blockNum,
+			"expected":     expectedStr,
+			"network":      network,
+			"processor":    processor,
+			"mode":         mode,
+		}).Debug("Failed to parse expected task count, recording 0")
+	} else {
+		taskCount = parsed
+	}
+
+	// Write to ClickHouse
+	if err := t.stateProvider.MarkBlockComplete(ctx, blockNum, network, processor, taskCount); err != nil {
+		return fmt.Errorf("failed to mark block complete in ClickHouse: %w", err)
+	}
+
+	// Cleanup Redis keys
 	pipe := t.redis.Pipeline()
 	pipe.Del(ctx, completedKey, expectedKey, metaKey)
 	pipe.ZRem(ctx, pendingKey, blockNum)

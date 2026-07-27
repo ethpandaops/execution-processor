@@ -35,6 +35,7 @@ import (
 	"github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum"
 	"github.com/ethpandaops/execution-processor/pkg/leaderelection"
+	"github.com/ethpandaops/execution-processor/pkg/processor/cryo"
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	transaction_simple "github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
@@ -487,7 +488,57 @@ func (m *Manager) initializeProcessors(ctx context.Context) error {
 		m.log.Debug("Transaction structlog_agg processor is disabled")
 	}
 
+	if err := m.initializeCryoProcessors(ctx); err != nil {
+		return err
+	}
+
 	m.log.WithField("total_processors", len(m.processors)).Info("Completed processor initialization")
+
+	return nil
+}
+
+// initializeCryoProcessors creates one processor per enabled cryo group. Unlike
+// the other processors this is one config to many processors, because a group
+// is one cryo invocation and therefore one unit of progress.
+func (m *Manager) initializeCryoProcessors(ctx context.Context) error {
+	if !m.config.Cryo.Enabled {
+		m.log.Debug("Cryo processors are disabled")
+
+		return nil
+	}
+
+	for i := range m.config.Cryo.Groups {
+		groupCfg := &m.config.Cryo.Groups[i]
+
+		if !groupCfg.Enabled {
+			continue
+		}
+
+		processor, err := cryo.New(&cryo.Dependencies{
+			Log:            m.log,
+			Pool:           m.pool,
+			State:          m.state,
+			AsynqClient:    m.asynqClient,
+			AsynqInspector: m.asynqInspector,
+			RedisClient:    m.redisClient,
+			Network:        m.network,
+			RedisPrefix:    m.redisPrefix,
+		}, &m.config.Cryo, groupCfg)
+		if err != nil {
+			return fmt.Errorf("failed to create cryo processor for group %s: %w", groupCfg.Name, err)
+		}
+
+		name := processor.Name()
+		m.processors[name] = processor
+
+		processor.SetProcessingMode(m.config.Mode)
+
+		m.log.WithField("processor", name).Info("Initialized processor")
+
+		if err := m.startProcessorWithRetry(ctx, processor, name); err != nil {
+			return fmt.Errorf("failed to start %s processor: %w", name, err)
+		}
+	}
 
 	return nil
 }
@@ -1228,82 +1279,21 @@ func (m *Manager) QueueBlockManually(ctx context.Context, processorName string, 
 		return nil, fmt.Errorf("failed to fetch block %d: %w", blockNumber, err)
 	}
 
-	var tasksCreated int
-
-	// Handle different processor types
-	switch p := processor.(type) {
-	case *transaction_structlog.Processor:
-		// Enqueue transaction tasks using the processor's method
-		tasksCreated, err = p.EnqueueTransactionTasks(ctx, block)
-		if err != nil {
-			return nil, fmt.Errorf("failed to enqueue tasks for block %d: %w", blockNumber, err)
-		}
-
-	case *transaction_simple.Processor:
-		// For simple processor, enqueue a single block processing task
-		tasksCreated, err = m.enqueueSimpleBlockTask(ctx, p, blockNumber)
-		if err != nil {
-			return nil, fmt.Errorf("failed to enqueue block task for block %d: %w", blockNumber, err)
-		}
-
-	case *transaction_structlog_agg.Processor:
-		// Enqueue transaction tasks using the processor's method
-		tasksCreated, err = p.EnqueueTransactionTasks(ctx, block)
-		if err != nil {
-			return nil, fmt.Errorf("failed to enqueue tasks for block %d: %w", blockNumber, err)
-		}
-
-	default:
-		return nil, fmt.Errorf("processor %s has unsupported type", processorName)
-	}
-
-	// Update execution_block table to mark block as processed
-	if err := m.state.MarkBlockProcessed(ctx, blockNumber, m.network.Name, processorName); err != nil {
-		return nil, fmt.Errorf("failed to update execution_block table: %w", err)
+	// Every processor's own ProcessBlock records the ledger row, registers the
+	// block for completion tracking and enqueues its work, so the manual path
+	// produces exactly the state the automatic path does.
+	if err := processor.ProcessBlock(ctx, block); err != nil {
+		return nil, fmt.Errorf("failed to queue block %d for %s: %w", blockNumber, processorName, err)
 	}
 
 	return &QueueResult{
 		TransactionCount: len(block.Transactions()),
-		TasksCreated:     tasksCreated,
 	}, nil
-}
-
-// enqueueSimpleBlockTask enqueues a block processing task for the simple processor.
-func (m *Manager) enqueueSimpleBlockTask(ctx context.Context, p *transaction_simple.Processor, blockNumber uint64) (int, error) {
-	payload := &transaction_simple.ProcessPayload{
-		BlockNumber: *big.NewInt(int64(blockNumber)), //nolint:gosec // validated above
-		NetworkName: m.network.Name,
-	}
-
-	var task *asynq.Task
-
-	var queue string
-
-	var err error
-
-	if m.config.Mode == tracker.BACKWARDS_MODE {
-		task, _, err = transaction_simple.NewProcessBackwardsTask(payload)
-		queue = tracker.PrefixedProcessBackwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
-	} else {
-		task, _, err = transaction_simple.NewProcessForwardsTask(payload)
-		queue = tracker.PrefixedProcessForwardsQueue(transaction_simple.ProcessorName, m.redisPrefix)
-	}
-
-	if err != nil {
-		return 0, fmt.Errorf("failed to create task: %w", err)
-	}
-
-	if err := p.EnqueueTask(ctx, task, asynq.Queue(queue)); err != nil {
-		return 0, fmt.Errorf("failed to enqueue task: %w", err)
-	}
-
-	return 1, nil
 }
 
 // QueueResult contains the result of queuing a block.
 type QueueResult struct {
 	TransactionCount int
-	TasksCreated     int
 }
 
 // initializeBlocksStoredMetrics sets initial values for blocks stored metrics to ensure visibility.
@@ -1465,18 +1455,7 @@ func (m *Manager) checkGaps(ctx context.Context) {
 		default:
 		}
 
-		// Get the limiter from each processor
-		var limiter *tracker.Limiter
-
-		switch p := processor.(type) {
-		case *transaction_structlog.Processor:
-			limiter = p.Limiter
-		case *transaction_simple.Processor:
-			limiter = p.Limiter
-		case *transaction_structlog_agg.Processor:
-			limiter = p.Limiter
-		}
-
+		limiter := processor.GetLimiter()
 		if limiter == nil {
 			continue
 		}

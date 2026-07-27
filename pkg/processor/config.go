@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ethpandaops/execution-processor/pkg/processor/cryo"
 	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	"github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
@@ -53,6 +54,7 @@ type Config struct {
 	TransactionStructlog    structlog.Config     `yaml:"transactionStructlog"`
 	TransactionSimple       simple.Config        `yaml:"transactionSimple"`
 	TransactionStructlogAgg structlog_agg.Config `yaml:"transactionStructlogAgg"`
+	Cryo                    cryo.Config          `yaml:"cryo"`
 }
 
 // StaleBlockDetectionConfig holds configuration for stale block detection.
@@ -173,6 +175,10 @@ func (c *Config) Validate() error {
 
 	if err := c.TransactionStructlogAgg.Validate(); err != nil {
 		return fmt.Errorf("transaction structlog_agg config validation failed: %w", err)
+	}
+
+	if err := c.Cryo.Validate(); err != nil {
+		return fmt.Errorf("cryo config validation failed: %w", err)
 	}
 
 	return nil

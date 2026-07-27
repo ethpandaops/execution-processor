@@ -140,6 +140,10 @@ func (m *MockNode) Name() string {
 	return m.name
 }
 
+func (m *MockNode) RPCEndpoint() string {
+	return "http://" + m.name + ":8545"
+}
+
 // Compile-time check that MockNode implements execution.Node.
 var _ execution.Node = (*MockNode)(nil)
 

@@ -251,6 +251,70 @@ StructLogs -> ComputeGasUsed -> ComputeGasSelf -> ComputeMemoryWords -> Classify
                                                                      Finalize -> CallFrameRows
 ```
 
+## cryo Datasets
+
+The `cryo` processors collect the 16 `canonical_execution_*` datasets by
+invoking [cryo](https://github.com/paradigmxyz/cryo) as a subprocess, decoding
+the parquet it writes, and inserting the rows columnar via ch-go.
+
+### Groups
+
+A **group** is one cryo invocation. Because a single invocation can emit many
+datasets at once, grouping is the difference between ~628ms and ~101ms of RPC
+work per block. The group is also the unit of progress: one invocation succeeds
+or fails as a whole, so one `admin.execution_block` row represents one thing
+that actually happened.
+
+Each dataset needs exactly one source RPC method, which gives the natural
+grouping:
+
+| RPC method | datasets |
+| --- | --- |
+| `eth_getBlockByNumber` | blocks, transactions |
+| `eth_getLogs` | logs, erc20_transfers, erc721_transfers |
+| `trace_block` | traces, native_transfers, contracts, address_appearances |
+| `debug_traceBlockByNumber` | balance_reads, nonce_reads, storage_reads, four_byte_counts |
+| `trace_replayBlockTransactions` | balance_diffs, nonce_diffs, storage_diffs |
+
+Collecting all of them in one group is cheapest. Splitting into the five above
+lets datasets be cut over independently, at ~50% more RPC work per block and
+five times the ledger rows.
+
+**The group name is permanent.** It is the `processor` column in
+`admin.execution_block`, so renaming a group orphans its progress and moving a
+datatype between groups requires a re-seed.
+
+### Datatypes are not dataset names
+
+`datatypes` are cryo command-line arguments. Most name one dataset, but
+`state_diffs` is a single argument yielding `balance_diffs`, `nonce_diffs` and
+`storage_diffs` — naming those three individually in one invocation fails inside
+cryo with `Collect failed: schema not provided`.
+
+### internal_index
+
+Fourteen of the sixteen tables carry an `internal_index` column. It is not a
+dedup tiebreak: ClickHouse preserves neither insertion order nor, through a
+Distributed table, any recoverable order at all, so this column is the only
+record of the sequence cryo produced — the order of traces, logs and storage
+reads within a transaction.
+
+It is a 1-based counter per transaction hash assigned in parquet file order.
+Rows are never sorted or reordered during decode, and a row cryo could not
+attribute to a transaction is counted under the key it will be stored with
+rather than skipped.
+
+### Requirements
+
+- The `cryo` binary on `PATH` (bundled into the image; override with
+  `binaryPath`). Its version is checked at startup and exported as
+  `execution_processor_cryo_build_info`.
+- Writable scratch space. Each task creates a temp directory, runs cryo into it,
+  decodes, and removes it. Orphans left by a `SIGKILL` are swept at startup.
+- An execution node exposing `trace_*` and `debug_*` (reth or erigon). Note the
+  `debug_traceBlockByNumber`-derived datasets differ slightly between clients, so
+  keep a deployment on one client family.
+
 ## Architecture
 
 ### Leader Election

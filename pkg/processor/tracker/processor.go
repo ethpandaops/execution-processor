@@ -129,6 +129,9 @@ type BlockProcessor interface {
 
 	// GetCompletionTracker returns the block completion tracker for checking tracking status.
 	GetCompletionTracker() *BlockCompletionTracker
+
+	// GetLimiter returns the block completion limiter, which owns gap scanning.
+	GetLimiter() *Limiter
 }
 
 // QueueInfo contains information about a processor queue.

@@ -66,4 +66,8 @@ type Node interface {
 
 	// Name returns the configured name for this node.
 	Name() string
+
+	// RPCEndpoint returns the node's JSON-RPC URL, or an empty string for
+	// nodes that are not reachable over the network.
+	RPCEndpoint() string
 }

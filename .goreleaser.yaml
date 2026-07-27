@@ -66,6 +66,8 @@ dockers:
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--provenance=false"
+      - "--cache-from=type=gha,scope=cryo-amd64"
+      - "--cache-to=type=gha,mode=max,ignore-error=true,scope=cryo-amd64"
       - "--build-arg=VERSION={{.Tag}}"
       - "--build-arg=GIT_COMMIT={{.ShortCommit}}"
       - "--label=org.opencontainers.image.created={{.Date}}"
@@ -91,6 +93,8 @@ dockers:
     build_flag_templates:
       - "--platform=linux/arm64/v8"
       - "--provenance=false"
+      - "--cache-from=type=gha,scope=cryo-arm64"
+      - "--cache-to=type=gha,mode=max,ignore-error=true,scope=cryo-arm64"
       - "--build-arg=VERSION={{.Tag}}"
       - "--build-arg=GIT_COMMIT={{.ShortCommit}}"
       - "--label=org.opencontainers.image.created={{.Date}}"
