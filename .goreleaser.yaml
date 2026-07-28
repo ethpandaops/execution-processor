@@ -17,8 +17,8 @@ builds:
     - amd64
     ldflags:
       - -s -w
-      - -X github.com/ethpandaops/execution-processor/cmd.Release={{.Tag}}-{{.ShortCommit}}
-      - -X github.com/ethpandaops/execution-processor/cmd.GitCommit={{.ShortCommit}}
+      - -X github.com/ethpandaops/execution-processor/internal/version.Release={{.Tag}}-{{.ShortCommit}}
+      - -X github.com/ethpandaops/execution-processor/internal/version.GitCommit={{.ShortCommit}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 
   - id: linux-arm64
@@ -32,8 +32,8 @@ builds:
     - arm64
     ldflags:
       - -s -w
-      - -X github.com/ethpandaops/execution-processor/cmd.Release={{.Tag}}-{{.ShortCommit}}
-      - -X github.com/ethpandaops/execution-processor/cmd.GitCommit={{.ShortCommit}}
+      - -X github.com/ethpandaops/execution-processor/internal/version.Release={{.Tag}}-{{.ShortCommit}}
+      - -X github.com/ethpandaops/execution-processor/internal/version.GitCommit={{.ShortCommit}}
     mod_timestamp: "{{ .CommitTimestamp }}"
 checksum:
   name_template: 'checksums.txt'
@@ -48,55 +48,33 @@ changelog:
 
 dockers:
   - use: buildx
+    ids:
+      - linux-amd64
     goos: linux
     goarch: amd64
     dockerfile: Dockerfile
-    extra_files:
-      - go.mod
-      - go.sum
-      - cmd
-      - pkg
-      - internal
-      - example_config.yaml
-      - Makefile
-      - main.go
     image_templates:
       - "ethpandaops/{{ .ProjectName }}:{{ .Version }}-amd64"
       - "ethpandaops/{{ .ProjectName }}:{{ if .Env.RELEASE_SUFFIX }}{{ .Env.RELEASE_SUFFIX }}-{{ end }}latest-amd64"
     build_flag_templates:
       - "--platform=linux/amd64"
       - "--provenance=false"
-      - "--cache-from=type=gha,scope=cryo-amd64"
-      - "--cache-to=type=gha,mode=max,ignore-error=true,scope=cryo-amd64"
-      - "--build-arg=VERSION={{.Tag}}"
-      - "--build-arg=GIT_COMMIT={{.ShortCommit}}"
       - "--label=org.opencontainers.image.created={{.Date}}"
       - "--label=org.opencontainers.image.title={{.ProjectName}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
       - "--label=org.opencontainers.image.version={{.Version}}"
   - use: buildx
+    ids:
+      - linux-arm64
     goos: linux
     goarch: arm64
     dockerfile: Dockerfile
-    extra_files:
-      - go.mod
-      - go.sum
-      - cmd
-      - pkg
-      - internal
-      - example_config.yaml
-      - Makefile
-      - main.go
     image_templates:
       - "ethpandaops/{{ .ProjectName }}:{{ .Version }}-arm64v8"
       - "ethpandaops/{{ .ProjectName }}:{{ if .Env.RELEASE_SUFFIX }}{{ .Env.RELEASE_SUFFIX }}-{{ end }}latest-arm64v8"
     build_flag_templates:
       - "--platform=linux/arm64/v8"
       - "--provenance=false"
-      - "--cache-from=type=gha,scope=cryo-arm64"
-      - "--cache-to=type=gha,mode=max,ignore-error=true,scope=cryo-arm64"
-      - "--build-arg=VERSION={{.Tag}}"
-      - "--build-arg=GIT_COMMIT={{.ShortCommit}}"
       - "--label=org.opencontainers.image.created={{.Date}}"
       - "--label=org.opencontainers.image.title={{.ProjectName}}"
       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
