@@ -1,0 +1,50 @@
+# Builds the pinned cryo binary as a standalone, publishable image.
+#
+# This exists so that the Rust toolchain never runs in the release path. cryo
+# pulls in polars and alloy, which is tens of minutes of compilation even on a
+# fast native runner - and hours under QEMU. Building it here means the
+# application Dockerfile only has to COPY --from an already-built image, and
+# cryo is only recompiled when CRYO_SHA is bumped.
+#
+# Built natively per-architecture by .github/workflows/cryo-image.yml, then
+# joined into a multi-arch manifest. Do not build this with --platform for a
+# foreign architecture; that reintroduces the emulation this is avoiding.
+#
+# cryo ships no release binaries at all, so it is built from a pinned commit.
+# The build must be static: cryo links glibc and OpenSSL 3 dynamically by
+# default, and neither exists on the alpine runtime.
+#
+# Pin the Rust version as well as the commit. cryo itself has been stable for
+# ~18 months, but rustc has not: 1.97 fails to compile the ethnum dependency
+# with "cannot transmute between types of different sizes", against both the
+# musl and gnu targets.
+ARG RUST_VERSION=1.83
+
+FROM rust:${RUST_VERSION}-alpine AS builder
+
+ARG CRYO_SHA
+
+RUN apk add --no-cache musl-dev openssl-dev openssl-libs-static pkgconfig perl make git
+
+ENV OPENSSL_STATIC=1 OPENSSL_DIR=/usr
+
+RUN test -n "${CRYO_SHA}" || (echo "CRYO_SHA build-arg is required" >&2 && exit 1)
+
+RUN git clone https://github.com/paradigmxyz/cryo /src && \
+    cd /src && \
+    git checkout "${CRYO_SHA}" && \
+    cargo build --release -p cryo_cli && \
+    strip target/release/cryo
+
+FROM alpine:latest
+
+ARG CRYO_SHA
+
+LABEL org.opencontainers.image.title="cryo" \
+      org.opencontainers.image.source="https://github.com/paradigmxyz/cryo" \
+      org.opencontainers.image.revision="${CRYO_SHA}" \
+      org.opencontainers.image.description="Statically linked cryo CLI, built from a pinned commit for execution-processor"
+
+COPY --from=builder /src/target/release/cryo /usr/local/bin/cryo
+
+ENTRYPOINT ["/usr/local/bin/cryo"]

@@ -1,0 +1,144 @@
+name: cryo image
+
+# Publishes the pinned cryo binary as a multi-arch image so the release path
+# never has to compile Rust. cryo pulls in polars and alloy, which is minutes
+# natively and hours under emulation - so each architecture is built on a native
+# runner and the results are joined into a manifest.
+#
+# The pin lives in the root Dockerfile (ARG CRYO_SHA) and is read back out here,
+# so there is one place to bump it. Bump it, merge, wait for this workflow, then
+# tag the release.
+
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - 'Dockerfile'
+      - 'Dockerfile.cryo'
+      - '.github/workflows/cryo-image.yml'
+  workflow_dispatch:
+
+env:
+  IMAGE_NAME: ethpandaops/cryo
+
+jobs:
+  pin:
+    runs-on: ubuntu-24.04
+    outputs:
+      cryo_sha: ${{ steps.pin.outputs.cryo_sha }}
+      exists: ${{ steps.exists.outputs.exists }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Read cryo pin from Dockerfile
+        id: pin
+        run: |
+          CRYO_SHA=$(grep -oE '^ARG CRYO_SHA=[0-9a-f]{40}' Dockerfile | cut -d= -f2)
+
+          if [[ -z "$CRYO_SHA" ]]; then
+            echo "::error::could not read 'ARG CRYO_SHA=<40 hex chars>' from Dockerfile"
+            exit 1
+          fi
+
+          echo "cryo_sha=$CRYO_SHA" >> "$GITHUB_OUTPUT"
+          echo "cryo pin: $CRYO_SHA"
+
+      - name: Login to DockerHub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Check whether this pin is already published
+        id: exists
+        run: |
+          IMAGE="${{ env.IMAGE_NAME }}:${{ steps.pin.outputs.cryo_sha }}"
+
+          # Skip the (expensive) rebuild when the pin has not moved. Manual runs
+          # always rebuild, so there is an escape hatch if a push went wrong.
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" ]] && \
+             docker manifest inspect "$IMAGE" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "$IMAGE already published, skipping build"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "$IMAGE needs building"
+          fi
+
+  build:
+    needs: pin
+    if: needs.pin.outputs.exists == 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native runners on both sides - no QEMU. These are GitHub-hosted
+          # because this workflow runs rarely and the two legs are parallel, so
+          # wall clock is bound by the slower (arm) leg either way.
+          - arch: amd64
+            platform: linux/amd64
+            runs-on: ubuntu-24.04
+          - arch: arm64
+            platform: linux/arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Login to DockerHub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push ${{ matrix.arch }}
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.cryo
+          platforms: ${{ matrix.platform }}
+          push: true
+          provenance: false
+          build-args: |
+            CRYO_SHA=${{ needs.pin.outputs.cryo_sha }}
+          tags: ${{ env.IMAGE_NAME }}:${{ needs.pin.outputs.cryo_sha }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=cryo-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=cryo-${{ matrix.arch }}
+
+      - name: Smoke test
+        run: |
+          # Native runner, so the freshly built image actually runs here.
+          docker run --rm \
+            "${{ env.IMAGE_NAME }}:${{ needs.pin.outputs.cryo_sha }}-${{ matrix.arch }}" \
+            --version
+
+  manifest:
+    needs:
+      - pin
+      - build
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Login to DockerHub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create multi-arch manifest
+        run: |
+          IMAGE="${{ env.IMAGE_NAME }}"
+          SHA="${{ needs.pin.outputs.cryo_sha }}"
+
+          docker buildx imagetools create \
+            --tag "$IMAGE:$SHA" \
+            --tag "$IMAGE:latest" \
+            "$IMAGE:$SHA-amd64" \
+            "$IMAGE:$SHA-arm64"
+
+          docker buildx imagetools inspect "$IMAGE:$SHA"
