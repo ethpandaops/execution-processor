@@ -13,7 +13,7 @@ type Config struct {
 	Addr     string `yaml:"addr"`     // Native protocol address, e.g., "localhost:9000"
 	Database string `yaml:"database"` // Database name, default: "default"
 	Username string `yaml:"username"`
-	Password string `yaml:"password"`
+	Password string `yaml:"password"` //nolint:gosec // G117: config field, not a hardcoded secret
 
 	// Pool settings
 	MaxConns          int32         `yaml:"max_conns"`           // Maximum connections in pool, default: 10

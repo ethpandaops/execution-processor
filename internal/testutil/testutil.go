@@ -79,7 +79,7 @@ type ClickHouseConnection struct {
 	Port     int
 	Database string
 	Username string
-	Password string
+	Password string //nolint:gosec // G117: test config, not a real secret
 }
 
 // Addr returns the ClickHouse address in host:port format.
