@@ -26,8 +26,8 @@ type Config struct {
 	// Block completion tracking
 	MaxPendingBlockRange int `yaml:"maxPendingBlockRange"` // Max distance between oldest incomplete and current block. Default: 2
 
-	// MaxRetries is how often a failed transaction task is retried before it is archived. Default: tracker.DefaultMaxRetries
-	MaxRetries int `yaml:"maxRetries"`
+	// MaxTaskRetries is how often a failed transaction task is retried before it is archived. Default: tracker.DefaultMaxTaskRetries
+	MaxTaskRetries int `yaml:"maxTaskRetries"`
 }
 
 // Validate validates the configuration.

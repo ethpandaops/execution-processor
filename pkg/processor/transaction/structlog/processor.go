@@ -98,8 +98,8 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 		config.TraceTimeout = DefaultTraceTimeout
 	}
 
-	if config.MaxRetries <= 0 {
-		config.MaxRetries = tracker.DefaultMaxRetries
+	if config.MaxTaskRetries <= 0 {
+		config.MaxTaskRetries = tracker.DefaultMaxTaskRetries
 	}
 
 	log := deps.Log.WithField("processor", ProcessorName)
@@ -239,9 +239,9 @@ func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	}
 }
 
-// EnqueueTask enqueues a task to the specified queue; a task that keeps failing is archived after maxRetries.
+// EnqueueTask enqueues a task to the specified queue; a task that keeps failing is archived after maxTaskRetries.
 func (p *Processor) EnqueueTask(ctx context.Context, task *asynq.Task, opts ...asynq.Option) error {
-	opts = append(opts, asynq.MaxRetry(p.maxRetries()))
+	opts = append(opts, asynq.MaxRetry(p.maxTaskRetries()))
 
 	_, err := p.asynqClient.EnqueueContext(ctx, task, opts...)
 
@@ -363,12 +363,12 @@ func (p *Processor) traceTimeout() time.Duration {
 	return p.config.TraceTimeout
 }
 
-func (p *Processor) maxRetries() int {
-	if p.config == nil || p.config.MaxRetries <= 0 {
-		return tracker.DefaultMaxRetries
+func (p *Processor) maxTaskRetries() int {
+	if p.config == nil || p.config.MaxTaskRetries <= 0 {
+		return tracker.DefaultMaxTaskRetries
 	}
 
-	return p.config.MaxRetries
+	return p.config.MaxTaskRetries
 }
 
 // startMetricsWorker starts the background metrics update worker.

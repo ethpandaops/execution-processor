@@ -30,8 +30,8 @@ type Config struct {
 	// TraceTimeout bounds tracing one transaction, including streaming its structlogs. Default: 10m
 	TraceTimeout time.Duration `yaml:"traceTimeout"`
 
-	// MaxRetries is how often a failed transaction task is retried before it is archived. Default: tracker.DefaultMaxRetries
-	MaxRetries int `yaml:"maxRetries"`
+	// MaxTaskRetries is how often a failed transaction task is retried before it is archived. Default: tracker.DefaultMaxTaskRetries
+	MaxTaskRetries int `yaml:"maxTaskRetries"`
 }
 
 // Validate validates the configuration.
