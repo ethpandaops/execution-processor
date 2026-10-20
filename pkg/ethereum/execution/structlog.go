@@ -60,9 +60,11 @@ type StructLog struct {
 	// In embedded mode this is nil - use CallToAddress instead.
 	Stack *[]string `json:"stack,omitempty"`
 
-	// CallToAddress is the target address for CALL/STATICCALL/DELEGATECALL/CALLCODE.
-	// In embedded mode: pre-extracted by tracer from stack[len-2].
-	// In RPC mode: nil, extracted post-hoc from Stack by extractCallAddress().
+	// CallToAddress is the target address for CALL/STATICCALL/DELEGATECALL/CALLCODE, and the
+	// created address (zero if the create failed) for CREATE/CREATE2.
+	// In embedded mode: set by the tracer, from stack[len-2] for calls and from the stack top
+	// once a create returns to its depth.
+	// In RPC mode: nil, resolved post-hoc from Stack.
 	CallToAddress *string `json:"callToAddress,omitempty"`
 
 	// MemorySize is the EVM memory size in bytes at the time this opcode executes.

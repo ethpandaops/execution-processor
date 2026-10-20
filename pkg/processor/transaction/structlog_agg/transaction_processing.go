@@ -33,12 +33,45 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		pcommon.TransactionProcessingDuration.WithLabelValues(p.network.Name, "structlog_agg").Observe(duration.Seconds())
 	}()
 
-	// Get trace from execution node
-	trace, err := p.getTransactionTrace(ctx, tx, block)
+	frames, err := p.ExtractCallFrames(ctx, block, tx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get trace: %w", err)
+		return 0, err
 	}
 
+	if len(frames) == 0 {
+		return 0, nil
+	}
+
+	if err := p.insertCallFrames(ctx, frames, block.Number().Uint64(), tx.Hash().String(), uint32(index), time.Now()); err != nil { //nolint:gosec // index is bounded by block.Transactions() length
+		pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "failed").Inc()
+
+		return 0, fmt.Errorf("failed to insert call frames: %w", err)
+	}
+
+	pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "success").Inc()
+
+	if len(frames) > 100 {
+		p.log.WithFields(logrus.Fields{
+			"tx_hash":     tx.Hash().String(),
+			"frame_count": len(frames),
+		}).Debug("Processed transaction with many call frames")
+	}
+
+	return len(frames), nil
+}
+
+// ExtractCallFrames traces a transaction and returns its aggregated call frame rows without inserting them.
+func (p *Processor) ExtractCallFrames(ctx context.Context, block execution.Block, tx execution.Transaction) ([]CallFrameRow, error) {
+	trace, err := p.getTransactionTrace(ctx, tx, block)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get trace: %w", err)
+	}
+
+	return p.buildCallFrames(trace, tx), nil
+}
+
+// buildCallFrames aggregates a transaction trace into call frame rows.
+func (p *Processor) buildCallFrames(trace *execution.TraceTransaction, tx execution.Transaction) []CallFrameRow {
 	if len(trace.Structlogs) == 0 {
 		// No structlogs means no EVM execution (e.g., simple ETH transfer)
 		// We still emit a root frame for consistency, matching SQL simple_transfer_frames logic
@@ -76,15 +109,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 
 		// gas_refund is 0 for simple transfers (no SSTORE operations)
 
-		if err := p.insertCallFrames(ctx, []CallFrameRow{rootFrame}, block.Number().Uint64(), tx.Hash().String(), uint32(index), time.Now()); err != nil { //nolint:gosec // index is bounded by block.Transactions() length
-			pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "failed").Inc()
-
-			return 0, fmt.Errorf("failed to insert call frames: %w", err)
-		}
-
-		pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "success").Inc()
-
-		return 1, nil
+		return []CallFrameRow{rootFrame}
 	}
 
 	// Check if GasUsed is pre-computed by the tracer (embedded mode)
@@ -104,13 +129,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 	// Compute gasSelf: gas excluding child frame gas (for CALL/CREATE opcodes)
 	gasSelf := structlog.ComputeGasSelf(trace.Structlogs, gasUsed)
 
-	// Check if CREATE/CREATE2 addresses are pre-computed by the tracer
-	precomputedCreateAddresses := hasPrecomputedCreateAddresses(trace.Structlogs)
-
-	var createAddresses map[int]*string
-	if !precomputedCreateAddresses {
-		createAddresses = computeCreateAddresses(trace.Structlogs)
-	}
+	resolveCallTargets(trace.Structlogs)
 
 	// Compute memory words and expansion gas for resource gas decomposition.
 	wordsBefore, wordsAfter := structlog.ComputeMemoryWords(trace.Structlogs)
@@ -141,8 +160,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 		// Track call frame based on depth changes
 		frameID, framePath := callTracker.processDepthChange(sl.Depth)
 
-		// Get call target address
-		callToAddr := p.extractCallAddressWithCreate(sl, i, createAddresses)
+		callToAddr := sl.CallToAddress
 
 		// Before processing parent CALL: detect precompile and compute gas split.
 		// Precompile gas = gasSelf minus CALL overhead, adjusted for memory expansion.
@@ -226,32 +244,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 	// same post-refund semantics that GasUsed had before the split.
 	receiptGas := trace.Gas
 
-	// Finalize aggregation and get call frame rows
-	frames := aggregator.Finalize(trace, receiptGas)
-
-	if len(frames) == 0 {
-		return 0, nil
-	}
-
-	// Insert call frames to ClickHouse
-	if err := p.insertCallFrames(ctx, frames, block.Number().Uint64(), tx.Hash().String(), uint32(index), time.Now()); err != nil { //nolint:gosec // index is bounded by block.Transactions() length
-		pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "failed").Inc()
-
-		return 0, fmt.Errorf("failed to insert call frames: %w", err)
-	}
-
-	// Record success metrics
-	pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog_agg", "success").Inc()
-
-	// Log progress for transactions with many frames
-	if len(frames) > 100 {
-		p.log.WithFields(logrus.Fields{
-			"tx_hash":     tx.Hash().String(),
-			"frame_count": len(frames),
-		}).Debug("Processed transaction with many call frames")
-	}
-
-	return len(frames), nil
+	return aggregator.Finalize(trace, receiptGas)
 }
 
 // getTransactionTrace gets the trace for a transaction.
@@ -275,40 +268,29 @@ func (p *Processor) getTransactionTrace(ctx context.Context, tx execution.Transa
 	return trace, nil
 }
 
-// extractCallAddressWithCreate extracts the call address, using createAddresses map for CREATE/CREATE2 opcodes.
-func (p *Processor) extractCallAddressWithCreate(structLog *execution.StructLog, index int, createAddresses map[int]*string) *string {
-	// For CREATE/CREATE2, use the pre-computed address from the trace
-	if structLog.Op == opcodeCREATE || structLog.Op == opcodeCREATE2 {
-		if createAddresses != nil {
-			return createAddresses[index]
+// resolveCallTargets fills CallToAddress from the stack where the embedded tracer would have set it.
+func resolveCallTargets(structlogs []execution.StructLog) {
+	var createAddresses map[int]*string
+
+	for i := range structlogs {
+		sl := &structlogs[i]
+		if sl.CallToAddress != nil {
+			continue
 		}
 
-		return nil
-	}
+		switch sl.Op {
+		case opcodeCALL, opcodeCALLCODE, opcodeDELEGATECALL, opcodeSTATICCALL:
+			if sl.Stack != nil && len(*sl.Stack) >= 2 {
+				addr := formatAddress((*sl.Stack)[len(*sl.Stack)-2])
+				sl.CallToAddress = &addr
+			}
+		case opcodeCREATE, opcodeCREATE2:
+			if createAddresses == nil {
+				createAddresses = structlog.ComputeCreateAddresses(structlogs)
+			}
 
-	return p.extractCallAddress(structLog)
-}
-
-// extractCallAddress extracts the call address from a structlog for CALL-family opcodes.
-func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
-	// Embedded mode: use pre-extracted CallToAddress
-	if structLog.CallToAddress != nil {
-		return structLog.CallToAddress
-	}
-
-	// RPC mode fallback: extract from Stack for CALL-family opcodes
-	if structLog.Stack == nil || len(*structLog.Stack) < 2 {
-		return nil
-	}
-
-	switch structLog.Op {
-	case opcodeCALL, opcodeCALLCODE, opcodeDELEGATECALL, opcodeSTATICCALL:
-		stackValue := (*structLog.Stack)[len(*structLog.Stack)-2]
-		addr := formatAddress(stackValue)
-
-		return &addr
-	default:
-		return nil
+			sl.CallToAddress = createAddresses[i]
+		}
 	}
 }
 
@@ -345,18 +327,6 @@ func hasPrecomputedGasUsed(structlogs []execution.StructLog) bool {
 	}
 
 	return structlogs[0].GasUsed > 0
-}
-
-// hasPrecomputedCreateAddresses detects whether CREATE/CREATE2 addresses are pre-computed.
-func hasPrecomputedCreateAddresses(structlogs []execution.StructLog) bool {
-	for i := range structlogs {
-		op := structlogs[i].Op
-		if op == opcodeCREATE || op == opcodeCREATE2 {
-			return structlogs[i].CallToAddress != nil
-		}
-	}
-
-	return false
 }
 
 // computeGasUsed calculates the actual gas consumed for each structlog.
@@ -401,42 +371,6 @@ func computeGasUsed(structlogs []execution.StructLog) []uint64 {
 	}
 
 	return gasUsed
-}
-
-// computeCreateAddresses pre-computes the created contract addresses for all CREATE/CREATE2 opcodes.
-func computeCreateAddresses(structlogs []execution.StructLog) map[int]*string {
-	result := make(map[int]*string)
-
-	type pendingCreate struct {
-		index int
-		depth uint64
-	}
-
-	var pending []pendingCreate
-
-	for i, log := range structlogs {
-		// Resolve pending CREATEs that have completed
-		for len(pending) > 0 {
-			last := pending[len(pending)-1]
-
-			if log.Depth <= last.depth && i > last.index {
-				if log.Stack != nil && len(*log.Stack) > 0 {
-					addr := formatAddress((*log.Stack)[len(*log.Stack)-1])
-					result[last.index] = &addr
-				}
-
-				pending = pending[:len(pending)-1]
-			} else {
-				break
-			}
-		}
-
-		if log.Op == opcodeCREATE || log.Op == opcodeCREATE2 {
-			pending = append(pending, pendingCreate{index: i, depth: log.Depth})
-		}
-	}
-
-	return result
 }
 
 // CallTracker tracks call frames during EVM opcode traversal.

@@ -50,6 +50,9 @@ type Structlog struct {
 	CallFrameID     uint32   `json:"call_frame_id"`
 	CallFramePath   []uint32 `json:"call_frame_path"`
 	MetaNetworkName string   `json:"meta_network_name"`
+
+	// Synthetic marks the row added for a CALL to an account without code; it shares the CALL's index.
+	Synthetic bool `json:"synthetic"`
 }
 
 // isCallOpcode returns true if the opcode initiates a call that creates a child frame.
@@ -190,7 +193,6 @@ func (p *Processor) buildRows(ctx context.Context, block execution.Block, index 
 		emit:               emit,
 		callToAddress:      p.extractCallAddress,
 		precomputedGasUsed: hasPrecomputedGasUsed(trace.Structlogs),
-		precomputedCreate:  hasPrecomputedCreateAddresses(trace.Structlogs),
 	})
 
 	for i := range trace.Structlogs {
@@ -289,7 +291,7 @@ func formatAddress(addr string) string {
 
 // extractCallAddress extracts the call address from a structlog for CALL-family opcodes.
 //
-// Supports two modes for backward compatibility:
+// Supports two modes:
 //   - Embedded mode: CallToAddress is pre-populated by the tracer, use directly.
 //   - RPC mode: CallToAddress is nil, extract from Stack[len-2] for CALL-family opcodes.
 //
@@ -331,20 +333,6 @@ func (p *Processor) extractCallAddress(structLog *execution.StructLog) *string {
 	default:
 		return nil
 	}
-}
-
-// extractCallAddressWithCreate extracts the call address, using createAddresses map for CREATE/CREATE2 opcodes.
-func (p *Processor) extractCallAddressWithCreate(structLog *execution.StructLog, index int, createAddresses map[int]*string) *string {
-	// For CREATE/CREATE2, use the pre-computed address from the trace
-	if structLog.Op == "CREATE" || structLog.Op == "CREATE2" {
-		if createAddresses != nil {
-			return createAddresses[index]
-		}
-
-		return nil
-	}
-
-	return p.extractCallAddress(structLog)
 }
 
 // ComputeCreateAddresses pre-computes the created contract addresses for all CREATE/CREATE2 opcodes.

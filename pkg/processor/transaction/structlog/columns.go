@@ -42,6 +42,7 @@ type Columns struct {
 	CallFrameID            proto.ColUInt32
 	CallFramePath          *proto.ColArr[uint32]
 	MetaNetworkName        proto.ColStr
+	Synthetic              proto.ColBool
 }
 
 // NewColumns creates a new Columns instance with all columns initialized.
@@ -79,6 +80,7 @@ func (c *Columns) Append(
 	callFrameID uint32,
 	callFramePath []uint32,
 	network string,
+	synthetic bool,
 ) {
 	c.UpdatedDateTime.Append(updatedDateTime)
 	c.BlockNumber.Append(blockNumber)
@@ -101,6 +103,7 @@ func (c *Columns) Append(
 	c.CallFrameID.Append(callFrameID)
 	c.CallFramePath.Append(callFramePath)
 	c.MetaNetworkName.Append(network)
+	c.Synthetic.Append(synthetic)
 }
 
 // Reset clears all columns for reuse.
@@ -126,6 +129,7 @@ func (c *Columns) Reset() {
 	c.CallFrameID.Reset()
 	c.CallFramePath.Reset()
 	c.MetaNetworkName.Reset()
+	c.Synthetic.Reset()
 }
 
 // Input returns the proto.Input for inserting data.
@@ -152,6 +156,7 @@ func (c *Columns) Input() proto.Input {
 		{Name: "call_frame_id", Data: &c.CallFrameID},
 		{Name: "call_frame_path", Data: c.CallFramePath},
 		{Name: "meta_network_name", Data: &c.MetaNetworkName},
+		{Name: "synthetic", Data: &c.Synthetic},
 	}
 }
 

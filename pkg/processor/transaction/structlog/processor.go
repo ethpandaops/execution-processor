@@ -319,6 +319,7 @@ func (p *Processor) flushRows(ctx context.Context, rows []Structlog) error {
 			sl.CallFrameID,
 			sl.CallFramePath,
 			sl.MetaNetworkName,
+			sl.Synthetic,
 		)
 	}
 
