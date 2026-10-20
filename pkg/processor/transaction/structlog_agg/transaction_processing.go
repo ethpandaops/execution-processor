@@ -36,7 +36,7 @@ func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Bloc
 	// Get trace from execution node
 	trace, err := p.getTransactionTrace(ctx, tx, block)
 	if err != nil {
-		return 0, tracker.TraceFailure(p.log, p.network.Name, "structlog_agg", block.Number().Uint64(), tx.Hash().String(), err)
+		return 0, fmt.Errorf("failed to get trace: %w", err)
 	}
 
 	if len(trace.Structlogs) == 0 {

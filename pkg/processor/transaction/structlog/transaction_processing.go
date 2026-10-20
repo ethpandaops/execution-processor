@@ -8,7 +8,6 @@ import (
 
 	pcommon "github.com/ethpandaops/execution-processor/pkg/common"
 	"github.com/ethpandaops/execution-processor/pkg/ethereum/execution"
-	"github.com/ethpandaops/execution-processor/pkg/processor/tracker"
 )
 
 // Structlog represents a single EVM opcode execution within a transaction trace.
@@ -115,199 +114,142 @@ func IsPrecompile(addr string) bool {
 
 // ProcessSingleTransaction processes a single transaction and inserts its structlogs directly to ClickHouse.
 func (p *Processor) ProcessSingleTransaction(ctx context.Context, block execution.Block, index int, tx execution.Transaction) (int, error) {
-	// Extract structlog data
-	structlogs, err := p.ExtractStructlogs(ctx, block, index, tx)
+	return p.ProcessTransaction(ctx, block, index, tx)
+}
+
+// ProcessTransaction traces a transaction and inserts its structlog rows to ClickHouse in bounded batches.
+func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Block, index int, tx execution.Transaction) (int, error) {
+	batch := newRowBatch(p.insertBatchSize(), func(rows []Structlog) error {
+		return p.insertStructlogs(ctx, rows)
+	})
+
+	rowCount, err := p.buildRows(ctx, block, index, tx, batch.add)
+	if err == nil {
+		err = batch.flush()
+	}
+
 	if err != nil {
+		pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
+
 		return 0, err
 	}
 
-	// Store count before processing
-	structlogCount := len(structlogs)
-
-	// Ensure we clear the slice on exit to allow GC
-	defer func() {
-		// Clear the slice to release memory
-		structlogs = nil
-	}()
-
-	// Send for direct insertion
-	if err := p.insertStructlogs(ctx, structlogs); err != nil {
-		pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "failed").Inc()
-
-		return 0, fmt.Errorf("failed to insert structlogs: %w", err)
-	}
-
-	// Record success metrics
-	pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
-
-	return structlogCount, nil
-}
-
-// ProcessTransaction processes a transaction and inserts structlogs to ClickHouse.
-func (p *Processor) ProcessTransaction(ctx context.Context, block execution.Block, index int, tx execution.Transaction) (int, error) {
-	// Get trace from execution node
-	trace, err := p.getTransactionTrace(ctx, tx, block)
-	if err != nil {
-		return 0, tracker.TraceFailure(p.log, p.network.Name, "structlog", block.Number().Uint64(), tx.Hash().String(), err)
-	}
-
-	totalCount := len(trace.Structlogs)
-	if totalCount == 0 {
-		return 0, nil
-	}
-
-	// Check if GasUsed is pre-computed by the tracer (embedded mode).
-	// In embedded mode, skip the post-processing computation.
-	// In RPC mode, compute GasUsed from gas differences.
-	precomputedGasUsed := hasPrecomputedGasUsed(trace.Structlogs)
-
-	var gasUsed []uint64
-	if !precomputedGasUsed {
-		gasUsed = ComputeGasUsed(trace.Structlogs)
-	} else {
-		// Extract pre-computed GasUsed values from structlogs (embedded mode)
-		gasUsed = make([]uint64, len(trace.Structlogs))
-		for i := range trace.Structlogs {
-			gasUsed[i] = trace.Structlogs[i].GasUsed
-		}
-	}
-
-	// Compute self gas (excludes child frame gas for CALL/CREATE opcodes)
-	gasSelf := ComputeGasSelf(trace.Structlogs, gasUsed)
-
-	// Initialize call frame tracker
-	callTracker := NewCallTracker()
-
-	// Check if CREATE/CREATE2 addresses are pre-computed by the tracer (embedded mode).
-	// In embedded mode, skip the multi-pass ComputeCreateAddresses scan.
-	precomputedCreateAddresses := hasPrecomputedCreateAddresses(trace.Structlogs)
-
-	var createAddresses map[int]*string
-	if !precomputedCreateAddresses {
-		// Pre-compute CREATE/CREATE2 addresses from trace stack (RPC mode)
-		createAddresses = ComputeCreateAddresses(trace.Structlogs)
-	}
-
-	blockNum := block.Number().Uint64()
-	txHash := tx.Hash().String()
-	txIndex := uint32(index) //nolint:gosec // index is bounded by block.Transactions() length
-	now := time.Now()
-
-	// Pre-allocate slice for structlogs (estimate with some extra capacity for EOA frames)
-	structlogs := make([]Structlog, 0, totalCount+totalCount/10)
-
-	// Build all structlogs
-	for i := 0; i < totalCount; i++ {
-		sl := &trace.Structlogs[i]
-
-		// Track call frame based on depth changes
-		frameID, framePath := callTracker.ProcessDepthChange(sl.Depth)
-
-		callToAddr := p.extractCallAddressWithCreate(sl, i, createAddresses)
-
-		structlogs = append(structlogs, Structlog{
-			UpdatedDateTime:        NewClickHouseTime(now),
-			BlockNumber:            blockNum,
-			TransactionHash:        txHash,
-			TransactionIndex:       txIndex,
-			TransactionGas:         trace.Gas,
-			TransactionFailed:      trace.Failed,
-			TransactionReturnValue: trace.ReturnValue,
-			Index:                  uint32(i),
-			Operation:              sl.Op,
-			Gas:                    sl.Gas,
-			GasCost:                sl.GasCost,
-			GasUsed:                gasUsed[i],
-			GasSelf:                gasSelf[i],
-			Depth:                  sl.Depth,
-			ReturnData:             sl.ReturnData,
-			Refund:                 sl.Refund,
-			Error:                  sl.Error,
-			CallToAddress:          callToAddr,
-			CallFrameID:            frameID,
-			CallFramePath:          framePath,
-			MetaNetworkName:        p.network.Name,
-		})
-
-		// Check for EOA call: CALL-type opcode where depth stays the same (immediate return)
-		// and target is not a precompile (precompiles don't create trace frames)
-		if isCallOpcode(sl.Op) && callToAddr != nil {
-			isEOACall := false
-
-			if i+1 < totalCount {
-				// Next opcode exists - check if depth stayed the same
-				nextDepth := trace.Structlogs[i+1].Depth
-				if nextDepth == sl.Depth && !IsPrecompile(*callToAddr) {
-					isEOACall = true
-				}
-			}
-
-			if isEOACall {
-				// Emit synthetic structlog for EOA frame
-				eoaFrameID, eoaFramePath := callTracker.IssueFrameID()
-
-				structlogs = append(structlogs, Structlog{
-					UpdatedDateTime:        NewClickHouseTime(now),
-					BlockNumber:            blockNum,
-					TransactionHash:        txHash,
-					TransactionIndex:       txIndex,
-					TransactionGas:         trace.Gas,
-					TransactionFailed:      trace.Failed,
-					TransactionReturnValue: trace.ReturnValue,
-					Index:                  uint32(i),
-					Operation:              "", // Empty = synthetic EOA frame
-					Gas:                    0,
-					GasCost:                0,
-					GasUsed:                0,
-					GasSelf:                0,
-					Depth:                  sl.Depth + 1, // One level deeper than caller
-					ReturnData:             nil,
-					Refund:                 nil,
-					Error:                  sl.Error,   // Inherit error if CALL failed
-					CallToAddress:          callToAddr, // The EOA address
-					CallFrameID:            eoaFrameID,
-					CallFramePath:          eoaFramePath,
-					MetaNetworkName:        p.network.Name,
-				})
-			}
-		}
-
-		// Free original trace data immediately to help GC
-		trace.Structlogs[i] = execution.StructLog{}
-	}
-
-	rowCount := len(structlogs)
-
-	// Submit to row buffer for batched insertion
-	if err := p.insertStructlogs(ctx, structlogs); err != nil {
-		return 0, fmt.Errorf("insert failed: %w", err)
-	}
-
-	// Record success metrics
 	pcommon.TransactionsProcessed.WithLabelValues(p.network.Name, "structlog", "success").Inc()
 
 	return rowCount, nil
 }
 
-// getTransactionTrace gets the trace for a transaction.
-func (p *Processor) getTransactionTrace(ctx context.Context, tx execution.Transaction, block execution.Block) (*execution.TraceTransaction, error) {
-	// Get execution node
+// ExtractStructlogs traces a transaction and returns all of its structlog rows without inserting them.
+func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block, index int, tx execution.Transaction) ([]Structlog, error) {
+	var rows []Structlog
+
+	if _, err := p.buildRows(ctx, block, index, tx, func(row *Structlog) error {
+		rows = append(rows, *row)
+
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+
+	return rows, nil
+}
+
+// buildRows traces tx and passes each structlog row to emit, streaming the trace when the node supports it.
+func (p *Processor) buildRows(ctx context.Context, block execution.Block, index int, tx execution.Transaction, emit func(*Structlog) error) (int, error) {
 	node := p.pool.GetHealthyExecutionNode()
 	if node == nil {
-		return nil, fmt.Errorf("no healthy execution node available")
+		return 0, fmt.Errorf("no healthy execution node available")
 	}
 
-	// Process transaction with timeout
-	processCtx, cancel := context.WithTimeout(ctx, tracker.DefaultTraceTimeout)
+	traceCtx, cancel := context.WithTimeout(ctx, p.traceTimeout())
 	defer cancel()
 
-	// Get transaction trace
-	trace, err := node.DebugTraceTransaction(processCtx, tx.Hash().String(), block.Number(), execution.StackTraceOptions())
-	if err != nil {
-		return nil, fmt.Errorf("failed to trace transaction: %w", err)
+	base := Structlog{
+		UpdatedDateTime:  NewClickHouseTime(time.Now()),
+		BlockNumber:      block.Number().Uint64(),
+		TransactionHash:  tx.Hash().String(),
+		TransactionIndex: uint32(index), //nolint:gosec // index is bounded by block.Transactions() length
+		MetaNetworkName:  p.network.Name,
 	}
 
-	return trace, nil
+	if streamer, ok := node.(execution.StructLogStreamer); ok {
+		return p.buildRowsStreamed(traceCtx, streamer, base, emit)
+	}
+
+	trace, err := node.DebugTraceTransaction(traceCtx, base.TransactionHash, block.Number(), execution.StackTraceOptions())
+	if err != nil {
+		return 0, fmt.Errorf("failed to trace transaction: %w", err)
+	}
+
+	base.TransactionGas = trace.Gas
+	base.TransactionFailed = trace.Failed
+	base.TransactionReturnValue = trace.ReturnValue
+
+	builder := newRowBuilder(rowBuilderConfig{
+		base:               base,
+		emit:               emit,
+		callToAddress:      p.extractCallAddress,
+		precomputedGasUsed: hasPrecomputedGasUsed(trace.Structlogs),
+		precomputedCreate:  hasPrecomputedCreateAddresses(trace.Structlogs),
+	})
+
+	for i := range trace.Structlogs {
+		if err := builder.add(&trace.Structlogs[i]); err != nil {
+			return 0, err
+		}
+
+		trace.Structlogs[i] = execution.StructLog{}
+	}
+
+	if err := builder.finish(); err != nil {
+		return 0, err
+	}
+
+	return builder.emitted, nil
+}
+
+// buildRowsStreamed takes call frames from one trace and streams structlogs without return data from another.
+func (p *Processor) buildRowsStreamed(ctx context.Context, streamer execution.StructLogStreamer, base Structlog, emit func(*Structlog) error) (int, error) {
+	frames, err := streamer.TraceCallFrames(ctx, base.TransactionHash)
+	if err != nil {
+		return 0, fmt.Errorf("failed to trace call frames: %w", err)
+	}
+
+	base.TransactionGas = frames.Gas
+	base.TransactionFailed = frames.Failed
+	base.TransactionReturnValue = frames.ReturnValue
+
+	builder := newRowBuilder(rowBuilderConfig{
+		base:          base,
+		emit:          emit,
+		callToAddress: p.extractCallAddress,
+		frames:        frames.Frames,
+		useFrames:     true,
+	})
+
+	summary, err := streamer.StreamStructLogs(ctx, base.TransactionHash, execution.CallFrameTraceOptions(), builder.add)
+	if err != nil {
+		return 0, fmt.Errorf("failed to stream structlogs: %w", err)
+	}
+
+	if err := builder.finish(); err != nil {
+		return 0, err
+	}
+
+	if summary.Gas != frames.Gas || summary.Failed != frames.Failed || !equalStringPtr(summary.ReturnValue, frames.ReturnValue) {
+		return 0, fmt.Errorf("%w: structlog trace reports gas=%d failed=%t, call frames gas=%d failed=%t",
+			ErrCallFramesMismatch, summary.Gas, summary.Failed, frames.Gas, frames.Failed)
+	}
+
+	return builder.emitted, nil
+}
+
+func equalStringPtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+
+	return *a == *b
 }
 
 // formatAddress normalizes an address to exactly 42 characters (0x + 40 hex).
@@ -447,169 +389,4 @@ func ComputeCreateAddresses(structlogs []execution.StructLog) map[int]*string {
 	}
 
 	return result
-}
-
-// ExtractStructlogs extracts structlog data from a transaction without inserting to database.
-func (p *Processor) ExtractStructlogs(ctx context.Context, block execution.Block, index int, tx execution.Transaction) ([]Structlog, error) {
-	start := time.Now()
-
-	defer func() {
-		duration := time.Since(start)
-		pcommon.TransactionProcessingDuration.WithLabelValues(p.network.Name, "structlog").Observe(duration.Seconds())
-	}()
-
-	// Get execution node
-	node := p.pool.GetHealthyExecutionNode()
-	if node == nil {
-		return nil, fmt.Errorf("no healthy execution node available")
-	}
-
-	// Process transaction with timeout
-	processCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	// Get transaction trace
-	trace, err := node.DebugTraceTransaction(processCtx, tx.Hash().String(), block.Number(), execution.StackTraceOptions())
-	if err != nil {
-		return nil, fmt.Errorf("failed to trace transaction: %w", err)
-	}
-
-	// Convert trace to structlog rows
-	var structlogs []Structlog
-
-	uIndex := uint32(index) //nolint:gosec // index is bounded by block.Transactions() length
-
-	if trace != nil {
-		// Check if GasUsed is pre-computed by the tracer (embedded mode).
-		// In embedded mode, extract values from structlogs.
-		// In RPC mode, compute GasUsed from gas differences.
-		precomputedGasUsed := hasPrecomputedGasUsed(trace.Structlogs)
-
-		var gasUsed []uint64
-		if precomputedGasUsed {
-			// Extract pre-computed GasUsed values from structlogs (embedded mode)
-			gasUsed = make([]uint64, len(trace.Structlogs))
-			for i := range trace.Structlogs {
-				gasUsed[i] = trace.Structlogs[i].GasUsed
-			}
-		} else {
-			// Compute GasUsed from gas differences (RPC mode)
-			gasUsed = ComputeGasUsed(trace.Structlogs)
-		}
-
-		// Compute self gas (excludes child frame gas for CALL/CREATE opcodes)
-		gasSelf := ComputeGasSelf(trace.Structlogs, gasUsed)
-
-		// Initialize call frame tracker
-		callTracker := NewCallTracker()
-
-		// Check if CREATE/CREATE2 addresses are pre-computed by the tracer (embedded mode).
-		precomputedCreateAddresses := hasPrecomputedCreateAddresses(trace.Structlogs)
-
-		var createAddresses map[int]*string
-		if !precomputedCreateAddresses {
-			// Pre-compute CREATE/CREATE2 addresses from trace stack (RPC mode)
-			createAddresses = ComputeCreateAddresses(trace.Structlogs)
-		}
-
-		// Pre-allocate slice for better memory efficiency
-		structlogs = make([]Structlog, 0, len(trace.Structlogs))
-
-		for i, structLog := range trace.Structlogs {
-			// Track call frame based on depth changes
-			frameID, framePath := callTracker.ProcessDepthChange(structLog.Depth)
-
-			callToAddr := p.extractCallAddressWithCreate(&structLog, i, createAddresses)
-
-			// Get GasUsed: use pre-computed value from tracer (embedded) or computed value (RPC).
-			var gasUsedValue uint64
-			if precomputedGasUsed {
-				gasUsedValue = structLog.GasUsed
-			} else {
-				gasUsedValue = gasUsed[i]
-			}
-
-			row := Structlog{
-				UpdatedDateTime:        NewClickHouseTime(time.Now()),
-				BlockNumber:            block.Number().Uint64(),
-				TransactionHash:        tx.Hash().String(),
-				TransactionIndex:       uIndex,
-				TransactionGas:         trace.Gas,
-				TransactionFailed:      trace.Failed,
-				TransactionReturnValue: trace.ReturnValue,
-				Index:                  uint32(i),
-				Operation:              structLog.Op,
-				Gas:                    structLog.Gas,
-				GasCost:                structLog.GasCost,
-				GasUsed:                gasUsedValue,
-				GasSelf:                gasSelf[i],
-				Depth:                  structLog.Depth,
-				ReturnData:             structLog.ReturnData,
-				Refund:                 structLog.Refund,
-				Error:                  structLog.Error,
-				CallToAddress:          callToAddr,
-				CallFrameID:            frameID,
-				CallFramePath:          framePath,
-				MetaNetworkName:        p.network.Name,
-			}
-
-			structlogs = append(structlogs, row)
-
-			// Check for EOA call: CALL-type opcode where depth stays the same (immediate return)
-			// and target is not a precompile (precompiles don't create trace frames)
-			if isCallOpcode(structLog.Op) && callToAddr != nil {
-				isEOACall := false
-
-				if i+1 < len(trace.Structlogs) {
-					// Next opcode exists - check if depth stayed the same
-					// Depth increase = entered contract code (not EOA)
-					// Depth decrease = call returned/failed (not EOA)
-					// Depth same = called EOA or precompile (immediate return)
-					nextDepth := trace.Structlogs[i+1].Depth
-					if nextDepth == structLog.Depth && !IsPrecompile(*callToAddr) {
-						isEOACall = true
-					}
-				}
-				// Note: If last opcode is a CALL, we can't determine if it's EOA
-				// because we don't have a next opcode to compare depth with.
-				// These are typically failed calls at end of execution.
-
-				if isEOACall {
-					// Emit synthetic structlog for EOA frame
-					eoaFrameID, eoaFramePath := callTracker.IssueFrameID()
-
-					eoaRow := Structlog{
-						UpdatedDateTime:        NewClickHouseTime(time.Now()),
-						BlockNumber:            block.Number().Uint64(),
-						TransactionHash:        tx.Hash().String(),
-						TransactionIndex:       uIndex,
-						TransactionGas:         trace.Gas,
-						TransactionFailed:      trace.Failed,
-						TransactionReturnValue: trace.ReturnValue,
-						Index:                  uint32(i),
-						Operation:              "", // Empty = synthetic EOA frame
-						Gas:                    0,
-						GasCost:                0,
-						GasUsed:                0,
-						GasSelf:                0,
-						Depth:                  structLog.Depth + 1, // One level deeper than caller
-						ReturnData:             nil,
-						Refund:                 nil,
-						Error:                  structLog.Error, // Inherit error if CALL failed
-						CallToAddress:          callToAddr,      // The EOA address
-						CallFrameID:            eoaFrameID,
-						CallFramePath:          eoaFramePath,
-						MetaNetworkName:        p.network.Name,
-					}
-
-					structlogs = append(structlogs, eoaRow)
-				}
-			}
-		}
-
-		// Clear the original trace data to free memory
-		trace.Structlogs = nil
-	}
-
-	return structlogs, nil
 }

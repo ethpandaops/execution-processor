@@ -2,8 +2,8 @@ package execution
 
 import "errors"
 
-// DefaultMaxResponseBytes bounds how much of one JSON-RPC response an RPC node will read.
-const DefaultMaxResponseBytes int64 = 1 << 30
+// DefaultMaxResponseBytes bounds how much of one JSON-RPC response an RPC node will read; streamed traces stay far below it.
+const DefaultMaxResponseBytes int64 = 64 << 30
 
 // ErrResponseTooLarge is returned when a JSON-RPC response exceeds Config.MaxResponseBytes.
 var ErrResponseTooLarge = errors.New("execution node response exceeds the size limit")

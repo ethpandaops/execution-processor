@@ -3,7 +3,6 @@ package structlog_agg
 import (
 	"context"
 	"fmt"
-	"math"
 	"math/big"
 	"sync"
 	"time"
@@ -103,6 +102,10 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 
 	if config.BufferFlushInterval <= 0 {
 		config.BufferFlushInterval = DefaultBufferFlushInterval
+	}
+
+	if config.MaxRetries <= 0 {
+		config.MaxRetries = tracker.DefaultMaxRetries
 	}
 
 	log := deps.Log.WithField("processor", ProcessorName)
@@ -242,9 +245,14 @@ func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	}
 }
 
-// EnqueueTask enqueues a task to the specified queue with infinite retries.
+// EnqueueTask enqueues a task to the specified queue; a task that keeps failing is archived after MaxRetries.
 func (p *Processor) EnqueueTask(ctx context.Context, task *asynq.Task, opts ...asynq.Option) error {
-	opts = append(opts, asynq.MaxRetry(math.MaxInt32))
+	maxRetries := tracker.DefaultMaxRetries
+	if p.config != nil && p.config.MaxRetries > 0 {
+		maxRetries = p.config.MaxRetries
+	}
+
+	opts = append(opts, asynq.MaxRetry(maxRetries))
 
 	_, err := p.asynqClient.EnqueueContext(ctx, task, opts...)
 

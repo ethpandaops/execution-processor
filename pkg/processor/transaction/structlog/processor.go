@@ -3,7 +3,6 @@ package structlog
 import (
 	"context"
 	"fmt"
-	"math"
 	"math/big"
 	"sync"
 	"time"
@@ -93,6 +92,14 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 
 	if config.BufferFlushInterval <= 0 {
 		config.BufferFlushInterval = DefaultBufferFlushInterval
+	}
+
+	if config.TraceTimeout <= 0 {
+		config.TraceTimeout = DefaultTraceTimeout
+	}
+
+	if config.MaxRetries <= 0 {
+		config.MaxRetries = tracker.DefaultMaxRetries
 	}
 
 	log := deps.Log.WithField("processor", ProcessorName)
@@ -232,9 +239,9 @@ func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	}
 }
 
-// EnqueueTask enqueues a task to the specified queue with infinite retries.
+// EnqueueTask enqueues a task to the specified queue; a task that keeps failing is archived after maxRetries.
 func (p *Processor) EnqueueTask(ctx context.Context, task *asynq.Task, opts ...asynq.Option) error {
-	opts = append(opts, asynq.MaxRetry(math.MaxInt32))
+	opts = append(opts, asynq.MaxRetry(p.maxRetries()))
 
 	_, err := p.asynqClient.EnqueueContext(ctx, task, opts...)
 
@@ -338,6 +345,30 @@ func (p *Processor) flushRows(ctx context.Context, rows []Structlog) error {
 // insertStructlogs submits structlogs to the row buffer for batched insertion.
 func (p *Processor) insertStructlogs(ctx context.Context, structlogs []Structlog) error {
 	return p.rowBuffer.Submit(ctx, structlogs)
+}
+
+func (p *Processor) insertBatchSize() int {
+	if p.config == nil {
+		return DefaultBufferMaxRows
+	}
+
+	return p.config.BufferMaxRows
+}
+
+func (p *Processor) traceTimeout() time.Duration {
+	if p.config == nil || p.config.TraceTimeout <= 0 {
+		return DefaultTraceTimeout
+	}
+
+	return p.config.TraceTimeout
+}
+
+func (p *Processor) maxRetries() int {
+	if p.config == nil || p.config.MaxRetries <= 0 {
+		return tracker.DefaultMaxRetries
+	}
+
+	return p.config.MaxRetries
 }
 
 // startMetricsWorker starts the background metrics update worker.
