@@ -183,17 +183,20 @@ func parseBlockFromJSON(raw json.RawMessage) (*types.Block, error) {
 	return types.NewBlockWithHeader(head).WithBody(types.Body{Transactions: body.Transactions}), nil
 }
 
-// getTraceParams returns VM trace parameters with configurable options.
-func getTraceParams(hash string, options execution.TraceOptions) []any {
-	return []any{
-		hash,
-		map[string]any{
-			"disableStorage":   options.DisableStorage,
-			"disableStack":     options.DisableStack,
-			"disableMemory":    options.DisableMemory,
-			"enableReturnData": options.EnableReturnData,
-		},
+// getTraceParams returns VM trace parameters with configurable options; the node-side timeout follows ctx's deadline.
+func getTraceParams(ctx context.Context, hash string, options execution.TraceOptions) []any {
+	config := map[string]any{
+		"disableStorage":   options.DisableStorage,
+		"disableStack":     options.DisableStack,
+		"disableMemory":    options.DisableMemory,
+		"enableReturnData": options.EnableReturnData,
 	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		config["timeout"] = max(time.Until(deadline).Round(time.Second), time.Second).String()
+	}
+
+	return []any{hash, config}
 }
 
 // traceTransactionErigon handles tracing for Erigon clients.
@@ -202,7 +205,7 @@ func (n *RPCNode) traceTransactionErigon(ctx context.Context, hash string, optio
 
 	start := time.Now()
 
-	err := n.rpcClient.CallContext(ctx, &rsp, "debug_traceTransaction", getTraceParams(hash, options)...)
+	err := n.rpcClient.CallContext(ctx, &rsp, "debug_traceTransaction", getTraceParams(ctx, hash, options)...)
 
 	duration := time.Since(start)
 
