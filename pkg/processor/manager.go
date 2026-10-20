@@ -25,6 +25,7 @@ package processor
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"math/rand/v2"
@@ -58,6 +59,40 @@ func retryDelayFunc(n int, _ error, _ *asynq.Task) time.Duration {
 	}
 
 	return delay
+}
+
+// archiveErrorHandler reports a task's final failure, naming its block and transaction, as asynq archives it.
+func archiveErrorHandler(log logrus.FieldLogger) asynq.ErrorHandler {
+	return asynq.ErrorHandlerFunc(func(ctx context.Context, task *asynq.Task, err error) {
+		retried, _ := asynq.GetRetryCount(ctx)
+
+		maxRetry, ok := asynq.GetMaxRetry(ctx)
+		if !ok || retried < maxRetry {
+			return
+		}
+
+		queue, _ := asynq.GetQueueName(ctx)
+		taskID, _ := asynq.GetTaskID(ctx)
+
+		//nolint:tagliatelle // task payloads use snake_case
+		var payload struct {
+			BlockNumber     json.Number `json:"block_number"`
+			TransactionHash string      `json:"transaction_hash"`
+		}
+
+		_ = json.Unmarshal(task.Payload(), &payload)
+
+		common.TasksArchived.WithLabelValues(queue, task.Type()).Inc()
+
+		log.WithError(err).WithFields(logrus.Fields{
+			"task_id":          taskID,
+			"task_type":        task.Type(),
+			"queue":            queue,
+			"block_number":     payload.BlockNumber.String(),
+			"transaction_hash": payload.TransactionHash,
+			"retried":          retried,
+		}).Error("Task archived after exhausting its retries")
+	})
 }
 
 // Manager coordinates multiple processors with distributed task processing.
@@ -132,6 +167,7 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 		LogLevel:       asynq.InfoLevel,
 		Logger:         log,
 		RetryDelayFunc: retryDelayFunc,
+		ErrorHandler:   archiveErrorHandler(log),
 	})
 
 	return &Manager{
@@ -1093,6 +1129,7 @@ func (m *Manager) updateAsynqQueues() error {
 		LogLevel:       asynq.InfoLevel,
 		Logger:         m.log,
 		RetryDelayFunc: retryDelayFunc,
+		ErrorHandler:   archiveErrorHandler(m.log),
 	})
 
 	return nil

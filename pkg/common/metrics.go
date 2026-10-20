@@ -84,10 +84,10 @@ var (
 		Help: "Total transactions processed",
 	}, []string{"network", "processor", "status"})
 
-	TransactionsSkipped = promauto.NewCounterVec(prometheus.CounterOpts{
-		Name: "execution_processor_transactions_skipped_total",
-		Help: "Total transactions skipped without writing rows, by reason",
-	}, []string{"network", "processor", "reason"})
+	TasksArchived = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "execution_processor_tasks_archived_total",
+		Help: "Total tasks archived after exhausting their retries",
+	}, []string{"queue", "task_type"})
 
 	TransactionProcessingDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "execution_processor_transaction_processing_duration_seconds",

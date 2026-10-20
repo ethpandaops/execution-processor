@@ -215,6 +215,35 @@ curl -X POST http://localhost:8080/api/v1/queue/blocks/transaction_structlog \
 - Allows reprocessing of already processed blocks
 - Each API call creates new tasks (calling multiple times will create duplicates)
 
+## Structlog Return Data
+
+From v0.3.0 the `structlog` processor writes `return_data` only on the first opcode a frame executes after a `CALL`, `CALLCODE`, `DELEGATECALL`, `STATICCALL`, `CREATE` or `CREATE2` returns. The value is the return-data buffer that call left in the frame: the callee's output after a call that succeeded or reverted, the revert data after a reverted create, and `NULL` when the buffer is empty. Every other row has `return_data = NULL`.
+
+Earlier versions wrote the buffer on every opcode. A buffer stays live until the next call returns, so that form repeated it across every opcode in between: mainnet tx `0xa121687c…` (block 26036079) repeats a 394,464-byte buffer on 468,867 opcodes, about 370GB of hex. The new form stores it once. No information is lost: the buffer at any opcode is the `return_data` of the latest row in the same `call_frame_id` whose previous row in that frame is a call or create, or empty if there is none.
+
+To recover the buffer for each opcode of one transaction without copying it per row, resolve each opcode to the row that holds its buffer:
+
+```sql
+WITH ops AS (
+    SELECT
+        index,
+        call_frame_id,
+        lagInFrame(operation) OVER (PARTITION BY call_frame_id ORDER BY index ROWS BETWEEN 1 PRECEDING AND CURRENT ROW)
+            IN ('CALL', 'CALLCODE', 'DELEGATECALL', 'STATICCALL', 'CREATE', 'CREATE2') AS after_call
+    FROM canonical_execution_transaction_structlog FINAL
+    WHERE meta_network_name = 'mainnet' AND block_number = {block:UInt64} AND transaction_hash = {tx:String}
+      AND operation != '' -- skip synthetic EOA frame rows
+)
+SELECT
+    index,
+    last_value(if(after_call, index, NULL)) OVER (PARTITION BY call_frame_id ORDER BY index ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)
+        AS return_data_index -- join to the row with this index for the buffer; NULL means empty
+FROM ops
+ORDER BY index
+```
+
+In RPC mode the processor streams the structlog trace with return data disabled and takes each call's output from a second, frame-only tracer pass, so neither the node response nor processor memory grows with opcode count. A transaction that cannot be traced is retried `maxRetries` times and then archived (`execution_processor_tasks_archived_total`, logged with its hash); it is never marked complete without its rows.
+
 ## Structlog Aggregation
 
 The `structlog_agg` processor aggregates per-opcode structlog data into call frame rows suitable for ClickHouse storage. It produces two types of rows per call frame:

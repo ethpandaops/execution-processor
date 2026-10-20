@@ -166,7 +166,3 @@ func TestAnnouncedOversizedResponseIsRefused(t *testing.T) {
 	err := rpcClient.CallContext(context.Background(), &rsp, "debug_traceTransaction", getTraceParams(context.Background(), "0x01", execution.CallFrameTraceOptions())...)
 	require.ErrorIs(t, err, execution.ErrResponseTooLarge)
 }
-
-func TestDefaultLimitRefusesPoisonTrace(t *testing.T) {
-	require.Less(t, execution.DefaultMaxResponseBytes, int64(poisonOpcodesWithData)*poisonReturnDataBytes*2)
-}

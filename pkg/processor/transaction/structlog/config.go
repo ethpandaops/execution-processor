@@ -11,6 +11,7 @@ import (
 const (
 	DefaultBufferMaxRows       = 100000
 	DefaultBufferFlushInterval = time.Second
+	DefaultTraceTimeout        = 10 * time.Minute
 )
 
 // Config holds configuration for transaction structlog processor.
@@ -25,6 +26,12 @@ type Config struct {
 
 	// Block completion tracking
 	MaxPendingBlockRange int `yaml:"maxPendingBlockRange"` // Max distance between oldest incomplete and current block. Default: 2
+
+	// TraceTimeout bounds tracing one transaction, including streaming its structlogs. Default: 10m
+	TraceTimeout time.Duration `yaml:"traceTimeout"`
+
+	// MaxRetries is how often a failed transaction task is retried before it is archived. Default: tracker.DefaultMaxRetries
+	MaxRetries int `yaml:"maxRetries"`
 }
 
 // Validate validates the configuration.

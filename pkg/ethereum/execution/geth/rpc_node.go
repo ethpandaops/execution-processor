@@ -46,11 +46,12 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // RPCNode implements execution.Node using JSON-RPC connections.
 type RPCNode struct {
-	config    *execution.Config
-	log       logrus.FieldLogger
-	client    *ethclient.Client
-	rpcClient *rpc.Client
-	name      string
+	config     *execution.Config
+	log        logrus.FieldLogger
+	client     *ethclient.Client
+	rpcClient  *rpc.Client
+	httpClient *http.Client
+	name       string
 
 	services []services.Service
 
@@ -131,6 +132,7 @@ func (n *RPCNode) Start(ctx context.Context) error {
 
 	n.client = client
 	n.rpcClient = rpcClient
+	n.httpClient = &httpClient
 	n.services = svcs
 
 	errs := make(chan error, 1)
