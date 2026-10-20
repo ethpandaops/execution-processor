@@ -14,6 +14,10 @@ ethereum:
 redis:
   address: "redis://localhost:6379"
   prefix: "execution-processor"
+  # Resolve the master through Redis Sentinel; address then only supplies credentials and DB.
+  # sentinel:
+  #   masterName: "mymaster"
+  #   addrs: ["localhost:26379"]
 
 stateManager:
   storage:

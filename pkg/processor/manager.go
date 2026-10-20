@@ -40,6 +40,7 @@ import (
 	transaction_simple "github.com/ethpandaops/execution-processor/pkg/processor/transaction/simple"
 	transaction_structlog "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog"
 	transaction_structlog_agg "github.com/ethpandaops/execution-processor/pkg/processor/transaction/structlog_agg"
+	redisconn "github.com/ethpandaops/execution-processor/pkg/redis"
 	s "github.com/ethpandaops/execution-processor/pkg/state"
 	"github.com/hibiken/asynq"
 	r "github.com/redis/go-redis/v9"
@@ -110,15 +111,8 @@ type Manager struct {
 }
 
 func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, state *s.Manager, redis *r.Client, redisPrefix string) (*Manager, error) {
-	// Get Redis options from the existing client
-	redisOpt := redis.Options()
-
 	// Create separate Redis clients for Asynq to avoid shutdown issues
-	asynqRedisOpt := asynq.RedisClientOpt{
-		Addr:     redisOpt.Addr,
-		Password: redisOpt.Password,
-		DB:       redisOpt.DB,
-	}
+	asynqRedisOpt := redisconn.ConnOpt(redis)
 
 	// Initialize Asynq client with its own Redis connection
 	asynqClient := asynq.NewClient(asynqRedisOpt)
@@ -883,13 +877,7 @@ func (m *Manager) calculateBackpressureBackoff(current time.Duration) time.Durat
 
 // monitorQueues monitors queue health and archived items.
 func (m *Manager) monitorQueues(ctx context.Context) {
-	// Get Redis options for Asynq Inspector
-	redisOpt := m.redisClient.Options()
-	asynqRedisOpt := asynq.RedisClientOpt{
-		Addr:     redisOpt.Addr,
-		Password: redisOpt.Password,
-		DB:       redisOpt.DB,
-	}
+	asynqRedisOpt := redisconn.ConnOpt(m.redisClient)
 
 	// Get queue info from Asynq Inspector
 	inspector := asynq.NewInspector(asynqRedisOpt)
@@ -1096,13 +1084,7 @@ func (m *Manager) updateAsynqQueues() error {
 		m.asynqServer.Stop()
 	}
 
-	// Get Redis options from the existing client
-	redisOpt := m.redisClient.Options()
-	asynqRedisOpt := asynq.RedisClientOpt{
-		Addr:     redisOpt.Addr,
-		Password: redisOpt.Password,
-		DB:       redisOpt.DB,
-	}
+	asynqRedisOpt := redisconn.ConnOpt(m.redisClient)
 
 	m.asynqServer = asynq.NewServer(asynqRedisOpt, asynq.Config{
 		Concurrency:    m.config.Concurrency,
@@ -1138,13 +1120,7 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 	default:
 	}
 
-	// Get Redis options for Asynq Inspector
-	redisOpt := m.redisClient.Options()
-	asynqRedisOpt := asynq.RedisClientOpt{
-		Addr:     redisOpt.Addr,
-		Password: redisOpt.Password,
-		DB:       redisOpt.DB,
-	}
+	asynqRedisOpt := redisconn.ConnOpt(m.redisClient)
 
 	inspector := asynq.NewInspector(asynqRedisOpt)
 
