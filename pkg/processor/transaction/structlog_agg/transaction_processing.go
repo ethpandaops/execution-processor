@@ -267,7 +267,7 @@ func (p *Processor) getTransactionTrace(ctx context.Context, tx execution.Transa
 	defer cancel()
 
 	// Get transaction trace
-	trace, err := node.DebugTraceTransaction(processCtx, tx.Hash().String(), block.Number(), execution.StackTraceOptions())
+	trace, err := node.DebugTraceTransaction(processCtx, tx.Hash().String(), block.Number(), execution.CallFrameTraceOptions())
 	if err != nil {
 		return nil, fmt.Errorf("failed to trace transaction: %w", err)
 	}
