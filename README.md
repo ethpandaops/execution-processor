@@ -242,6 +242,8 @@ FROM ops
 ORDER BY index
 ```
 
+`call_to_address` holds the target of a `CALL`, `CALLCODE`, `DELEGATECALL` or `STATICCALL`, and for `CREATE`/`CREATE2` the address the constructor deployed (zero address if the create failed). A call to an account without code (an EOA) runs no opcodes, so the processor adds a row for the frame it opens: same `index` as the `CALL`, `depth + 1`, its own `call_frame_id`, empty `operation` and `synthetic = true`. From v0.4.0 `synthetic` is part of the table's sorting key (xatu migration `023_structlog_synthetic_key`); without it the two rows share a key and one is lost on merge, so the table needs that migration before this processor writes to it.
+
 In RPC mode the processor streams the structlog trace with return data disabled and takes each call's output from a second, frame-only tracer pass, so neither the node response nor processor memory grows with opcode count. A transaction that cannot be traced is retried `maxTaskRetries` times and then archived (`execution_processor_tasks_archived_total`, logged with its hash); it is never marked complete without its rows.
 
 ## Structlog Aggregation

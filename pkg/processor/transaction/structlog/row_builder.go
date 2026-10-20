@@ -18,9 +18,8 @@ type rowBuilder struct {
 
 	callToAddress func(*execution.StructLog) *string
 
-	// precomputedGasUsed and precomputedCreate mean the tracer filled GasUsed and CREATE addresses (embedded mode).
+	// precomputedGasUsed means the tracer filled GasUsed (embedded mode).
 	precomputedGasUsed bool
-	precomputedCreate  bool
 
 	// frames, when set, supplies post-call return data (RPC mode); otherwise it comes from each opcode's ReturnData.
 	frames    []execution.CallFrame
@@ -48,7 +47,6 @@ type rowBuilderConfig struct {
 	emit               func(*Structlog) error
 	callToAddress      func(*execution.StructLog) *string
 	precomputedGasUsed bool
-	precomputedCreate  bool
 	frames             []execution.CallFrame
 	useFrames          bool
 }
@@ -59,7 +57,6 @@ func newRowBuilder(cfg rowBuilderConfig) *rowBuilder {
 		emit:               cfg.emit,
 		callToAddress:      cfg.callToAddress,
 		precomputedGasUsed: cfg.precomputedGasUsed,
-		precomputedCreate:  cfg.precomputedCreate,
 		frames:             cfg.frames,
 		useFrames:          cfg.useFrames,
 		tracker:            NewCallTracker(),
@@ -127,8 +124,11 @@ func (b *rowBuilder) add(sl *execution.StructLog) error {
 		row.GasUsed = sl.GasUsed
 	}
 
+	// The embedded tracer fills a CREATE's address once its constructor returns; RPC traces resolve it from the stack.
 	isCreate := sl.Op == OpcodeCREATE || sl.Op == OpcodeCREATE2
-	if !isCreate {
+	if isCreate {
+		row.CallToAddress = sl.CallToAddress
+	} else {
 		row.CallToAddress = b.callToAddress(sl)
 	}
 
@@ -137,7 +137,7 @@ func (b *rowBuilder) add(sl *execution.StructLog) error {
 		callOrCreate:  isCallOrCreateOpcode(sl.Op),
 		call:          isCallOpcode(sl.Op),
 		frame:         -1,
-		createPending: isCreate && !b.precomputedCreate,
+		createPending: isCreate && sl.CallToAddress == nil,
 	}
 
 	if b.useFrames && p.callOrCreate {
@@ -186,6 +186,7 @@ func (b *rowBuilder) followUpPrevious(sl *execution.StructLog) error {
 	eoa.CallToAddress = prev.row.CallToAddress
 	eoa.CallFrameID = eoaFrameID
 	eoa.CallFramePath = eoaFramePath
+	eoa.Synthetic = true
 
 	return b.emitRow(&eoa)
 }

@@ -158,6 +158,7 @@ func TestStructlogCountReturn(t *testing.T) {
 			uint32(0),             // callFrameID
 			[]uint32{},            // callFramePath
 			"test",                // network
+			false,                 // synthetic
 		)
 	}
 
@@ -242,6 +243,7 @@ func TestMemoryManagement(t *testing.T) {
 			uint32(0),       // callFrameID
 			[]uint32{},      // callFramePath
 			"mainnet",       // network
+			false,           // synthetic
 		)
 	}
 
@@ -284,7 +286,7 @@ func TestColumnsAppendAndReset(t *testing.T) {
 	cols.Append(
 		now, uint64(100), "0xabc", uint32(0), uint64(21000), false, &str,
 		uint32(0), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
-		nil, &num, nil, nil, uint32(0), []uint32{}, "mainnet",
+		nil, &num, nil, nil, uint32(0), []uint32{}, "mainnet", false,
 	)
 
 	assert.Equal(t, 1, cols.Rows())
@@ -294,7 +296,7 @@ func TestColumnsAppendAndReset(t *testing.T) {
 		cols.Append(
 			now, uint64(100), "0xabc", uint32(0), uint64(21000), false, nil,
 			uint32(i+1), "PUSH1", uint64(20000), uint64(3), uint64(3), uint64(3), uint64(1),
-			nil, nil, nil, nil, uint32(0), []uint32{}, "mainnet",
+			nil, nil, nil, nil, uint32(0), []uint32{}, "mainnet", false,
 		)
 	}
 
@@ -309,10 +311,10 @@ func TestColumnsInput(t *testing.T) {
 	cols := transaction_structlog.NewColumns()
 	input := cols.Input()
 
-	// Verify all 21 columns are present
-	assert.Len(t, input, 21)
+	assert.Len(t, input, 22)
 	assert.Equal(t, "updated_date_time", input[0].Name)
 	assert.Equal(t, "meta_network_name", input[20].Name)
+	assert.Equal(t, "synthetic", input[21].Name)
 }
 
 // Tests from tasks_test.go

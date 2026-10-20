@@ -26,17 +26,18 @@ func legacyRows(trace *execution.TraceTransaction) []Structlog {
 	gasSelf := ComputeGasSelf(trace.Structlogs, gasUsed)
 	callTracker := NewCallTracker()
 
-	var createAddresses map[int]*string
-	if !hasPrecomputedCreateAddresses(trace.Structlogs) {
-		createAddresses = ComputeCreateAddresses(trace.Structlogs)
-	}
+	createAddresses := ComputeCreateAddresses(trace.Structlogs)
 
 	rows := make([]Structlog, 0, len(trace.Structlogs))
 
 	for i := range trace.Structlogs {
 		sl := &trace.Structlogs[i]
 		frameID, framePath := callTracker.ProcessDepthChange(sl.Depth)
-		callToAddr := p.extractCallAddressWithCreate(sl, i, createAddresses)
+
+		callToAddr := p.extractCallAddress(sl)
+		if sl.Op == OpcodeCREATE || sl.Op == OpcodeCREATE2 {
+			callToAddr = createAddresses[i]
+		}
 
 		rows = append(rows, Structlog{
 			TransactionGas:         trace.Gas,
@@ -71,6 +72,7 @@ func legacyRows(trace *execution.TraceTransaction) []Structlog {
 				CallToAddress:          callToAddr,
 				CallFrameID:            eoaFrameID,
 				CallFramePath:          eoaFramePath,
+				Synthetic:              true,
 			})
 		}
 	}
@@ -98,7 +100,6 @@ func buildRows(t *testing.T, trace *execution.TraceTransaction, frames []executi
 		},
 		callToAddress:      p.extractCallAddress,
 		precomputedGasUsed: hasPrecomputedGasUsed(trace.Structlogs),
-		precomputedCreate:  hasPrecomputedCreateAddresses(trace.Structlogs),
 		frames:             frames,
 		useFrames:          useFrames,
 	})
