@@ -9,6 +9,8 @@ ethereum:
   execution:
     - name: "execution-1"
       nodeAddress: http://localhost:8545
+      # Largest JSON-RPC response read from this node (default 1GiB); bigger traces are skipped and counted.
+      # maxResponseBytes: 1073741824
 
 # Redis configuration for distributed task queues and leader election
 redis:

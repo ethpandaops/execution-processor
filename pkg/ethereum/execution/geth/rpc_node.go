@@ -109,7 +109,7 @@ func (n *RPCNode) Start(ctx context.Context) error {
 
 	httpClient.Transport = &headerTransport{
 		headers: n.config.NodeHeaders,
-		base:    httpClient.Transport,
+		base:    &limitTransport{base: httpClient.Transport, limit: n.config.ResponseLimit()},
 	}
 
 	// Create raw RPC client with custom HTTP client
