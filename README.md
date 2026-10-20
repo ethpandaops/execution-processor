@@ -58,6 +58,10 @@ A distributed system for processing Ethereum execution layer data with support f
 └─────────────────────────────────────────┘
 ```
 
+Priorities are weights, not a strict order: when workers are busy, each processor's queue keeps a share of them, so a long `structlog_agg` backlog cannot hold back `transaction_simple` tasks. Reprocess queues (priority 20) get twice the share of forwards queues.
+
+On the leader, every processor discovers and enqueues blocks in its own loop, with its own backpressure check, stale block check and gap scan, so a long enqueue batch in one processor never delays another.
+
 ## Embedded Mode (Library Usage)
 
 The execution-processor can be embedded as a library within an execution client, providing direct data access without JSON-RPC overhead.

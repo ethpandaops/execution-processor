@@ -11,11 +11,12 @@
 //
 // # Processing Flow
 //
-//  1. Manager.Start() initializes processors and begins the processing loop
-//  2. processBlocks() is called on each interval (default 10s)
-//  3. Each processor's ProcessNextBlock() discovers and enqueues tasks
-//  4. Asynq workers (potentially distributed) process the tasks
-//  5. Completion tracking marks blocks done when all tasks finish
+//  1. Manager.Start() initializes processors and, on the leader, starts one discovery loop per processor
+//  2. Each loop calls its processor's ProcessNextBlock(), which discovers and enqueues tasks
+//  3. Asynq workers (potentially distributed) process the tasks
+//  4. Completion tracking marks blocks done when all tasks finish
+//
+// Processors never wait on each other: a long enqueue batch in one only delays that processor.
 //
 // # Leader Election
 //
@@ -140,9 +141,6 @@ type Manager struct {
 	// Track queue high water marks
 	queueHighWaterMarks map[string]int
 	queueMetricsMutex   sync.RWMutex
-
-	// Backpressure backoff tracking
-	backpressureBackoff time.Duration
 }
 
 func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, state *s.Manager, redis *r.Client, redisPrefix string) (*Manager, error) {
@@ -155,20 +153,8 @@ func NewManager(log logrus.FieldLogger, config *Config, pool *ethereum.Pool, sta
 	// Initialize Asynq inspector for task management (deletion before reprocessing)
 	asynqInspector := asynq.NewInspector(asynqRedisOpt)
 
-	var asynqServer *asynq.Server
-	// Setup queue priorities dynamically based on processors
-	// This will be populated after processors are initialized
-	queues := make(map[string]int)
-
-	asynqServer = asynq.NewServer(asynqRedisOpt, asynq.Config{
-		Concurrency:    config.Concurrency,
-		Queues:         queues,
-		StrictPriority: true,
-		LogLevel:       asynq.InfoLevel,
-		Logger:         log,
-		RetryDelayFunc: retryDelayFunc,
-		ErrorHandler:   archiveErrorHandler(log),
-	})
+	// Queues are registered once the processors are initialized.
+	asynqServer := newAsynqServer(asynqRedisOpt, config.Concurrency, map[string]int{}, log)
 
 	return &Manager{
 		log:                 log.WithField("component", "processor"),
@@ -273,14 +259,17 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.log.Debug("Leader election started with callback-based notification")
 	} else {
 		// If leader election is disabled, always act as leader
+		m.blockProcessMutex.Lock()
 		m.isLeader = true
+		stop := m.blockProcessStop
+		m.blockProcessMutex.Unlock()
 
 		m.wg.Add(1)
 
 		go func() {
 			defer m.wg.Done()
 
-			m.runBlockProcessing(ctx)
+			m.runBlockProcessing(ctx, stop)
 		}()
 
 		m.log.Info("Leader election disabled - running as standalone processor")
@@ -616,14 +605,11 @@ func (m *Manager) startProcessorWithRetry(ctx context.Context, processor tracker
 	}
 }
 
-// processBlocks processes the next block for all registered processors.
-// Returns true if any processor successfully processed a block, false otherwise.
-func (m *Manager) processBlocks(ctx context.Context) bool {
-	m.log.WithField("processor_count", len(m.processors)).Debug("Starting to process blocks")
-
-	// Check if we should skip due to queue backpressure
-	if shouldSkip, reason := m.shouldSkipBlockProcessing(ctx); shouldSkip {
+// processNextBlock runs one ProcessNextBlock for a processor and reports whether it did work.
+func (m *Manager) processNextBlock(ctx context.Context, name string, processor tracker.BlockProcessor) bool {
+	if skip, reason := m.shouldSkipBlockProcessing(ctx, name); skip {
 		m.log.WithFields(logrus.Fields{
+			"processor":      name,
 			"reason":         reason,
 			"max_queue_size": m.config.MaxProcessQueueSize,
 		}).Warn("Skipping block processing due to queue backpressure")
@@ -631,51 +617,45 @@ func (m *Manager) processBlocks(ctx context.Context) bool {
 		return false
 	}
 
-	// Get execution node head for head distance calculation
+	workDone := false
+	startTime := time.Now()
+
+	if err := processor.ProcessNextBlock(ctx); err != nil {
+		if isWaitingForBlockError(err) {
+			m.log.WithError(err).WithField("processor", name).Debug("Processor waiting for new block")
+		} else {
+			m.log.WithError(err).WithField("processor", name).Error("Failed to process block")
+		}
+
+		common.ProcessorErrors.WithLabelValues(m.network.Name, name, "process_block", "processing").Inc()
+	} else {
+		workDone = true
+		duration := time.Since(startTime)
+
+		common.BlockProcessingDuration.WithLabelValues(m.network.Name, name).Observe(duration.Seconds())
+
+		m.log.WithFields(logrus.Fields{
+			"processor": name,
+			"duration":  duration,
+		}).Debug("Successfully processed block")
+	}
+
+	return workDone
+}
+
+// updateHeadDistanceMetrics refreshes every processor's head distance against the execution node head.
+func (m *Manager) updateHeadDistanceMetrics(ctx context.Context) {
 	var executionHead *big.Int
 
-	node := m.pool.GetHealthyExecutionNode()
-	if node != nil {
+	if node := m.pool.GetHealthyExecutionNode(); node != nil {
 		if latestBlockNum, err := node.BlockNumber(ctx); err == nil && latestBlockNum != nil {
 			executionHead = new(big.Int).SetUint64(*latestBlockNum)
 		}
 	}
 
-	workDone := false
-
-	for name, processor := range m.processors {
-		m.log.WithField("processor", name).Debug("Processing next block for processor")
-
-		startTime := time.Now()
-
-		if err := processor.ProcessNextBlock(ctx); err != nil {
-			// Check if this is a "waiting for block" case to reduce log noise
-			if isWaitingForBlockError(err) {
-				m.log.WithError(err).WithField("processor", name).Debug("Processor waiting for new block")
-			} else {
-				m.log.WithError(err).WithField("processor", name).Error("Failed to process block")
-			}
-
-			common.ProcessorErrors.WithLabelValues(m.network.Name, name, "process_block", "processing").Inc()
-		} else {
-			workDone = true
-
-			// Track processing duration
-			duration := time.Since(startTime)
-
-			common.BlockProcessingDuration.WithLabelValues(m.network.Name, name).Observe(duration.Seconds())
-
-			m.log.WithFields(logrus.Fields{
-				"processor": name,
-				"duration":  duration,
-			}).Debug("Successfully processed block")
-		}
-
-		// Update head distance metric (regardless of success/failure to track current distance)
+	for name := range m.processors {
 		m.updateHeadDistanceMetric(ctx, name, executionHead)
 	}
-
-	return workDone
 }
 
 // updateHeadDistanceMetric calculates and updates the head distance metric for a processor.
@@ -730,7 +710,8 @@ func (m *Manager) handleLeadershipGain(ctx context.Context) {
 	m.log.Info("Gained leadership - starting block processing")
 
 	// Reset the stop channel for block processing
-	m.blockProcessStop = make(chan struct{})
+	stop := make(chan struct{})
+	m.blockProcessStop = stop
 
 	// Log network info
 	if m.network != nil {
@@ -748,7 +729,7 @@ func (m *Manager) handleLeadershipGain(ctx context.Context) {
 		defer m.wg.Done()
 
 		m.log.Debug("runBlockProcessing goroutine started")
-		m.runBlockProcessing(ctx)
+		m.runBlockProcessing(ctx, stop)
 	}()
 }
 
@@ -775,9 +756,12 @@ func (m *Manager) handleLeadershipLoss() {
 	}
 }
 
-func (m *Manager) runBlockProcessing(ctx context.Context) {
+// headDistanceInterval is how often the leader refreshes the head distance metrics.
+const headDistanceInterval = 15 * time.Second
+
+// runBlockProcessing runs one discovery loop per processor plus the leader's metrics until stop or ctx ends.
+func (m *Manager) runBlockProcessing(ctx context.Context, stop <-chan struct{}) {
 	defer func() {
-		// Recovery from panics to prevent goroutine leaks
 		if recovered := recover(); recovered != nil {
 			m.log.WithField("panic", recovered).Error("Block processing panic recovered")
 		}
@@ -785,28 +769,13 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 		m.log.Debug("Block processing goroutine exiting")
 	}()
 
-	m.log.Debug("Entered runBlockProcessing function")
-
-	// Check if context is already cancelled
 	select {
 	case <-ctx.Done():
 		m.log.Warn("Context already cancelled when entering runBlockProcessing")
 
 		return
 	default:
-		m.log.Debug("Context is active, proceeding with block processing")
 	}
-
-	queueMonitorTicker := time.NewTicker(30 * time.Second) // Monitor queues every 30s
-	defer queueMonitorTicker.Stop()
-
-	// Stale block detection ticker
-	staleBlockTicker := time.NewTicker(m.config.StaleBlockDetection.CheckInterval)
-	defer staleBlockTicker.Stop()
-
-	// Gap detection ticker
-	gapScanTicker := time.NewTicker(m.config.GapDetection.ScanInterval)
-	defer gapScanTicker.Stop()
 
 	m.log.WithFields(logrus.Fields{
 		"interval":             m.config.Interval,
@@ -817,67 +786,130 @@ func (m *Manager) runBlockProcessing(ctx context.Context) {
 		"gap_detection":        m.config.GapDetection.Enabled,
 	}).Info("Started block processing loop")
 
-	// Check if we have any processors
 	if len(m.processors) == 0 {
 		m.log.Error("No processors available! Cannot process blocks")
 
 		return
 	}
 
-	// Log available processors
-	for name := range m.processors {
-		m.log.WithField("processor", name).Debug("Processor available for block processing")
+	var loops sync.WaitGroup
+
+	for name, processor := range m.processors {
+		loops.Add(1)
+
+		go func() {
+			defer loops.Done()
+
+			m.runProcessorLoop(ctx, stop, name, processor)
+		}()
 	}
 
-	// Start initial queue monitoring
 	m.startQueueMonitoring(ctx)
 
-	// Process blocks immediately on becoming leader
-	m.log.Debug("Processing initial blocks after leadership gain")
-	m.processBlocks(ctx)
+	queueMonitorTicker := time.NewTicker(30 * time.Second)
+	headDistanceTicker := time.NewTicker(headDistanceInterval)
+
+	func() {
+		defer queueMonitorTicker.Stop()
+		defer headDistanceTicker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-stop:
+				m.log.Info("Block processing stopped")
+
+				return
+			case <-queueMonitorTicker.C:
+				m.startQueueMonitoring(ctx)
+			case <-headDistanceTicker.C:
+				m.updateHeadDistanceMetrics(ctx)
+			}
+		}
+	}()
+
+	loops.Wait()
+}
+
+// runProcessorLoop enqueues one processor's blocks, running its stale and gap checks between its own batches.
+func (m *Manager) runProcessorLoop(ctx context.Context, stop <-chan struct{}, name string, processor tracker.BlockProcessor) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			m.log.WithFields(logrus.Fields{"processor": name, "panic": recovered}).Error("Processor loop panic recovered")
+		}
+	}()
+
+	staleBlockTicker := time.NewTicker(m.config.StaleBlockDetection.CheckInterval)
+	defer staleBlockTicker.Stop()
+
+	gapScanTicker := time.NewTicker(m.config.GapDetection.ScanInterval)
+	defer gapScanTicker.Stop()
+
+	var backoff time.Duration
 
 	for {
 		select {
 		case <-ctx.Done():
-			m.log.Debug("Context cancelled in block processing loop")
-
 			return
-		case <-m.blockProcessStop:
-			m.log.Info("Block processing stopped")
-
+		case <-stop:
 			return
-		case <-queueMonitorTicker.C:
-			m.log.Debug("Queue monitoring ticker fired")
-			m.startQueueMonitoring(ctx)
 		case <-staleBlockTicker.C:
-			m.log.Debug("Stale block detection ticker fired")
-			m.checkStaleBlocks(ctx)
+			m.checkStaleBlocks(ctx, name, processor)
+
+			continue
 		case <-gapScanTicker.C:
-			m.log.Debug("Gap detection ticker fired")
-			m.checkGaps(ctx)
+			m.checkGaps(ctx, name, processor)
+
+			continue
 		default:
-			if !m.isLeader {
-				m.log.Warn("No longer leader but block processing still running - stopping")
+		}
 
-				return
-			}
+		if !m.leading() {
+			m.log.WithField("processor", name).Warn("No longer leader but block processing still running - stopping")
 
-			workDone := m.processBlocks(ctx)
+			return
+		}
 
-			if m.config.Interval > 0 {
-				// Fixed interval mode - always sleep the configured duration
-				time.Sleep(m.config.Interval)
-				m.backpressureBackoff = 0 // Reset backoff in fixed interval mode
-			} else if !workDone {
-				// Zero interval mode with no work - exponential backoff with jitter
-				m.backpressureBackoff = m.calculateBackpressureBackoff(m.backpressureBackoff)
-				time.Sleep(m.backpressureBackoff)
-			} else {
-				// Zero interval with work done - reset backoff and loop immediately
-				m.backpressureBackoff = 0
-			}
+		workDone := m.processNextBlock(ctx, name, processor)
+
+		var wait time.Duration
+
+		switch {
+		case m.config.Interval > 0:
+			wait = m.config.Interval
+			backoff = 0
+		case !workDone:
+			backoff = m.calculateBackpressureBackoff(backoff)
+			wait = backoff
+		default:
+			backoff = 0
+
+			continue
+		}
+
+		timer := time.NewTimer(wait)
+
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+
+			return
+		case <-stop:
+			timer.Stop()
+
+			return
+		case <-timer.C:
 		}
 	}
+}
+
+// leading reports whether this instance currently holds leadership.
+func (m *Manager) leading() bool {
+	m.blockProcessMutex.RLock()
+	defer m.blockProcessMutex.RUnlock()
+
+	return m.isLeader
 }
 
 // calculateBackpressureBackoff calculates the next backoff duration using exponential backoff with jitter.
@@ -1120,19 +1152,22 @@ func (m *Manager) updateAsynqQueues() error {
 		m.asynqServer.Stop()
 	}
 
-	asynqRedisOpt := redisconn.ConnOpt(m.redisClient)
-
-	m.asynqServer = asynq.NewServer(asynqRedisOpt, asynq.Config{
-		Concurrency:    m.config.Concurrency,
-		Queues:         queues,
-		StrictPriority: true,
-		LogLevel:       asynq.InfoLevel,
-		Logger:         m.log,
-		RetryDelayFunc: retryDelayFunc,
-		ErrorHandler:   archiveErrorHandler(m.log),
-	})
+	m.asynqServer = newAsynqServer(redisconn.ConnOpt(m.redisClient), m.config.Concurrency, queues, m.log)
 
 	return nil
+}
+
+// newAsynqServer creates the task worker; priorities are weights so equal-priority queues share free workers.
+func newAsynqServer(opt asynq.RedisConnOpt, concurrency int, queues map[string]int, log logrus.FieldLogger) *asynq.Server {
+	return asynq.NewServer(opt, asynq.Config{
+		Concurrency:    concurrency,
+		Queues:         queues,
+		StrictPriority: false,
+		LogLevel:       asynq.InfoLevel,
+		Logger:         log,
+		RetryDelayFunc: retryDelayFunc,
+		ErrorHandler:   archiveErrorHandler(log),
+	})
 }
 
 // isWaitingForBlockError checks if an error indicates we're waiting for a new block.
@@ -1148,9 +1183,8 @@ func isWaitingForBlockError(err error) bool {
 		strings.Contains(errStr, "chain tip")
 }
 
-// shouldSkipBlockProcessing checks if block processing should be skipped due to queue backpressure.
-func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) {
-	// Check for context cancellation early
+// shouldSkipBlockProcessing reports whether a processor's own queues are over the backpressure threshold.
+func (m *Manager) shouldSkipBlockProcessing(ctx context.Context, name string) (bool, string) {
 	select {
 	case <-ctx.Done():
 		return true, "context cancelled"
@@ -1170,89 +1204,74 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context) (bool, string) 
 	skipReasons := []string{}
 	shouldSkip := false
 
-	for name := range m.processors {
-		// Check for context cancellation between processors
-		select {
-		case <-ctx.Done():
-			return true, "context cancelled"
-		default:
+	var queuesToCheck []string
+	if m.config.Mode == tracker.FORWARDS_MODE {
+		queuesToCheck = []string{
+			tracker.PrefixedProcessForwardsQueue(name, m.redisPrefix),
+			tracker.PrefixedProcessReprocessForwardsQueue(name, m.redisPrefix),
 		}
-		// Check all queues based on mode (including mode-specific reprocess queue)
-		var queuesToCheck []string
-		if m.config.Mode == tracker.FORWARDS_MODE {
-			queuesToCheck = []string{
-				tracker.PrefixedProcessForwardsQueue(name, m.redisPrefix),
-				tracker.PrefixedProcessReprocessForwardsQueue(name, m.redisPrefix),
-			}
-		} else {
-			queuesToCheck = []string{
-				tracker.PrefixedProcessBackwardsQueue(name, m.redisPrefix),
-				tracker.PrefixedProcessReprocessBackwardsQueue(name, m.redisPrefix),
-			}
+	} else {
+		queuesToCheck = []string{
+			tracker.PrefixedProcessBackwardsQueue(name, m.redisPrefix),
+			tracker.PrefixedProcessReprocessBackwardsQueue(name, m.redisPrefix),
 		}
+	}
 
-		for _, queueName := range queuesToCheck {
-			info, err := inspector.GetQueueInfo(queueName)
-			if err != nil {
-				// Queue doesn't exist yet (no tasks enqueued) - this is normal for reprocess queue
-				if strings.Contains(err.Error(), "NOT_FOUND") || strings.Contains(err.Error(), "does not exist") {
-					m.log.WithFields(logrus.Fields{
-						"processor": name,
-						"queue":     queueName,
-					}).Debug("Queue does not exist yet, skipping backpressure check")
-
-					continue
-				}
-
-				m.log.WithError(err).WithFields(logrus.Fields{
+	for _, queueName := range queuesToCheck {
+		info, err := inspector.GetQueueInfo(queueName)
+		if err != nil {
+			// Queue doesn't exist yet (no tasks enqueued) - this is normal for reprocess queue
+			if strings.Contains(err.Error(), "NOT_FOUND") || strings.Contains(err.Error(), "does not exist") {
+				m.log.WithFields(logrus.Fields{
 					"processor": name,
 					"queue":     queueName,
-				}).Warn("Failed to get queue info for backpressure check")
+				}).Debug("Queue does not exist yet, skipping backpressure check")
 
 				continue
 			}
 
-			// Update metrics
-			common.QueueDepth.WithLabelValues(m.network.Name, name, queueName).Set(float64(info.Size))
+			m.log.WithError(err).WithFields(logrus.Fields{
+				"processor": name,
+				"queue":     queueName,
+			}).Warn("Failed to get queue info for backpressure check")
 
-			// Check threshold
-			if info.Size > m.config.MaxProcessQueueSize {
-				shouldSkip = true
+			continue
+		}
 
-				skipReasons = append(skipReasons,
-					fmt.Sprintf("%s: %d/%d", queueName, info.Size, m.config.MaxProcessQueueSize))
+		common.QueueDepth.WithLabelValues(m.network.Name, name, queueName).Set(float64(info.Size))
 
-				// Set backpressure metric
-				common.QueueBackpressureActive.WithLabelValues(
-					m.network.Name, name,
-				).Set(1)
+		if info.Size > m.config.MaxProcessQueueSize {
+			shouldSkip = true
 
-				m.log.WithFields(logrus.Fields{
-					"processor":  name,
-					"queue":      queueName,
-					"queue_size": info.Size,
-					"max_size":   m.config.MaxProcessQueueSize,
-					"pending":    info.Pending,
-					"active":     info.Active,
-				}).Warn("Queue backpressure active - will skip block processing")
-			} else if info.Size < int(float64(m.config.MaxProcessQueueSize)*m.config.BackpressureHysteresis) {
-				// Clear backpressure if below hysteresis threshold
-				common.QueueBackpressureActive.WithLabelValues(
-					m.network.Name, name,
-				).Set(0)
-			}
+			skipReasons = append(skipReasons,
+				fmt.Sprintf("%s: %d/%d", queueName, info.Size, m.config.MaxProcessQueueSize))
+
+			common.QueueBackpressureActive.WithLabelValues(
+				m.network.Name, name,
+			).Set(1)
+
+			m.log.WithFields(logrus.Fields{
+				"processor":  name,
+				"queue":      queueName,
+				"queue_size": info.Size,
+				"max_size":   m.config.MaxProcessQueueSize,
+				"pending":    info.Pending,
+				"active":     info.Active,
+			}).Warn("Queue backpressure active - will skip block processing")
+		} else if info.Size < int(float64(m.config.MaxProcessQueueSize)*m.config.BackpressureHysteresis) {
+			common.QueueBackpressureActive.WithLabelValues(
+				m.network.Name, name,
+			).Set(0)
 		}
 	}
 
-	reason := strings.Join(skipReasons, ", ")
-
 	if shouldSkip {
 		common.BlockProcessingSkipped.WithLabelValues(
-			m.network.Name, "all", "queue_backpressure",
+			m.network.Name, name, "queue_backpressure",
 		).Inc()
 	}
 
-	return shouldSkip, reason
+	return shouldSkip, strings.Join(skipReasons, ", ")
 }
 
 // GetQueueName returns the current queue name based on processing mode.
@@ -1367,77 +1386,66 @@ func (m *Manager) updateBlocksStoredMetrics(ctx context.Context) {
 	}
 }
 
-// checkStaleBlocks checks for stale blocks across all processors and triggers retries.
-func (m *Manager) checkStaleBlocks(ctx context.Context) {
+// checkStaleBlocks clears a processor's stale blocks so its next ProcessNextBlock re-enqueues them.
+func (m *Manager) checkStaleBlocks(ctx context.Context, processorName string, processor tracker.BlockProcessor) {
 	if !m.config.StaleBlockDetection.Enabled {
 		return
 	}
 
-	for processorName, processor := range m.processors {
-		// Check for context cancellation between processors
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
+	var completionTracker *tracker.BlockCompletionTracker
 
-		// Get the completion tracker based on processor type
-		var completionTracker *tracker.BlockCompletionTracker
+	switch p := processor.(type) {
+	case *transaction_structlog.Processor:
+		completionTracker = p.GetCompletionTracker()
+	case *transaction_simple.Processor:
+		completionTracker = p.GetCompletionTracker()
+	case *transaction_structlog_agg.Processor:
+		completionTracker = p.GetCompletionTracker()
+	default:
+		m.log.WithField("processor", processorName).Warn("Unknown processor type for stale block detection")
 
-		switch p := processor.(type) {
-		case *transaction_structlog.Processor:
-			completionTracker = p.GetCompletionTracker()
-		case *transaction_simple.Processor:
-			completionTracker = p.GetCompletionTracker()
-		case *transaction_structlog_agg.Processor:
-			completionTracker = p.GetCompletionTracker()
-		default:
-			m.log.WithField("processor", processorName).Warn("Unknown processor type for stale block detection")
+		return
+	}
 
-			continue
-		}
+	if completionTracker == nil {
+		return
+	}
 
-		if completionTracker == nil {
-			continue
-		}
+	staleBlocks, err := completionTracker.GetStaleBlocks(ctx, m.network.Name, processorName, m.config.Mode)
+	if err != nil {
+		m.log.WithError(err).WithField("processor", processorName).Warn("Failed to get stale blocks")
 
-		staleBlocks, err := completionTracker.GetStaleBlocks(ctx, m.network.Name, processorName, m.config.Mode)
-		if err != nil {
-			m.log.WithError(err).WithField("processor", processorName).Warn("Failed to get stale blocks")
+		return
+	}
 
-			continue
-		}
+	for _, blockNum := range staleBlocks {
+		m.log.WithFields(logrus.Fields{
+			"processor":    processorName,
+			"block_number": blockNum,
+		}).Warn("Stale block detected - clearing for re-processing")
 
-		for _, blockNum := range staleBlocks {
-			m.log.WithFields(logrus.Fields{
+		if clearErr := completionTracker.ClearBlock(ctx, blockNum, m.network.Name, processorName, m.config.Mode); clearErr != nil {
+			m.log.WithError(clearErr).WithFields(logrus.Fields{
 				"processor":    processorName,
 				"block_number": blockNum,
-			}).Warn("Stale block detected - clearing for re-processing")
-
-			// Clear the stale block tracking (it will be re-enqueued on next ProcessNextBlock cycle)
-			if clearErr := completionTracker.ClearBlock(ctx, blockNum, m.network.Name, processorName, m.config.Mode); clearErr != nil {
-				m.log.WithError(clearErr).WithFields(logrus.Fields{
-					"processor":    processorName,
-					"block_number": blockNum,
-				}).Error("Failed to clear stale block")
-			}
+			}).Error("Failed to clear stale block")
 		}
+	}
 
-		if len(staleBlocks) > 0 {
-			m.log.WithFields(logrus.Fields{
-				"processor":    processorName,
-				"stale_count":  len(staleBlocks),
-				"stale_blocks": staleBlocks,
-			}).Info("Cleared stale blocks for re-processing")
-		}
+	if len(staleBlocks) > 0 {
+		m.log.WithFields(logrus.Fields{
+			"processor":    processorName,
+			"stale_count":  len(staleBlocks),
+			"stale_blocks": staleBlocks,
+		}).Info("Cleared stale blocks for re-processing")
 	}
 }
 
-// checkGaps checks for gaps in block processing across all processors and triggers reprocessing.
+// checkGaps finds gaps in a processor's processed blocks and reprocesses them.
 // It detects two types of gaps:
 //   - Incomplete: blocks with a row in DB but complete=0 (use ReprocessBlock)
 //   - Missing: blocks with no row at all (use ProcessBlock)
-func (m *Manager) checkGaps(ctx context.Context) {
+func (m *Manager) checkGaps(ctx context.Context, processorName string, processor tracker.BlockProcessor) {
 	if !m.config.GapDetection.Enabled {
 		return
 	}
@@ -1459,134 +1467,124 @@ func (m *Manager) checkGaps(ctx context.Context) {
 
 	currentBlock := *latestBlockNum
 
-	// Check gaps for each enabled processor
-	for processorName, processor := range m.processors {
-		// Check for context cancellation between processors
-		select {
-		case <-ctx.Done():
-			return
-		default:
+	limiter := processor.GetLimiter()
+	if limiter == nil {
+		return
+	}
+
+	gapResult, gapErr := limiter.GetGaps(
+		ctx,
+		currentBlock,
+		m.config.GapDetection.LookbackRange,
+		m.config.GapDetection.BatchSize,
+	)
+	if gapErr != nil {
+		m.log.WithError(gapErr).WithField("processor", processorName).Warn("Failed to scan for gaps")
+
+		return
+	}
+
+	// Record scan duration metric
+	common.GapScanDuration.WithLabelValues(m.network.Name, processorName).Observe(gapResult.ScanDuration.Seconds())
+
+	// Record gap counts
+	common.GapsFound.WithLabelValues(m.network.Name, processorName, "incomplete").Set(float64(len(gapResult.Incomplete)))
+	common.GapsFound.WithLabelValues(m.network.Name, processorName, "missing").Set(float64(len(gapResult.Missing)))
+
+	if len(gapResult.Incomplete) > 0 {
+		common.GapsDetected.WithLabelValues(m.network.Name, processorName, "incomplete").Add(float64(len(gapResult.Incomplete)))
+	}
+
+	if len(gapResult.Missing) > 0 {
+		common.GapsDetected.WithLabelValues(m.network.Name, processorName, "missing").Add(float64(len(gapResult.Missing)))
+	}
+
+	totalGaps := len(gapResult.Incomplete) + len(gapResult.Missing)
+	if totalGaps == 0 {
+		return
+	}
+
+	m.log.WithFields(logrus.Fields{
+		"processor":        processorName,
+		"incomplete_count": len(gapResult.Incomplete),
+		"missing_count":    len(gapResult.Missing),
+		"current_block":    currentBlock,
+	}).Info("Detected gaps, processing")
+
+	// Handle INCOMPLETE blocks -> ReprocessBlock (row exists, just stuck)
+	for _, gapBlock := range gapResult.Incomplete {
+		// Skip if block already has active Redis tracking (being processed)
+		hasTracking, trackErr := processor.GetCompletionTracker().HasBlockTracking(
+			ctx, gapBlock, m.network.Name, processorName, m.config.Mode)
+		if trackErr != nil {
+			m.log.WithError(trackErr).WithField("block", gapBlock).Debug("Failed to check block tracking")
 		}
 
-		limiter := processor.GetLimiter()
-		if limiter == nil {
+		if hasTracking {
+			m.log.WithFields(logrus.Fields{
+				"processor": processorName,
+				"block":     gapBlock,
+			}).Debug("Skipping incomplete block - already has active Redis tracking")
+
 			continue
 		}
 
-		gapResult, gapErr := limiter.GetGaps(
-			ctx,
-			currentBlock,
-			m.config.GapDetection.LookbackRange,
-			m.config.GapDetection.BatchSize,
-		)
-		if gapErr != nil {
-			m.log.WithError(gapErr).WithField("processor", processorName).Warn("Failed to scan for gaps")
+		// Re-verify block is still incomplete in ClickHouse.
+		// This closes a race window where a block completes between
+		// the gap scan query and now (Redis tracking cleaned up).
+		isComplete, completeErr := m.state.IsBlockComplete(ctx, gapBlock, m.network.Name, processorName)
+		if completeErr != nil {
+			m.log.WithError(completeErr).WithField("block", gapBlock).Debug("Failed to verify block complete status")
+		}
+
+		if isComplete {
+			m.log.WithFields(logrus.Fields{
+				"processor": processorName,
+				"block":     gapBlock,
+			}).Debug("Skipping incomplete block - completed during gap scan (race avoided)")
 
 			continue
 		}
 
-		// Record scan duration metric
-		common.GapScanDuration.WithLabelValues(m.network.Name, processorName).Observe(gapResult.ScanDuration.Seconds())
+		if reprocessErr := processor.ReprocessBlock(ctx, gapBlock); reprocessErr != nil {
+			m.log.WithError(reprocessErr).WithFields(logrus.Fields{
+				"processor": processorName,
+				"block":     gapBlock,
+				"gap_type":  "incomplete",
+			}).Warn("Failed to reprocess incomplete block")
 
-		// Record gap counts
-		common.GapsFound.WithLabelValues(m.network.Name, processorName, "incomplete").Set(float64(len(gapResult.Incomplete)))
-		common.GapsFound.WithLabelValues(m.network.Name, processorName, "missing").Set(float64(len(gapResult.Missing)))
-
-		if len(gapResult.Incomplete) > 0 {
-			common.GapsDetected.WithLabelValues(m.network.Name, processorName, "incomplete").Add(float64(len(gapResult.Incomplete)))
+			common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "incomplete", "error").Inc()
+		} else {
+			common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "incomplete", "success").Inc()
 		}
+	}
 
-		if len(gapResult.Missing) > 0 {
-			common.GapsDetected.WithLabelValues(m.network.Name, processorName, "missing").Add(float64(len(gapResult.Missing)))
-		}
+	// Handle MISSING blocks -> ProcessBlock (no row, needs full processing)
+	for _, gapBlock := range gapResult.Missing {
+		// Fetch the block first
+		block, fetchErr := node.BlockByNumber(ctx, new(big.Int).SetUint64(gapBlock))
+		if fetchErr != nil {
+			m.log.WithError(fetchErr).WithFields(logrus.Fields{
+				"processor": processorName,
+				"block":     gapBlock,
+				"gap_type":  "missing",
+			}).Warn("Failed to fetch missing block")
 
-		totalGaps := len(gapResult.Incomplete) + len(gapResult.Missing)
-		if totalGaps == 0 {
+			common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "error").Inc()
+
 			continue
 		}
 
-		m.log.WithFields(logrus.Fields{
-			"processor":        processorName,
-			"incomplete_count": len(gapResult.Incomplete),
-			"missing_count":    len(gapResult.Missing),
-			"current_block":    currentBlock,
-		}).Info("Detected gaps, processing")
+		if processErr := processor.ProcessBlock(ctx, block); processErr != nil {
+			m.log.WithError(processErr).WithFields(logrus.Fields{
+				"processor": processorName,
+				"block":     gapBlock,
+				"gap_type":  "missing",
+			}).Warn("Failed to process missing block")
 
-		// Handle INCOMPLETE blocks -> ReprocessBlock (row exists, just stuck)
-		for _, gapBlock := range gapResult.Incomplete {
-			// Skip if block already has active Redis tracking (being processed)
-			hasTracking, trackErr := processor.GetCompletionTracker().HasBlockTracking(
-				ctx, gapBlock, m.network.Name, processorName, m.config.Mode)
-			if trackErr != nil {
-				m.log.WithError(trackErr).WithField("block", gapBlock).Debug("Failed to check block tracking")
-			}
-
-			if hasTracking {
-				m.log.WithFields(logrus.Fields{
-					"processor": processorName,
-					"block":     gapBlock,
-				}).Debug("Skipping incomplete block - already has active Redis tracking")
-
-				continue
-			}
-
-			// Re-verify block is still incomplete in ClickHouse.
-			// This closes a race window where a block completes between
-			// the gap scan query and now (Redis tracking cleaned up).
-			isComplete, completeErr := m.state.IsBlockComplete(ctx, gapBlock, m.network.Name, processorName)
-			if completeErr != nil {
-				m.log.WithError(completeErr).WithField("block", gapBlock).Debug("Failed to verify block complete status")
-			}
-
-			if isComplete {
-				m.log.WithFields(logrus.Fields{
-					"processor": processorName,
-					"block":     gapBlock,
-				}).Debug("Skipping incomplete block - completed during gap scan (race avoided)")
-
-				continue
-			}
-
-			if reprocessErr := processor.ReprocessBlock(ctx, gapBlock); reprocessErr != nil {
-				m.log.WithError(reprocessErr).WithFields(logrus.Fields{
-					"processor": processorName,
-					"block":     gapBlock,
-					"gap_type":  "incomplete",
-				}).Warn("Failed to reprocess incomplete block")
-
-				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "incomplete", "error").Inc()
-			} else {
-				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "incomplete", "success").Inc()
-			}
-		}
-
-		// Handle MISSING blocks -> ProcessBlock (no row, needs full processing)
-		for _, gapBlock := range gapResult.Missing {
-			// Fetch the block first
-			block, fetchErr := node.BlockByNumber(ctx, new(big.Int).SetUint64(gapBlock))
-			if fetchErr != nil {
-				m.log.WithError(fetchErr).WithFields(logrus.Fields{
-					"processor": processorName,
-					"block":     gapBlock,
-					"gap_type":  "missing",
-				}).Warn("Failed to fetch missing block")
-
-				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "error").Inc()
-
-				continue
-			}
-
-			if processErr := processor.ProcessBlock(ctx, block); processErr != nil {
-				m.log.WithError(processErr).WithFields(logrus.Fields{
-					"processor": processorName,
-					"block":     gapBlock,
-					"gap_type":  "missing",
-				}).Warn("Failed to process missing block")
-
-				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "error").Inc()
-			} else {
-				common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "success").Inc()
-			}
+			common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "error").Inc()
+		} else {
+			common.GapsReprocessed.WithLabelValues(m.network.Name, processorName, "missing", "success").Inc()
 		}
 	}
 }
