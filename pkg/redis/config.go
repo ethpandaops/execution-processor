@@ -1,12 +1,22 @@
 package redis
 
 import (
+	"errors"
 	"fmt"
 )
 
 type Config struct {
-	Address string `yaml:"address"`
-	Prefix  string `yaml:"prefix"`
+	Address  string          `yaml:"address"`
+	Prefix   string          `yaml:"prefix"`
+	Sentinel *SentinelConfig `yaml:"sentinel"`
+}
+
+// SentinelConfig makes the client find the master through Redis Sentinel; Address then only supplies credentials and DB.
+type SentinelConfig struct {
+	MasterName string   `yaml:"masterName"`
+	Addrs      []string `yaml:"addrs"`
+	// Password authenticates to the sentinels; it defaults to the password in Address.
+	Password string `yaml:"password"`
 }
 
 func (c *Config) Validate() error {
@@ -16,6 +26,24 @@ func (c *Config) Validate() error {
 
 	if c.Prefix == "" {
 		c.Prefix = "execution-processor"
+	}
+
+	if c.Sentinel != nil {
+		if err := c.Sentinel.Validate(); err != nil {
+			return fmt.Errorf("invalid sentinel config: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (c *SentinelConfig) Validate() error {
+	if c.MasterName == "" {
+		return errors.New("masterName is required")
+	}
+
+	if len(c.Addrs) == 0 {
+		return errors.New("at least one sentinel address is required")
 	}
 
 	return nil
