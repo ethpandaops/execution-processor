@@ -27,3 +27,13 @@ func StackTraceOptions() TraceOptions {
 		EnableReturnData: true,
 	}
 }
+
+// CallFrameTraceOptions returns options with stack enabled and no return data, which tracers copy into every opcode.
+func CallFrameTraceOptions() TraceOptions {
+	return TraceOptions{
+		DisableStorage:   true,
+		DisableStack:     false,
+		DisableMemory:    true,
+		EnableReturnData: false,
+	}
+}
