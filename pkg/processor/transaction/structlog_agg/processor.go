@@ -104,8 +104,8 @@ func New(deps *Dependencies, config *Config) (*Processor, error) {
 		config.BufferFlushInterval = DefaultBufferFlushInterval
 	}
 
-	if config.MaxRetries <= 0 {
-		config.MaxRetries = tracker.DefaultMaxRetries
+	if config.MaxTaskRetries <= 0 {
+		config.MaxTaskRetries = tracker.DefaultMaxTaskRetries
 	}
 
 	log := deps.Log.WithField("processor", ProcessorName)
@@ -245,11 +245,11 @@ func (p *Processor) GetHandlers() map[string]asynq.HandlerFunc {
 	}
 }
 
-// EnqueueTask enqueues a task to the specified queue; a task that keeps failing is archived after MaxRetries.
+// EnqueueTask enqueues a task to the specified queue; a task that keeps failing is archived after MaxTaskRetries.
 func (p *Processor) EnqueueTask(ctx context.Context, task *asynq.Task, opts ...asynq.Option) error {
-	maxRetries := tracker.DefaultMaxRetries
-	if p.config != nil && p.config.MaxRetries > 0 {
-		maxRetries = p.config.MaxRetries
+	maxRetries := tracker.DefaultMaxTaskRetries
+	if p.config != nil && p.config.MaxTaskRetries > 0 {
+		maxRetries = p.config.MaxTaskRetries
 	}
 
 	opts = append(opts, asynq.MaxRetry(maxRetries))

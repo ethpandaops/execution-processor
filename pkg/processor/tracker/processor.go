@@ -72,8 +72,8 @@ const (
 	// DefaultTraceTimeout is the default timeout for trace fetching operations.
 	DefaultTraceTimeout = 30 * time.Second
 
-	// DefaultMaxRetries bounds retries of a failed transaction task before asynq archives it (about 3h of backoff).
-	DefaultMaxRetries = 25
+	// DefaultMaxTaskRetries bounds retries of a failed transaction task before asynq archives it (about 3h of backoff).
+	DefaultMaxTaskRetries = 25
 )
 
 // Processor defines the base interface for all processors.

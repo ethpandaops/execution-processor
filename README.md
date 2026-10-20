@@ -242,7 +242,7 @@ FROM ops
 ORDER BY index
 ```
 
-In RPC mode the processor streams the structlog trace with return data disabled and takes each call's output from a second, frame-only tracer pass, so neither the node response nor processor memory grows with opcode count. A transaction that cannot be traced is retried `maxRetries` times and then archived (`execution_processor_tasks_archived_total`, logged with its hash); it is never marked complete without its rows.
+In RPC mode the processor streams the structlog trace with return data disabled and takes each call's output from a second, frame-only tracer pass, so neither the node response nor processor memory grows with opcode count. A transaction that cannot be traced is retried `maxTaskRetries` times and then archived (`execution_processor_tasks_archived_total`, logged with its hash); it is never marked complete without its rows.
 
 ## Structlog Aggregation
 
