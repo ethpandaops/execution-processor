@@ -101,10 +101,7 @@ func (p *Processor) buildCallFrames(trace *execution.TraceTransaction, tx execut
 			rootFrame.ErrorCount = 0
 		}
 
-		// For simple transfers (no EVM execution), all gas is intrinsic.
-		// This is true for both successful and failed transactions.
-		// trace.Gas is the post-refund receipt gas — see TraceTransaction.Gas doc.
-		intrinsicGas := trace.Gas
+		intrinsicGas := computeIntrinsicGas(tx)
 		rootFrame.IntrinsicGas = &intrinsicGas
 
 		// gas_refund is 0 for simple transfers (no SSTORE operations)
@@ -234,17 +231,7 @@ func (p *Processor) buildCallFrames(trace *execution.TraceTransaction, tx execut
 		aggregator.SetRootTargetAddress(&addr)
 	}
 
-	// Get receipt gas for intrinsic gas calculation.
-	// trace.Gas is the post-refund receipt gas set by the data source (erigone/xatu sets
-	// this from ExecutionResult.ReceiptGasUsed; RPC mode gets it from receipt.GasUsed).
-	//
-	// EIP-7778 context: computeIntrinsicGas() requires the post-refund value because its
-	// formula accounts for refunds: intrinsic = receiptGas - gasCumulative + gasRefund.
-	// This is correct both pre- and post-EIP-7778 since ReceiptGasUsed preserves the
-	// same post-refund semantics that GasUsed had before the split.
-	receiptGas := trace.Gas
-
-	return aggregator.Finalize(trace, receiptGas)
+	return aggregator.Finalize(trace, computeIntrinsicGas(tx))
 }
 
 // getTransactionTrace gets the trace for a transaction.

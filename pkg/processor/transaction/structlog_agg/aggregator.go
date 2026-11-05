@@ -24,7 +24,7 @@ type CallFrameRow struct {
 	MinDepth          uint32  // Per-opcode: MIN(depth); summary: same as Depth
 	MaxDepth          uint32  // Per-opcode: MAX(depth); summary: same as Depth
 	GasRefund         uint64  // Max refund from trace (0 for failed txs, per-opcode rows, and non-root frames)
-	IntrinsicGas      *uint64 // Root frame only (computed)
+	IntrinsicGas      *uint64 // Root frame only, from computeIntrinsicGas
 
 	// Resource gas building blocks.
 	MemWordsSumBefore   uint64
@@ -212,11 +212,12 @@ func (fa *FrameAggregator) ProcessStructlog(
 }
 
 // Finalize computes final call frame rows from the accumulated data.
+// intrinsicGas is the transaction's intrinsic gas, stored on the root summary row.
 // Returns the call frame rows ready for insertion.
 // Emits two types of rows per frame:
 //   - Summary row: Operation="" with frame-level metadata and totals
 //   - Per-opcode rows: Operation="SSTORE" etc. with gas/count for that opcode
-func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGas uint64) []CallFrameRow {
+func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, intrinsicGas uint64) []CallFrameRow {
 	if len(fa.frames) == 0 {
 		return nil
 	}
@@ -310,18 +311,8 @@ func (fa *FrameAggregator) Finalize(trace *execution.TraceTransaction, receiptGa
 				summaryRow.GasRefund = acc.MaxRefund
 			}
 
-			// Intrinsic gas is ALWAYS charged (before EVM execution begins), regardless of
-			// whether the transaction succeeds or fails. For failed txs, use refund=0 in
-			// the formula since refunds aren't applied.
-			refundForCalc := acc.MaxRefund
-			if summaryRow.ErrorCount > 0 {
-				refundForCalc = 0
-			}
-
-			intrinsicGas := computeIntrinsicGas(gasCumulative[0], refundForCalc, receiptGas)
-			if intrinsicGas > 0 {
-				summaryRow.IntrinsicGas = &intrinsicGas
-			}
+			// Intrinsic gas is charged before execution, whether the transaction succeeds or fails.
+			summaryRow.IntrinsicGas = &intrinsicGas
 		}
 
 		// Compute summary-level resource gas totals (SUM across all opcodes).
@@ -403,54 +394,52 @@ func mapOpcodeToCallType(op string) string {
 	}
 }
 
-// computeIntrinsicGas computes the intrinsic gas for a transaction.
-// This is the gas consumed before EVM execution begins (21000 base + calldata costs).
+// Intrinsic gas costs, charged before the EVM runs (go-ethereum params names in brackets).
+const (
+	txGas                     = 21000 // [TxGas]
+	txGasContractCreation     = 53000 // [TxGasContractCreation]
+	txDataZeroGas             = 4     // [TxDataZeroGas]
+	txDataNonZeroGas          = 16    // [TxDataNonZeroGasEIP2028]
+	initCodeWordGas           = 2     // [InitCodeWordGas], EIP-3860
+	txAccessListAddressGas    = 2400  // [TxAccessListAddressGas], EIP-2930
+	txAccessListStorageKeyGas = 1900  // [TxAccessListStorageKeyGas], EIP-2930
+	txAuthorizationGas        = 25000 // [CallNewAccountGas], EIP-7702 PER_EMPTY_ACCOUNT_COST
+)
+
+// computeIntrinsicGas returns the gas a transaction pays before the EVM runs, from the
+// transaction alone: the base cost, calldata, EIP-3860 initcode words, the EIP-2930 access
+// list and EIP-7702 authorizations. It assumes Shanghai or later rules.
 //
-// The receiptGas parameter MUST be the post-refund value (what the user pays).
-// This is the value from Receipt.GasUsed / ExecutionResult.ReceiptGasUsed.
+// Refunds and the EIP-7623 calldata floor (Prague and later) apply after execution and are
+// not part of it:
 //
-// EIP-7778 context: This formula remains correct after EIP-7778. The EIP splits
-// ExecutionResult into ReceiptGasUsed (post-refund) and BlockGasUsed (pre-refund),
-// but the receipt gas semantics that this formula depends on are unchanged.
-//
-// The computed intrinsic gas value does not encode whether the EVM refund cap
-// (EIP-3529: max refund = gasUsed/5) was applied. It is up to the consumer of
-// this data to determine whether the cap was hit, using the gas_refund and
-// gas_used columns.
-func computeIntrinsicGas(gasCumulative, gasRefund, receiptGas uint64) uint64 {
-	if receiptGas == 0 {
-		return 0
+//	receipt_gas = max(intrinsic + gas_cumulative - min(gas_refund, (intrinsic + gas_cumulative) / 5), floor)
+//	floor       = 21000 + 10 * (zero_bytes + 4 * nonzero_bytes)
+func computeIntrinsicGas(tx execution.Transaction) uint64 {
+	data := tx.Data()
+
+	var nonZero uint64
+
+	for _, b := range data {
+		if b != 0 {
+			nonZero++
+		}
 	}
 
-	var intrinsic uint64
+	zero := uint64(len(data)) - nonZero
+	gas := zero*txDataZeroGas + nonZero*txDataNonZeroGas
 
-	if gasRefund >= receiptGas/4 {
-		// Capped case: refund was limited to receipt_gas/4
-		// Actual refund applied = receipt_gas/4
-		// So: receipt_gas = intrinsic + gas_cumulative - receipt_gas/4
-		// => intrinsic = receipt_gas + receipt_gas/4 - gas_cumulative
-		// => intrinsic = receipt_gas * 5/4 - gas_cumulative
-		cappedValue := receiptGas * 5 / 4
-		if cappedValue >= gasCumulative {
-			intrinsic = cappedValue - gasCumulative
-		}
+	if tx.To() == nil {
+		gas += txGasContractCreation + (uint64(len(data))+31)/32*initCodeWordGas
 	} else {
-		// Uncapped case: full refund was applied
-		// receipt_gas = intrinsic + gas_cumulative - gas_refund
-		// => intrinsic = receipt_gas - gas_cumulative + gas_refund
-		//
-		// IMPORTANT: We must avoid underflow when receiptGas < gasCumulative.
-		// The guard condition (receiptGas + gasRefund >= gasCumulative) can pass
-		// even when receiptGas < gasCumulative, so we reorder the arithmetic
-		// to ensure we never subtract a larger value from a smaller one.
-		if receiptGas+gasRefund >= gasCumulative {
-			// Reorder to: (receiptGas + gasRefund) - gasCumulative
-			// This is safe because the guard ensures the sum >= gasCumulative
-			intrinsic = (receiptGas + gasRefund) - gasCumulative
-		}
+		gas += txGas
 	}
 
-	return intrinsic
+	for _, tuple := range tx.AccessList() {
+		gas += txAccessListAddressGas + uint64(len(tuple.StorageKeys))*txAccessListStorageKeyGas
+	}
+
+	return gas + uint64(tx.AuthorizationCount())*txAuthorizationGas //nolint:gosec // a count is never negative
 }
 
 // SetRootTargetAddress sets the target address for the root frame (frame ID 0).

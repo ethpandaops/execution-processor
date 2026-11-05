@@ -8,8 +8,7 @@ type TraceTransaction struct {
 	// EIP-7778 context: After EIP-7778, Ethereum splits gas accounting into:
 	//   - ReceiptGasUsed (post-refund): what the user pays, stored in receipts
 	//   - BlockGasUsed (pre-refund): used for block gas limit accounting
-	// This field carries the receipt (post-refund) value. The computeIntrinsicGas()
-	// formula in structlog_agg depends on this being post-refund.
+	// This field carries the receipt (post-refund) value.
 	Gas         uint64  `json:"gas"`
 	Failed      bool    `json:"failed"`
 	ReturnValue *string `json:"returnValue"`
