@@ -1274,15 +1274,20 @@ func (m *Manager) shouldSkipBlockProcessing(ctx context.Context, name string) (b
 	return shouldSkip, strings.Join(skipReasons, ", ")
 }
 
-// GetQueueName returns the current queue name based on processing mode.
-func (m *Manager) GetQueueName() string {
-	// For now we only have one processor
-	processorName := "transaction_structlog"
+// GetQueueName returns the named processor's process queue for the current processing mode.
+func (m *Manager) GetQueueName(processorName string) string {
 	if m.config.Mode == tracker.BACKWARDS_MODE {
 		return tracker.PrefixedProcessBackwardsQueue(processorName, m.redisPrefix)
 	}
 
 	return tracker.PrefixedProcessForwardsQueue(processorName, m.redisPrefix)
+}
+
+// HasProcessor reports whether the named processor is enabled and initialized.
+func (m *Manager) HasProcessor(name string) bool {
+	_, exists := m.processors[name]
+
+	return exists
 }
 
 // QueueBlockManually allows manual queuing of a specific block for processing.

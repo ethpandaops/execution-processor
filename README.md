@@ -217,6 +217,7 @@ curl -X POST http://localhost:8080/api/v1/queue/blocks/transaction_structlog \
 - Blocks are queued using the node's current processing mode (forwards/backwards)
 - Maximum 1000 blocks per bulk request
 - Allows reprocessing of already processed blocks
+- `{processor}` is any enabled processor: `transaction_structlog`, `transaction_structlog_agg`, `transaction_simple` or a cryo processor (from v0.5.1; earlier versions accepted only `transaction_structlog`)
 - Each API call creates new tasks (calling multiple times will create duplicates)
 
 ## Structlog Return Data
