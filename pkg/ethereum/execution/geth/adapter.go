@@ -190,6 +190,32 @@ func (t *TransactionAdapter) BlobHashes() []execution.Hash {
 	return hashes
 }
 
+// AccessList returns the EIP-2930 access list, or nil if the transaction has none.
+func (t *TransactionAdapter) AccessList() []execution.AccessTuple {
+	gethList := t.tx.AccessList()
+	if len(gethList) == 0 {
+		return nil
+	}
+
+	list := make([]execution.AccessTuple, len(gethList))
+
+	for i, tuple := range gethList {
+		keys := make([]execution.Hash, len(tuple.StorageKeys))
+		for j, key := range tuple.StorageKeys {
+			keys[j] = execution.Hash(key)
+		}
+
+		list[i] = execution.AccessTuple{Address: execution.Address(tuple.Address), StorageKeys: keys}
+	}
+
+	return list
+}
+
+// AuthorizationCount returns the number of EIP-7702 set-code authorizations.
+func (t *TransactionAdapter) AuthorizationCount() int {
+	return len(t.tx.SetCodeAuthorizations())
+}
+
 // ReceiptAdapter wraps a go-ethereum Receipt to implement execution.Receipt.
 type ReceiptAdapter struct {
 	receipt *types.Receipt

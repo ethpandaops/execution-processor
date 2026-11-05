@@ -121,6 +121,18 @@ type Transaction interface {
 
 	// BlobHashes returns the versioned hashes (for blob transactions).
 	BlobHashes() []Hash
+
+	// AccessList returns the EIP-2930 access list, or nil if the transaction has none.
+	AccessList() []AccessTuple
+
+	// AuthorizationCount returns the number of EIP-7702 set-code authorizations.
+	AuthorizationCount() int
+}
+
+// AccessTuple is one EIP-2930 access list entry: an address and the storage keys it pre-warms.
+type AccessTuple struct {
+	Address     Address
+	StorageKeys []Hash
 }
 
 // Receipt interface defines methods for accessing transaction receipt data.

@@ -229,104 +229,6 @@ func TestFrameAggregator_ErrorCounting(t *testing.T) {
 	assert.Equal(t, uint64(1), revertRow.ErrorCount)
 }
 
-func TestComputeIntrinsicGas_Uncapped(t *testing.T) {
-	// Test uncapped case: refund < receipt_gas/4
-	gasCumulative := uint64(80000)
-	gasRefund := uint64(10000)
-	receiptGas := uint64(100000)
-
-	intrinsic := computeIntrinsicGas(gasCumulative, gasRefund, receiptGas)
-
-	// intrinsic = receipt_gas - gas_cumulative + gas_refund
-	// intrinsic = 100000 - 80000 + 10000 = 30000
-	assert.Equal(t, uint64(30000), intrinsic)
-}
-
-func TestComputeIntrinsicGas_Capped(t *testing.T) {
-	// Test capped case: refund >= receipt_gas/4
-	gasCumulative := uint64(80000)
-	gasRefund := uint64(30000) // >= 100000/4 = 25000
-	receiptGas := uint64(100000)
-
-	intrinsic := computeIntrinsicGas(gasCumulative, gasRefund, receiptGas)
-
-	// intrinsic = receipt_gas * 5/4 - gas_cumulative
-	// intrinsic = 125000 - 80000 = 45000
-	assert.Equal(t, uint64(45000), intrinsic)
-}
-
-func TestComputeIntrinsicGas_ZeroReceipt(t *testing.T) {
-	intrinsic := computeIntrinsicGas(1000, 100, 0)
-	assert.Equal(t, uint64(0), intrinsic)
-}
-
-func TestComputeIntrinsicGas_NoUnderflow_WhenReceiptLessThanCumulative(t *testing.T) {
-	// This test verifies the fix for the underflow bug in the UNCAPPED path.
-	// When receiptGas < gasCumulative but receiptGas + gasRefund >= gasCumulative,
-	// the old code would underflow: receiptGas - gasCumulative + gasRefund
-	// The fix reorders to: (receiptGas + gasRefund) - gasCumulative
-	//
-	// To hit the uncapped path, we need: gasRefund < receiptGas/4
-	//
-	// Example that triggers the bug in unfixed code:
-	// receiptGas = 100,000
-	// gasCumulative = 110,000
-	// gasRefund = 20,000 (< 25,000 = receiptGas/4, so UNCAPPED)
-	// Guard: 100,000 + 20,000 >= 110,000 ✓ (120,000 >= 110,000)
-	// Old calc: 100,000 - 110,000 = UNDERFLOW!
-	// Fixed calc: (100,000 + 20,000) - 110,000 = 10,000
-	gasCumulative := uint64(110000)
-	gasRefund := uint64(20000) // < 100000/4 = 25000, so uncapped
-	receiptGas := uint64(100000)
-
-	intrinsic := computeIntrinsicGas(gasCumulative, gasRefund, receiptGas)
-
-	// Expected: (100000 + 20000) - 110000 = 10000
-	assert.Equal(t, uint64(10000), intrinsic)
-
-	// Verify it's NOT a huge underflow value
-	assert.Less(t, intrinsic, uint64(1000000), "intrinsic gas should be reasonable, not an underflow")
-}
-
-func TestComputeIntrinsicGas_NoUnderflow_EdgeCase(t *testing.T) {
-	// Edge case: receiptGas + gasRefund == gasCumulative exactly (uncapped path)
-	// gasRefund must be < receiptGas/4 to hit uncapped path
-	gasCumulative := uint64(120000)
-	gasRefund := uint64(20000) // < 100000/4 = 25000, so uncapped
-	receiptGas := uint64(100000)
-
-	intrinsic := computeIntrinsicGas(gasCumulative, gasRefund, receiptGas)
-
-	// Expected: (100000 + 20000) - 120000 = 0
-	assert.Equal(t, uint64(0), intrinsic)
-}
-
-func TestComputeIntrinsicGas_NoUnderflow_ReceiptExceedsCumulative(t *testing.T) {
-	// Normal case: receiptGas >= gasCumulative (no underflow risk)
-	gasCumulative := uint64(80000)
-	gasRefund := uint64(10000)
-	receiptGas := uint64(100000)
-
-	intrinsic := computeIntrinsicGas(gasCumulative, gasRefund, receiptGas)
-
-	// Expected: (100000 + 10000) - 80000 = 30000
-	// This matches the old formula: 100000 - 80000 + 10000 = 30000
-	assert.Equal(t, uint64(30000), intrinsic)
-}
-
-func TestComputeIntrinsicGas_GuardPreventsNegativeResult(t *testing.T) {
-	// When receiptGas + gasRefund < gasCumulative, guard prevents computation
-	gasCumulative := uint64(300000)
-	gasRefund := uint64(50000)
-	receiptGas := uint64(100000)
-
-	intrinsic := computeIntrinsicGas(gasCumulative, gasRefund, receiptGas)
-
-	// Guard: 100000 + 50000 >= 300000? No (150000 < 300000)
-	// So intrinsic stays 0
-	assert.Equal(t, uint64(0), intrinsic)
-}
-
 func TestIsParentOf(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -502,9 +404,7 @@ func TestFrameAggregator_FailedTransaction_NoRefundButHasIntrinsic(t *testing.T)
 		Failed: true,
 	}
 
-	// Receipt gas for failed tx
-	receiptGas := uint64(50000)
-	frames := aggregator.Finalize(trace, receiptGas)
+	frames := aggregator.Finalize(trace, 21000)
 
 	assert.Equal(t, 1, countSummaryRows(frames))
 
@@ -518,10 +418,9 @@ func TestFrameAggregator_FailedTransaction_NoRefundButHasIntrinsic(t *testing.T)
 	// Even though refund was accumulated (4800), it's not applied when tx fails
 	assert.Equal(t, uint64(0), summaryRow.GasRefund, "GasRefund should be 0 for failed transactions")
 
-	// IntrinsicGas SHOULD be computed for failed transactions
-	// Intrinsic gas is always charged before EVM execution begins
-	// Formula: intrinsic = receiptGas - gasCumulative + 0 (no refund for failed)
-	require.NotNil(t, summaryRow.IntrinsicGas, "IntrinsicGas should be computed for failed transactions")
+	// Intrinsic gas is charged before execution, so failed transactions still carry it.
+	require.NotNil(t, summaryRow.IntrinsicGas, "IntrinsicGas should be set for failed transactions")
+	assert.Equal(t, uint64(21000), *summaryRow.IntrinsicGas)
 }
 
 func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.T) {
@@ -557,9 +456,7 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 		Failed: false,
 	}
 
-	// For successful tx, receipt gas = gas_used (after refund applied)
-	// Let's say receipt shows 15200 gas used
-	frames := aggregator.Finalize(trace, 15200)
+	frames := aggregator.Finalize(trace, 21000)
 
 	assert.Equal(t, 1, countSummaryRows(frames))
 
@@ -572,9 +469,8 @@ func TestFrameAggregator_SuccessfulTransaction_HasRefundAndIntrinsic(t *testing.
 	// GasRefund should be set for successful transactions
 	assert.Equal(t, refundValue, summaryRow.GasRefund)
 
-	// IntrinsicGas should be computed for successful transactions
-	// (exact value depends on the computation, just verify it's not nil)
-	// Note: might be nil if computed value is 0, so we just check the logic is exercised
+	require.NotNil(t, summaryRow.IntrinsicGas)
+	assert.Equal(t, uint64(21000), *summaryRow.IntrinsicGas)
 }
 
 func TestFrameAggregator_RevertWithoutOpcodeError(t *testing.T) {

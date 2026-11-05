@@ -2,10 +2,12 @@ package testutil
 
 import (
 	"compress/gzip"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -18,24 +20,53 @@ const (
 	TraceFixtureCreate = "hoodi_create_create2_0x8c246fbf.json.gz"
 	// TraceFixtureEOACall is hoodi tx 0xa133dd8c (block 3847107): a CALL that sends value to an EOA.
 	TraceFixtureEOACall = "hoodi_eoa_call_0xa133dd8c.json.gz"
+	// TraceFixtureRefund is mainnet tx 0x410f29dd (block 26340300): an SSTORE refund below the EIP-3529 cap.
+	TraceFixtureRefund = "mainnet_refund_0x410f29dd.json.gz"
+	// TraceFixtureAuthorization is mainnet tx 0x36ea3e6d (block 24200000): one EIP-7702 authorization.
+	TraceFixtureAuthorization = "mainnet_authorization_0x36ea3e6d.json.gz"
+	// TraceFixtureCalldataFloor is mainnet tx 0xeeec9bc1 (block 26340300): calldata sent to an account
+	// without code, charged the EIP-7623 calldata floor.
+	TraceFixtureCalldataFloor = "mainnet_calldata_floor_0xeeec9bc1.json.gz"
+	// TraceFixtureContractCreation is mainnet tx 0xd9e4a56f (block 26340302): a contract creation transaction.
+	TraceFixtureContractCreation = "mainnet_create_0xd9e4a56f.json.gz"
+	// TraceFixtureAccessList is mainnet tx 0x49244f25 (block 25500000): an EIP-2930 access list, no refund.
+	TraceFixtureAccessList = "mainnet_access_list_0x49244f25.json.gz"
 )
 
 // CallTraceFrame is one frame of a callTracer result.
 type CallTraceFrame struct {
-	Type  string           `json:"type"`
-	From  string           `json:"from"`
-	To    string           `json:"to"`
-	Error string           `json:"error"`
-	Calls []CallTraceFrame `json:"calls"`
+	Type   string           `json:"type"`
+	From   string           `json:"from"`
+	To     string           `json:"to"`
+	Error  string           `json:"error"`
+	Output string           `json:"output"`
+	Calls  []CallTraceFrame `json:"calls"`
 }
 
-// TraceFixture is a transaction's RPC structlog trace (stack only) and its callTracer result.
+// FixtureTransaction is the part of an eth_getTransactionByHash result the tests read.
+type FixtureTransaction struct {
+	To         *string `json:"to"`
+	Gas        string  `json:"gas"`
+	Input      string  `json:"input"`
+	AccessList []struct {
+		Address     string   `json:"address"`
+		StorageKeys []string `json:"storageKeys"`
+	} `json:"accessList"`
+	AuthorizationList []json.RawMessage `json:"authorizationList"`
+}
+
+// TraceFixture is a transaction's RPC structlog trace (stack only), its callTracer result,
+// and its eth_getTransactionByHash and eth_getTransactionReceipt results.
 type TraceFixture struct {
-	Network          string         `json:"network"`
-	BlockNumber      uint64         `json:"blockNumber"`
-	TransactionHash  string         `json:"transactionHash"`
-	TransactionIndex int            `json:"transactionIndex"`
-	CallTrace        CallTraceFrame `json:"callTrace"`
+	Network          string             `json:"network"`
+	BlockNumber      uint64             `json:"blockNumber"`
+	TransactionHash  string             `json:"transactionHash"`
+	TransactionIndex int                `json:"transactionIndex"`
+	CallTrace        CallTraceFrame     `json:"callTrace"`
+	Transaction      FixtureTransaction `json:"transaction"`
+	Receipt          struct {
+		GasUsed string `json:"gasUsed"`
+	} `json:"receipt"`
 
 	Trace struct {
 		Gas         uint64                `json:"gas"`
@@ -105,6 +136,86 @@ func (fx *TraceFixture) RPCTrace() *execution.TraceTransaction {
 	execution.SanitizeStructLogs(trace.Structlogs)
 
 	return trace
+}
+
+// Tx returns the fixture's transaction. Only To, Gas, Data, AccessList and AuthorizationCount are implemented.
+func (fx *TraceFixture) Tx(t *testing.T) execution.Transaction {
+	t.Helper()
+
+	tx := fixtureTx{
+		gas:                hexToUint64(t, fx.Transaction.Gas),
+		data:               hexToBytes(t, fx.Transaction.Input),
+		authorizationCount: len(fx.Transaction.AuthorizationList),
+	}
+
+	if fx.Transaction.To != nil {
+		var to execution.Address
+
+		copy(to[:], hexToBytes(t, *fx.Transaction.To))
+		tx.to = &to
+	}
+
+	for _, tuple := range fx.Transaction.AccessList {
+		var entry execution.AccessTuple
+
+		copy(entry.Address[:], hexToBytes(t, tuple.Address))
+
+		for _, key := range tuple.StorageKeys {
+			var hash execution.Hash
+
+			copy(hash[:], hexToBytes(t, key))
+			entry.StorageKeys = append(entry.StorageKeys, hash)
+		}
+
+		tx.accessList = append(tx.accessList, entry)
+	}
+
+	return tx
+}
+
+// ReceiptGasUsed returns the receipt's gasUsed: what the transaction paid, after refunds and the calldata floor.
+func (fx *TraceFixture) ReceiptGasUsed(t *testing.T) uint64 {
+	t.Helper()
+
+	return hexToUint64(t, fx.Receipt.GasUsed)
+}
+
+type fixtureTx struct {
+	execution.Transaction
+
+	to                 *execution.Address
+	gas                uint64
+	data               []byte
+	accessList         []execution.AccessTuple
+	authorizationCount int
+}
+
+func (tx fixtureTx) To() *execution.Address              { return tx.to }
+func (tx fixtureTx) Gas() uint64                         { return tx.gas }
+func (tx fixtureTx) Data() []byte                        { return tx.data }
+func (tx fixtureTx) AccessList() []execution.AccessTuple { return tx.accessList }
+func (tx fixtureTx) AuthorizationCount() int             { return tx.authorizationCount }
+
+func hexToBytes(t *testing.T, s string) []byte {
+	t.Helper()
+
+	b, err := hex.DecodeString(strings.TrimPrefix(s, "0x"))
+	if err != nil {
+		t.Fatalf("decode hex %q: %v", s, err)
+	}
+
+	return b
+}
+
+func hexToUint64(t *testing.T, s string) uint64 {
+	t.Helper()
+
+	v, err := strconv.ParseUint(strings.TrimPrefix(s, "0x"), 16, 64)
+	if err != nil {
+		t.Fatalf("decode quantity %q: %v", s, err)
+	}
+
+	return v
 }
 
 // CreatedAddresses returns the address each CREATE/CREATE2 frame deployed, in execution order, per the callTracer.

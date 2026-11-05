@@ -257,6 +257,17 @@ The `structlog_agg` processor aggregates per-opcode structlog data into call fra
 - **Summary row** (`operation=""`): Frame-level metadata including gas totals, call type, target address, intrinsic gas, and gas refund
 - **Per-opcode rows** (`operation="SLOAD"` etc.): Gas and count aggregated by opcode within each frame
 
+### Intrinsic Gas
+
+The root summary row's `intrinsic_gas` is computed from the transaction alone: 21000 (53000 for a contract creation), 4 gas per zero and 16 per nonzero calldata byte, 2 per initcode word for a creation (EIP-3860), 2400 per access list address and 1900 per storage key (EIP-2930), and 25000 per EIP-7702 authorization. With the root row's `gas_cumulative` and `gas_refund`, the receipt's gas used is:
+
+```
+used        = intrinsic_gas + gas_cumulative
+receipt_gas = max(used - min(gas_refund, used / 5), 21000 + 10 * (zero_bytes + 4 * nonzero_bytes))
+```
+
+The second term of `max` is the EIP-7623 calldata floor. A top-level contract creation also pays its code deposit, 200 gas per deployed byte, which no opcode accounts for. A transaction that halts exceptionally (out of gas, invalid opcode) burns its remaining gas, which `gas_cumulative` also leaves out. Earlier versions derived `intrinsic_gas` from the trace's gas used, which made it too high by the refund on embedded (erigone) traces.
+
 ### Resource Gas Decomposition
 
 The aggregator computes building-block columns that enable downstream SQL to decompose EVM gas into resource categories (compute, memory, storage access):
