@@ -110,7 +110,7 @@ func (h *Handler) queueSingleBlock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queue := h.processor.GetQueueName()
+	queue := h.processor.GetQueueName(processorName)
 	response := SingleBlockResponse{
 		Status:           "queued",
 		BlockNumber:      blockNumber,
@@ -151,7 +151,7 @@ func (h *Handler) queueMultipleBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	queue := h.processor.GetQueueName()
+	queue := h.processor.GetQueueName(processorName)
 	response := BulkBlocksResponse{
 		Processor: processorName,
 		Queue:     queue,
@@ -197,7 +197,7 @@ func (h *Handler) queueBlock(ctx context.Context, processorName string, blockNum
 }
 
 func (h *Handler) isValidProcessor(name string) bool {
-	return name == "transaction_structlog"
+	return h.processor.HasProcessor(name)
 }
 
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, data interface{}) {

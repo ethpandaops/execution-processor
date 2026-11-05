@@ -143,3 +143,11 @@ func TestBlockProcessingStopsWhileProcessorIsBusy(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	require.Equal(t, calls, fast.calls.Load(), "fast processor kept running after stop")
 }
+
+// TestHasProcessorMatchesRegisteredProcessors checks the manual queue API accepts every enabled processor, not only transaction_structlog.
+func TestHasProcessorMatchesRegisteredProcessors(t *testing.T) {
+	m := newLoopTestManager(t, map[string]tracker.BlockProcessor{"transaction_structlog_agg": &countingProcessor{}})
+
+	require.True(t, m.HasProcessor("transaction_structlog_agg"))
+	require.False(t, m.HasProcessor("transaction_structlog"))
+}
