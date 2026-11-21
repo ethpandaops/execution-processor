@@ -164,8 +164,8 @@ jobs:
           arm64=$(jq -r '.manifests[] | select(.platform.architecture == "arm64") | .digest' <<<"$manifest")
           echo "tags=$SHA@$index latest@$index $SHA-amd64@$amd64 $SHA-arm64@$arm64" >> "$GITHUB_OUTPUT"
 
-      # Every platform was built on a GitHub-hosted runner in this run, so this
-      # job attests the index and the platform manifests behind it (the default).
+      # Attests the index and the platform manifests behind it (the default),
+      # all built in this run.
       - name: Attest and mirror to Docker Hub
         uses: ethpandaops/actions/mirror-image@738aeadbcdc54f1c9af659d35f8ef29dd5c0fae6
         with:
