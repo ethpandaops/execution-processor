@@ -31,6 +31,8 @@ env:
 jobs:
   pin:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     outputs:
       cryo_sha: ${{ steps.pin.outputs.cryo_sha }}
       exists: ${{ steps.exists.outputs.exists }}
