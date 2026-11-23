@@ -19,12 +19,20 @@ on:
       - '.github/workflows/cryo-image.yml'
   workflow_dispatch:
 
+# Pushes the moving `latest` tag, so runs on the same ref queue rather than
+# overlap: an older run can't fail at the mirror after a newer one moved it.
+concurrency:
+  group: docker-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
-  IMAGE_NAME: ethpandaops/cryo
+  IMAGE_NAME: ghcr.io/ethpandaops/cryo
 
 jobs:
   pin:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     outputs:
       cryo_sha: ${{ steps.pin.outputs.cryo_sha }}
       exists: ${{ steps.exists.outputs.exists }}
@@ -45,16 +53,12 @@ jobs:
           echo "cryo_sha=$CRYO_SHA" >> "$GITHUB_OUTPUT"
           echo "cryo pin: $CRYO_SHA"
 
-      - name: Login to DockerHub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Check whether this pin is already published
         id: exists
         run: |
-          IMAGE="${{ env.IMAGE_NAME }}:${{ steps.pin.outputs.cryo_sha }}"
+          # Docker Hub, where the release Dockerfile pulls cryo from. Public, so
+          # no login; a pin that reached GHCR but not Docker Hub gets rebuilt.
+          IMAGE="docker.io/ethpandaops/cryo:${{ steps.pin.outputs.cryo_sha }}"
 
           # Skip the (expensive) rebuild when the pin has not moved. Manual runs
           # always rebuild, so there is an escape hatch if a push went wrong.
@@ -84,6 +88,9 @@ jobs:
             platform: linux/arm64
             runs-on: ubuntu-24.04-arm
     runs-on: ${{ matrix.runs-on }}
+    permissions:
+      contents: read
+      packages: write      # push to ghcr.io/ethpandaops
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -91,11 +98,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
-      - name: Login to DockerHub
+      - name: Login to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       - name: Build and push ${{ matrix.arch }}
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
@@ -123,14 +131,21 @@ jobs:
       - pin
       - build
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write      # push to ghcr.io/ethpandaops
+      id-token: write      # attest, and authenticate to the image mirror
+      attestations: write
     steps:
-      - name: Login to DockerHub
+      - name: Login to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
 
       - name: Create multi-arch manifest
+        id: manifest
         run: |
           IMAGE="${{ env.IMAGE_NAME }}"
           SHA="${{ needs.pin.outputs.cryo_sha }}"
@@ -142,3 +157,20 @@ jobs:
             "$IMAGE:$SHA-arm64"
 
           docker buildx imagetools inspect "$IMAGE:$SHA"
+
+          # tag@digest for every tag, so the mirror step attests exactly what this
+          # run pushed: the index, and the per-arch manifests it was made from.
+          manifest=$(docker buildx imagetools inspect "$IMAGE:$SHA" --format '{{json .Manifest}}')
+          index=$(jq -r '.digest' <<<"$manifest")
+          amd64=$(jq -r '.manifests[] | select(.platform.architecture == "amd64") | .digest' <<<"$manifest")
+          arm64=$(jq -r '.manifests[] | select(.platform.architecture == "arm64") | .digest' <<<"$manifest")
+          echo "tags=$SHA@$index latest@$index $SHA-amd64@$amd64 $SHA-arm64@$arm64" >> "$GITHUB_OUTPUT"
+
+      # Attests the index and the platform manifests behind it (the default),
+      # all built in this run.
+      - name: Attest and mirror to Docker Hub
+        uses: ethpandaops/actions/mirror-image@738aeadbcdc54f1c9af659d35f8ef29dd5c0fae6
+        with:
+          image: cryo
+          tags: ${{ steps.manifest.outputs.tags }}
+          mirror-url: ${{ secrets.IMAGE_MIRROR_URL }}
