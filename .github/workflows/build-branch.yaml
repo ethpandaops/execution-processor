@@ -99,10 +99,11 @@ jobs:
           esac
 
           # Never overwrite a version, master or latest image, and outside
-          # release/ refs never overwrite a release branch's image.
+          # release/ refs never overwrite a release branch's image. *latest*
+          # also covers goreleaser's per-arch tags, such as latest-amd64.
           if [[ $build == true ]]; then
             skip=""
-            if [[ $name == master || $name == main || $name == *latest ]]; then
+            if [[ $name == master || $name == main || $name == *latest* ]]; then
               skip="${name} is reserved for releases"
             elif [[ $name =~ ^v?[0-9] ]]; then
               skip="${name} looks like a version"
