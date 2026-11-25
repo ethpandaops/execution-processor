@@ -10,8 +10,9 @@ name: Build branch docker image
 # - Manual dispatch builds the selected branch the same way, optionally under
 #   a custom tag.
 #
-# Outside release/ refs, names that would overwrite a release image are
-# refused (see the prepare job).
+# Names that would overwrite a version, master or latest image are refused,
+# and outside release/ refs so are names that would overwrite a release
+# branch's image (see the prepare job).
 #
 # This triggers on pull_request, NOT pull_request_target: fork PRs get no
 # secrets or package write access and are skipped. Dispatch the workflow on a
@@ -97,14 +98,15 @@ jobs:
               ;;
           esac
 
-          # Never overwrite a release or latest image from a branch build.
-          if [[ $build == true && $release == false ]]; then
+          # Never overwrite a version, master or latest image, and outside
+          # release/ refs never overwrite a release branch's image.
+          if [[ $build == true ]]; then
             skip=""
             if [[ $name == master || $name == main || $name == *latest ]]; then
               skip="${name} is reserved for releases"
             elif [[ $name =~ ^v?[0-9] ]]; then
               skip="${name} looks like a version"
-            else
+            elif [[ $release == false ]]; then
               # Prints the names whose tags include tags of $1: $1 itself and
               # $1 without a -<sha7> suffix.
               roots() {
