@@ -63,9 +63,9 @@ func TestUnmarshalWithEnv(t *testing.T) {
 		},
 		{
 			name:    "literal dollar signs are left unchanged",
-			content: "password: pa$$word $EP_TEST_PASSWORD $ {EP_TEST_PASSWORD} ${}\n",
+			content: "password: pa$$word $EP_TEST_PASSWORD $ {EP_TEST_PASSWORD} ${}\naddress: \"${EP_TEST_PASSWORD\"\n",
 			env:     map[string]string{"EP_TEST_PASSWORD": "secret"},
-			want:    envTestConfig{Password: "pa$$word $EP_TEST_PASSWORD $ {EP_TEST_PASSWORD} ${}"},
+			want:    envTestConfig{Password: "pa$$word $EP_TEST_PASSWORD $ {EP_TEST_PASSWORD} ${}", Address: "${EP_TEST_PASSWORD"},
 		},
 		{
 			name:    "placeholders in values are not expanded again",
@@ -123,7 +123,7 @@ func TestUnmarshalWithEnvUnsetOrEmptyVariable(t *testing.T) {
 	var got envTestConfig
 
 	err := UnmarshalWithEnv([]byte(content), &got)
-	require.EqualError(t, err, "config references unset or empty environment variables: EP_TEST_EMPTY, EP_TEST_UNSET_A, EP_TEST_UNSET_B")
+	require.EqualError(t, err, "config references unset or empty environment variables: EP_TEST_UNSET_B, EP_TEST_UNSET_A, EP_TEST_EMPTY")
 	assert.Equal(t, envTestConfig{}, got)
 }
 

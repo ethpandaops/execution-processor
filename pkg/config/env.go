@@ -19,12 +19,12 @@ var envVarPattern = regexp.MustCompile(`\$\{([^}:]+)(?::-([^}]*))?\}`)
 // ${VAR:-default} uses default when VAR is unset or empty. ${VAR} requires VAR
 // to be set and non-empty. Placeholders are replaced in parsed values, never in
 // the YAML text, so a value is used exactly as set in the environment and
-// cannot change the structure of the config. Mapping keys, comments and $
-// characters not followed by { are left unchanged. A plain (unquoted) scalar
+// cannot change the structure of the config. Mapping keys, comments, bare
+// $VAR, $$ and an unclosed ${ are left unchanged. A plain (unquoted) scalar
 // is typed by its replaced value, so `port: ${PORT}` decodes into an int field.
 //
-// It returns an error naming every variable that is unset or empty and has no
-// default.
+// It returns an error listing, in order of appearance, every variable that is
+// unset or empty and has no default.
 func UnmarshalWithEnv(data []byte, out any) error {
 	var doc yaml.Node
 
@@ -38,49 +38,56 @@ func UnmarshalWithEnv(data []byte, out any) error {
 
 	var missing []string
 
-	substituteEnvVars(&doc, &missing)
+	expandNode(&doc, &missing)
 
 	if len(missing) > 0 {
-		slices.Sort(missing)
-
-		return fmt.Errorf("config references unset or empty environment variables: %s", strings.Join(slices.Compact(missing), ", "))
+		return fmt.Errorf("config references unset or empty environment variables: %s", strings.Join(missing, ", "))
 	}
 
 	return doc.Decode(out)
 }
 
-func substituteEnvVars(node *yaml.Node, missing *[]string) {
-	switch node.Kind {
+func expandNode(n *yaml.Node, missing *[]string) {
+	switch n.Kind {
 	case yaml.ScalarNode:
-		if !envVarPattern.MatchString(node.Value) {
+		expanded := expandEnvVars(n.Value, missing)
+		if expanded == n.Value {
 			return
 		}
 
-		node.Value = envVarPattern.ReplaceAllStringFunc(node.Value, func(match string) string {
-			parts := envVarPattern.FindStringSubmatch(match)
+		n.Value = expanded
 
-			value := os.Getenv(parts[1])
-			if value != "" {
-				return value
-			}
-
-			if !strings.Contains(match, ":-") {
-				*missing = append(*missing, parts[1])
-			}
-
-			return parts[2]
-		})
-
-		if node.Style == 0 {
-			node.Tag = ""
+		if n.Style == 0 {
+			n.Tag = ""
 		}
 	case yaml.MappingNode:
-		for i := 1; i < len(node.Content); i += 2 {
-			substituteEnvVars(node.Content[i], missing)
+		for i := 1; i < len(n.Content); i += 2 {
+			expandNode(n.Content[i], missing)
 		}
 	case yaml.DocumentNode, yaml.SequenceNode:
-		for _, child := range node.Content {
-			substituteEnvVars(child, missing)
+		for _, c := range n.Content {
+			expandNode(c, missing)
 		}
 	}
+}
+
+func expandEnvVars(value string, missing *[]string) string {
+	return envVarPattern.ReplaceAllStringFunc(value, func(match string) string {
+		parts := envVarPattern.FindStringSubmatchIndex(match)
+		name := match[parts[2]:parts[3]]
+
+		if v := os.Getenv(name); v != "" {
+			return v
+		}
+
+		if parts[4] >= 0 {
+			return match[parts[4]:parts[5]]
+		}
+
+		if !slices.Contains(*missing, name) {
+			*missing = append(*missing, name)
+		}
+
+		return ""
+	})
 }
