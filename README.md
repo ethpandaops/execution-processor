@@ -42,6 +42,26 @@ A distributed system for processing Ethereum execution layer data with support f
 - **State Manager**: Track processing progress in ClickHouse
 - **Processors**: Configure structlog extraction settings
 
+### Environment Variables
+
+Config values can come from environment variables, so credentials don't have to be written into the file. Placeholders in YAML values are replaced after the file is parsed:
+
+| Placeholder | Result |
+| --- | --- |
+| `${VAR}` | The value of `VAR`. Loading fails, naming the variable, if `VAR` is unset or empty. |
+| `${VAR:-default}` | The value of `VAR`, or `default` if `VAR` is unset or empty. |
+
+A value is used exactly as set in the environment, including tabs, newlines, quotes and `#`, and cannot change the structure of the config. Only the braced form is replaced: `$VAR`, `$$`, an unclosed `${` and any other `$` stay as written, and mapping keys and comments are never changed. An unquoted placeholder takes the type of its value, so `port: ${PORT}` works for numeric fields; a quoted one is always a string. Inside flow collections (`{...}`, `[...]`) quote placeholders, since `{` and `}` are YAML syntax there.
+
+```yaml
+redis:
+  address: "redis://:${REDIS_PASSWORD}@localhost:6379"
+ethereum:
+  execution:
+    - name: "execution-1"
+      nodeAddress: "${EXECUTION_NODE_ADDRESS:-http://localhost:8545}"
+```
+
 ### Processing Modes
 
 - **Forwards**: Process new blocks as they arrive (priority 10)
