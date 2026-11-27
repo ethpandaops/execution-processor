@@ -6,10 +6,10 @@ import (
 	"os"
 
 	"github.com/creasty/defaults"
+	"github.com/ethpandaops/execution-processor/pkg/config"
 	"github.com/ethpandaops/execution-processor/pkg/server"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -80,9 +80,9 @@ func loadServerConfigFromFile(file string) (*server.Config, error) {
 		file = "config.yaml"
 	}
 
-	config := &server.Config{}
+	cfg := &server.Config{}
 
-	if err := defaults.Set(config); err != nil {
+	if err := defaults.Set(cfg); err != nil {
 		return nil, err
 	}
 
@@ -93,9 +93,9 @@ func loadServerConfigFromFile(file string) (*server.Config, error) {
 
 	type plain server.Config
 
-	if err := yaml.Unmarshal(yamlFile, (*plain)(config)); err != nil {
+	if err := config.UnmarshalWithEnv(yamlFile, (*plain)(cfg)); err != nil {
 		return nil, err
 	}
 
-	return config, nil
+	return cfg, nil
 }
