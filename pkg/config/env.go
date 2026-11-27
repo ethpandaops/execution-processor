@@ -21,7 +21,9 @@ var envVarPattern = regexp.MustCompile(`\$\{([^}:]+)(?::-([^}]*))?\}`)
 // the YAML text, so a value is used exactly as set in the environment and
 // cannot change the structure of the config. Mapping keys, comments, bare
 // $VAR, $$ and an unclosed ${ are left unchanged. A plain (unquoted) scalar
-// is typed by its replaced value, so `port: ${PORT}` decodes into an int field.
+// is typed by its replaced value, so `port: ${PORT}` decodes into an int field,
+// except that a value resolving to null, such as `null`, `~` or an empty
+// default, stays a string.
 //
 // It returns an error listing, in order of appearance, every variable that is
 // unset or empty and has no default.
@@ -59,6 +61,10 @@ func expandNode(n *yaml.Node, missing *[]string) {
 
 		if n.Style == 0 {
 			n.Tag = ""
+
+			if n.ShortTag() == "!!null" {
+				n.Tag = "!!str"
+			}
 		}
 	case yaml.MappingNode:
 		for i := 1; i < len(n.Content); i += 2 {

@@ -147,3 +147,28 @@ func TestUnmarshalWithEnvMatchesYAMLWithoutPlaceholders(t *testing.T) {
 	require.NoError(t, UnmarshalWithEnv(data, got))
 	assert.Equal(t, want, got)
 }
+
+func TestUnmarshalWithEnvNullValuesStayStrings(t *testing.T) {
+	type nullable struct {
+		A *string `yaml:"a"`
+		B *string `yaml:"b"`
+		C *string `yaml:"c"`
+		D *string `yaml:"d"`
+		E any     `yaml:"e"`
+	}
+
+	t.Setenv("EP_TEST_NULL", "null")
+	t.Setenv("EP_TEST_TILDE", "~")
+
+	var got nullable
+
+	require.NoError(t, UnmarshalWithEnv([]byte("a: ${EP_TEST_NULL}\nb: ${EP_TEST_TILDE}\nc: ${EP_TEST_UNSET:-}\nd: null\ne: ${EP_TEST_NULL}\n"), &got))
+	require.NotNil(t, got.A)
+	require.NotNil(t, got.B)
+	require.NotNil(t, got.C)
+	assert.Equal(t, "null", *got.A)
+	assert.Equal(t, "~", *got.B)
+	assert.Empty(t, *got.C)
+	assert.Nil(t, got.D)
+	assert.Equal(t, "null", got.E)
+}
